@@ -1,11 +1,8 @@
-use std::ops::Add;
-
-use anyhow::{Context, Error};
+use anyhow::{anyhow, Context};
 use aya::programs::{links::FdLink, xdp::XdpLink, Xdp, XdpFlags};
 use aya::{include_bytes_aligned, maps::HashMap, Bpf, BpfLoader, Btf};
 use aya_log::BpfLogger;
 use clap::Parser;
-use libc::FAN_MARK_REMOVE;
 use log::{debug, info, warn};
 use tokio::signal;
 
@@ -13,8 +10,6 @@ use tokio::signal;
 struct Opt {
     #[clap(short, long, default_value = "lo")]
     iface: String,
-    #[clap(long, default_value = "zon_lb")]
-    ns: String,
 }
 
 // This will include your eBPF object file as raw bytes at compile-time and load it at
@@ -53,6 +48,12 @@ async fn main() -> Result<(), anyhow::Error> {
         debug!("remove limit on locked memory failed, ret is: {}", ret);
     }
 
+    let c_interface = std::ffi::CString::new((&opt.iface).as_str()).unwrap();
+    let if_index = unsafe { libc::if_nametoindex(c_interface.as_ptr()) };
+    if if_index == 0 {
+        return Err(anyhow!("No interface {}", &opt.iface));
+    }
+
     //
     // Name scheme set by the loading user app
     //  program: zon-lb_<ifname>_xdp
@@ -64,8 +65,6 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut zdpath = std::path::PathBuf::from("/sys/fs/bpf");
     zdpath.push(link_name(&opt.iface, ""));
     let zdpath = zdpath.as_path();
-
-    // TODO: check if input ifname exists
 
     // Load the BTF data from /sys/kernel/btf/vmlinux and the lb program
     let mut bpf = BpfLoader::new()
