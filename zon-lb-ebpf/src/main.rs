@@ -31,7 +31,7 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 }
 
 #[map]
-static BLOCKLIST: HashMap<u32, u32> = HashMap::<u32, u32>::pinned(5, 0);
+static BACKENDS: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(1024, 0);
 
 #[xdp]
 pub fn zon_lb(ctx: XdpContext) -> u32 {

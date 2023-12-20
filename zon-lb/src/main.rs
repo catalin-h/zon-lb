@@ -1,8 +1,11 @@
-use anyhow::Context;
+use std::ops::Add;
+
+use anyhow::{Context, Error};
 use aya::programs::{links::FdLink, xdp::XdpLink, Xdp, XdpFlags};
 use aya::{include_bytes_aligned, maps::HashMap, Bpf, BpfLoader, Btf};
 use aya_log::BpfLogger;
 use clap::Parser;
+use libc::FAN_MARK_REMOVE;
 use log::{debug, info, warn};
 use tokio::signal;
 
@@ -10,6 +13,8 @@ use tokio::signal;
 struct Opt {
     #[clap(short, long, default_value = "lo")]
     iface: String,
+    #[clap(long, default_value = "zon_lb")]
+    ns: String,
 }
 
 // This will include your eBPF object file as raw bytes at compile-time and load it at
@@ -20,6 +25,16 @@ struct Opt {
 const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/debug/zon-lb");
 #[cfg(not(debug_assertions))]
 const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/release/zon-lb");
+
+fn link_name(ifname: &str, map_name: &str) -> String {
+    if map_name.is_empty() {
+        format!("zon-lb_{}_xdp", ifname)
+    } else if ifname.is_empty() {
+        format!("zon-lb_{}_map", map_name.to_ascii_lowercase())
+    } else {
+        format!("zon-lb_{}_{}_map", ifname, map_name.to_ascii_lowercase())
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -38,15 +53,31 @@ async fn main() -> Result<(), anyhow::Error> {
         debug!("remove limit on locked memory failed, ret is: {}", ret);
     }
 
-    let mut bpf = Bpf::load(ZONLB)?;
+    //
+    // Name scheme set by the loading user app
+    //  program: zon-lb_<ifname>_xdp
+    //  prog maps: zon-lb_<lowcase_name>_<map-name>_map
+    //  common maps: zon-lb_<lowcase_name>_map
+    //
+
+    // Default location for bpffs
+    let mut zdpath = std::path::PathBuf::from("/sys/fs/bpf");
+    zdpath.push(link_name(&opt.iface, ""));
+    let zdpath = zdpath.as_path();
+
+    // TODO: check if input ifname exists
+
+    // Load the BTF data from /sys/kernel/btf/vmlinux and the lb program
+    let mut bpf = BpfLoader::new()
+        .btf(Btf::from_sys_fs().ok().as_ref())
+        .load(ZONLB)?;
+
     if let Err(e) = BpfLogger::init(&mut bpf) {
         // This can happen if you remove all log statements from your eBPF program.
         warn!("failed to initialize eBPF logger: {}", e);
     }
     let program: &mut Xdp = bpf.program_mut("zon_lb").unwrap().try_into()?;
     program.load()?;
-
-    let zdpath = std::path::Path::new("/sys/fs/bpf/zon-lb");
 
     // There is an exiting pinned link to the program
     if zdpath.exists() {
@@ -77,7 +108,7 @@ async fn main() -> Result<(), anyhow::Error> {
         fdlink.pin(zdpath)?;
     }
 
-    let mut blocklist: HashMap<_, u32, u32> = HashMap::try_from(bpf.map_mut("BLOCKLIST").unwrap())?;
+    let mut blocklist: HashMap<_, u32, u32> = HashMap::try_from(bpf.map_mut("BACKENDS").unwrap())?;
     let key = blocklist.keys().count();
 
     match blocklist.insert(key as u32, 0, 0) {
