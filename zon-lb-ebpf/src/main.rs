@@ -30,8 +30,10 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
     Ok((start + offset) as *const T)
 }
 
+// Per interface maps start with ZLB.
+// Global common maps start just with ZLBX
 #[map]
-static BACKENDS: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(1024, 0);
+static ZLB_BACKENDS: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(1024, 0);
 
 #[xdp]
 pub fn zon_lb(ctx: XdpContext) -> u32 {

@@ -1,9 +1,14 @@
 use anyhow::{anyhow, Context};
-use aya::programs::{links::FdLink, xdp::XdpLink, Xdp, XdpFlags};
-use aya::{include_bytes_aligned, maps::HashMap, Bpf, BpfLoader, Btf};
+use aya::{
+    include_bytes_aligned,
+    maps::{HashMap, Map, MapData},
+    programs::{links::FdLink, Xdp, XdpFlags},
+    BpfLoader, Btf,
+};
 use aya_log::BpfLogger;
 use clap::Parser;
 use log::{debug, info, warn};
+use std::path::{Path, PathBuf};
 use tokio::signal;
 
 #[derive(Debug, Parser)]
@@ -21,14 +26,47 @@ const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/deb
 #[cfg(not(debug_assertions))]
 const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/release/zon-lb");
 
-fn link_name(ifname: &str, map_name: &str) -> String {
+//
+// Pinned link naming scheme used by the loading user app
+//  program: zlb_<ifname>
+//  prog maps: zlb_<ifname>_<map-name>
+//  common maps: zlbx_<lowcase_name>
+//
+fn pinned_link_name(ifname: &str, map_name: &str) -> Option<String> {
     if map_name.is_empty() {
-        format!("zon-lb_{}_xdp", ifname)
-    } else if ifname.is_empty() {
-        format!("zon-lb_{}_map", map_name.to_ascii_lowercase())
+        Some(format!("zlb_{}", ifname))
+    } else if ifname.is_empty() && map_name.starts_with("ZLBX") {
+        Some(map_name.to_ascii_lowercase())
+    } else if !ifname.is_empty() && map_name.starts_with("ZLB") && map_name.len() >= 5 {
+        let mut name = map_name.to_ascii_lowercase();
+        if map_name.starts_with("ZLB_") {
+            name.insert(3, '_');
+        } else {
+            name.insert_str(3, "__");
+        }
+        name.insert_str(4, ifname);
+        Some(name)
     } else {
-        format!("zon-lb_{}_{}_map", ifname, map_name.to_ascii_lowercase())
+        None
     }
+}
+
+fn pinned_link_bpffs_path(ifname: &str, map_name: &str) -> Option<PathBuf> {
+    pinned_link_name(ifname, map_name).map(|pname| Path::new("/sys/fs/bpf").join(pname))
+}
+
+fn mapdata_from_pinned_map(ifname: &str, map_name: &str) -> Option<MapData> {
+    pinned_link_bpffs_path(ifname, map_name).map_or(None, |path| match MapData::from_pin(&path) {
+        Err(e) => {
+            warn!(
+                "Failed to get pinned map from link {:?}, {}",
+                &path,
+                e.to_string()
+            );
+            None
+        }
+        Ok(m) => Some(m),
+    })
 }
 
 #[tokio::main]
@@ -54,17 +92,8 @@ async fn main() -> Result<(), anyhow::Error> {
         return Err(anyhow!("No interface {}", &opt.iface));
     }
 
-    //
-    // Name scheme set by the loading user app
-    //  program: zon-lb_<ifname>_xdp
-    //  prog maps: zon-lb_<lowcase_name>_<map-name>_map
-    //  common maps: zon-lb_<lowcase_name>_map
-    //
-
     // Default location for bpffs
-    let mut zdpath = std::path::PathBuf::from("/sys/fs/bpf");
-    zdpath.push(link_name(&opt.iface, ""));
-    let zdpath = zdpath.as_path();
+    let zdpath = pinned_link_bpffs_path(&opt.iface, "").unwrap();
 
     // Load the BTF data from /sys/kernel/btf/vmlinux and the lb program
     let mut bpf = BpfLoader::new()
@@ -95,7 +124,9 @@ async fn main() -> Result<(), anyhow::Error> {
             &opt.iface
         );
 
-        // try changing XdpFlags::default() to XdpFlags::SKB_MODE if it failed to attach
+        // TODO: add flag to force remove existing xdp program attached to interface
+
+        // Try changing XdpFlags::default() to XdpFlags::SKB_MODE if it failed to attach
         // the XDP program with default flags
         let xdplinkid = program
             .attach(&opt.iface, XdpFlags::default())
@@ -105,9 +136,17 @@ async fn main() -> Result<(), anyhow::Error> {
         let xdplink = program.take_link(xdplinkid)?;
         let fdlink: FdLink = xdplink.try_into()?;
         fdlink.pin(zdpath)?;
+
+        for (name, map) in bpf.maps() {
+            if let Some(path) = pinned_link_bpffs_path(&opt.iface, name) {
+                map.pin(path)?;
+            }
+        }
     }
 
-    let mut blocklist: HashMap<_, u32, u32> = HashMap::try_from(bpf.map_mut("BACKENDS").unwrap())?;
+    let map = mapdata_from_pinned_map(&opt.iface, "ZLB_BACKENDS").unwrap();
+    let map = Map::HashMap(map);
+    let mut blocklist: HashMap<_, u32, u32> = map.try_into()?;
     let key = blocklist.keys().count();
 
     match blocklist.insert(key as u32, 0, 0) {
