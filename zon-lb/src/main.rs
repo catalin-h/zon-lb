@@ -13,8 +13,9 @@ use tokio::signal;
 
 #[derive(Debug, Parser)]
 struct Opt {
+    /// The target network interface name
     #[clap(short, long, default_value = "lo")]
-    iface: String,
+    ifname: String,
 }
 
 // This will include your eBPF object file as raw bytes at compile-time and load it at
@@ -86,14 +87,14 @@ async fn main() -> Result<(), anyhow::Error> {
         debug!("remove limit on locked memory failed, ret is: {}", ret);
     }
 
-    let c_interface = std::ffi::CString::new((&opt.iface).as_str()).unwrap();
+    let c_interface = std::ffi::CString::new((&opt.ifname).as_str()).unwrap();
     let if_index = unsafe { libc::if_nametoindex(c_interface.as_ptr()) };
     if if_index == 0 {
-        return Err(anyhow!("No interface {}", &opt.iface));
+        return Err(anyhow!("No interface {}", &opt.ifname));
     }
 
     // Default location for bpffs
-    let zdpath = pinned_link_bpffs_path(&opt.iface, "").unwrap();
+    let zdpath = pinned_link_bpffs_path(&opt.ifname, "").unwrap();
 
     // Load the BTF data from /sys/kernel/btf/vmlinux and the lb program
     let mut bpf = BpfLoader::new()
@@ -121,7 +122,7 @@ async fn main() -> Result<(), anyhow::Error> {
         info!(
             "No pinned link for zon-lb at {}, try attach program to interface: {}",
             zdpath.to_str().unwrap(),
-            &opt.iface
+            &opt.ifname
         );
 
         // TODO: add flag to force remove existing xdp program attached to interface
@@ -129,7 +130,7 @@ async fn main() -> Result<(), anyhow::Error> {
         // Try changing XdpFlags::default() to XdpFlags::SKB_MODE if it failed to attach
         // the XDP program with default flags
         let xdplinkid = program
-            .attach(&opt.iface, XdpFlags::default())
+            .attach(&opt.ifname, XdpFlags::default())
             .context("Failed to attach to interface with attachment type")?;
 
         // Pin the program link to bpf file system (bpffs)
@@ -138,13 +139,13 @@ async fn main() -> Result<(), anyhow::Error> {
         fdlink.pin(zdpath)?;
 
         for (name, map) in bpf.maps() {
-            if let Some(path) = pinned_link_bpffs_path(&opt.iface, name) {
+            if let Some(path) = pinned_link_bpffs_path(&opt.ifname, name) {
                 map.pin(path)?;
             }
         }
     }
 
-    let map = mapdata_from_pinned_map(&opt.iface, "ZLB_BACKENDS").unwrap();
+    let map = mapdata_from_pinned_map(&opt.ifname, "ZLB_BACKENDS").unwrap();
     let map = Map::HashMap(map);
     let mut blocklist: HashMap<_, u32, u32> = map.try_into()?;
     let key = blocklist.keys().count();
