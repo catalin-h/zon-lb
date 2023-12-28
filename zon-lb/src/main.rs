@@ -2,7 +2,10 @@ use anyhow::{anyhow, Context};
 use aya::{
     include_bytes_aligned,
     maps::{HashMap, Map, MapData},
-    programs::{links::FdLink, Xdp, XdpFlags},
+    programs::{
+        links::{FdLink, PinnedLink},
+        Xdp, XdpFlags,
+    },
     BpfLoader, Btf,
 };
 use aya_log::BpfLogger;
@@ -12,6 +15,10 @@ use std::path::{Path, PathBuf};
 use tokio::signal;
 
 #[derive(Debug, Parser)]
+#[clap(group(clap::ArgGroup::new("xdp")
+            .required(false)
+            .multiple(false)
+            .args(&["xdp_replace","xdp_teardown"])))]
 struct Opt {
     /// The target network interface name
     #[clap(short, long, default_value = "lo")]
@@ -20,6 +27,9 @@ struct Opt {
     /// This flag will instruct the user app to override the existing program.
     #[clap(long)]
     xdp_replace: bool,
+    /// Tears down the current attached program
+    #[clap(long)]
+    xdp_teardown: bool,
 }
 
 // This will include your eBPF object file as raw bytes at compile-time and load it at
@@ -106,7 +116,25 @@ async fn main() -> Result<(), anyhow::Error> {
         .try_exists()
         .context("Can't verify if zon-lb bpffs exists")?;
 
-    // TODO: add option to tear down the program only
+    // Tear down the program only
+    if opt.xdp_teardown {
+        if zlblink_exists {
+            info!(
+                "Try unpin link for program attached to interface: {}",
+                &opt.ifname
+            );
+
+            let link = PinnedLink::from_pin(zdpath)
+                .context("Failed to load pinned link for zon-lb bpffs")?;
+            link.unpin().context("Can't unpin program link")?;
+        } else {
+            info!("No pinned link program for interface: {}", &opt.ifname);
+        }
+
+        info!("Tear down program for interface: {} complete", &opt.ifname);
+        return Ok(());
+    }
+
     // TODO: add aption to tear down the program and maps first
 
     // TODO: aya::programs::loaded_programs iterate over all programs and
@@ -136,7 +164,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 &opt.ifname
             );
 
-            let link = aya::programs::links::PinnedLink::from_pin(zdpath)
+            let link = PinnedLink::from_pin(zdpath)
                 .context("Failed to load pinned link for zon-lb bpffs")?;
             let link = FdLink::from(link);
             program
