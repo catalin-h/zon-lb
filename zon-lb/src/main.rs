@@ -16,6 +16,10 @@ struct Opt {
     /// The target network interface name
     #[clap(short, long, default_value = "lo")]
     ifname: String,
+    /// By default the user app won't replace the current xdp program attached to the interface.
+    /// This flag will instruct the user app to override the existing program.
+    #[clap(long)]
+    xdp_replace: bool,
 }
 
 // This will include your eBPF object file as raw bytes at compile-time and load it at
@@ -95,54 +99,102 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Default location for bpffs
     let zdpath = pinned_link_bpffs_path(&opt.ifname, "").unwrap();
+    let zdpath_str = zdpath.to_str().unwrap_or_default();
 
-    // Load the BTF data from /sys/kernel/btf/vmlinux and the lb program
-    let mut bpf = BpfLoader::new()
-        .btf(Btf::from_sys_fs().ok().as_ref())
-        .load(ZONLB)?;
+    info!("Using zon-lb bpffs: {}", zdpath_str);
+    let zlblink_exists = zdpath
+        .try_exists()
+        .context("Can't verify if zon-lb bpffs exists")?;
 
-    if let Err(e) = BpfLogger::init(&mut bpf) {
-        // This can happen if you remove all log statements from your eBPF program.
-        warn!("failed to initialize eBPF logger: {}", e);
-    }
-    let program: &mut Xdp = bpf.program_mut("zon_lb").unwrap().try_into()?;
-    program.load()?;
+    // TODO: add option to tear down the program only
+    // TODO: add aption to tear down the program and maps first
 
-    // There is an exiting pinned link to the program
-    if zdpath.exists() {
-        info!(
-            "Found zon-lb pinned link, try attach from: {}",
-            zdpath.to_str().unwrap()
-        );
+    // TODO: aya::programs::loaded_programs iterate over all programs and
+    // check if zon-lb is running. Also, check if there is another xdp
+    // program attached to current interface.
 
-        let link = aya::programs::links::PinnedLink::from_pin(zdpath)?;
-        let link = FdLink::from(link);
-        program.attach_to_link(link.try_into()?)?;
-    } else {
-        info!(
-            "No pinned link for zon-lb at {}, try attach program to interface: {}",
-            zdpath.to_str().unwrap(),
-            &opt.ifname
-        );
+    if opt.xdp_replace || !zlblink_exists {
+        // Load the BTF data from /sys/kernel/btf/vmlinux and the lb program
+        let mut bpf = BpfLoader::new()
+            .btf(Btf::from_sys_fs().ok().as_ref())
+            .load(ZONLB)
+            .context("Failed to load the program blob")?;
 
-        // TODO: add flag to force remove existing xdp program attached to interface
+        if let Err(e) = BpfLogger::init(&mut bpf) {
+            // This can happen if all log statements are removed from eBPF program.
+            warn!("Failed to initialize eBPF logger: {}", e);
+        }
 
-        // Try changing XdpFlags::default() to XdpFlags::SKB_MODE if it failed to attach
-        // the XDP program with default flags
-        let xdplinkid = program
-            .attach(&opt.ifname, XdpFlags::default())
-            .context("Failed to attach to interface with attachment type")?;
+        let program: &mut Xdp = bpf.program_mut("zon_lb").unwrap().try_into()?;
+        program.load().context("Failed to load program in kernel")?;
 
-        // Pin the program link to bpf file system (bpffs)
-        let xdplink = program.take_link(xdplinkid)?;
-        let fdlink: FdLink = xdplink.try_into()?;
-        fdlink.pin(zdpath)?;
+        // There is an exiting pinned link to the program
+        if zlblink_exists && opt.xdp_replace {
+            // TODO: show found and current program versions
+            info!(
+                "Found zon-lb pinned link, try replace existing program for interface: {}",
+                &opt.ifname
+            );
 
-        for (name, map) in bpf.maps() {
-            if let Some(path) = pinned_link_bpffs_path(&opt.ifname, name) {
-                map.pin(path)?;
+            let link = aya::programs::links::PinnedLink::from_pin(zdpath)
+                .context("Failed to load pinned link for zon-lb bpffs")?;
+            let link = FdLink::from(link);
+            program
+                .attach_to_link(link.try_into()?)
+                .context("Failed to attach new program to existing link")?;
+        } else {
+            info!("Try attach current program to interface: {}", &opt.ifname);
+
+            // TODO: add option to choose the
+
+            // Try changing XdpFlags::default() to XdpFlags::SKB_MODE if it failed to attach
+            // the XDP program with default flags
+            let xdpflags = XdpFlags::default();
+
+            //for flag in xdpflags {
+            //    info!("Flags: {:?}", flag);
+            //}
+
+            let xdplinkid = program
+                .attach(&opt.ifname, xdpflags)
+                .context("Failed to attach program link to interface")?;
+
+            // Pin the program link to bpf file system (bpffs)
+            let xdplink = program.take_link(xdplinkid)?;
+            let fdlink: FdLink = xdplink.try_into()?;
+            fdlink
+                .pin(zdpath)
+                .context("Failed to create pinned link for program")?;
+
+            // TODO: add option to force recreate a map or all maps
+
+            for (name, map) in bpf.maps() {
+                if let Some(path) = pinned_link_bpffs_path(&opt.ifname, name) {
+                    match path.try_exists() {
+                        Ok(false) => {
+                            map.pin(path)
+                                .context("Failed to create pinned link for map")?;
+                        }
+                        Ok(true) => {
+                            info!(
+                                "Map {} already pinned to {}",
+                                name,
+                                path.to_str().unwrap_or_default()
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to check if map bpffs exist: {}, skip create link, {:?}",
+                                path.to_str().unwrap_or_default(),
+                                e
+                            );
+                        }
+                    }
+                }
             }
         }
+    } else {
+        info!("No Xdp program was loaded, access maps only mode");
     }
 
     let map = mapdata_from_pinned_map(&opt.ifname, "ZLB_BACKENDS").unwrap();
