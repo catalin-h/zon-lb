@@ -18,7 +18,7 @@ use tokio::signal;
 #[clap(group(clap::ArgGroup::new("xdp")
             .required(false)
             .multiple(false)
-            .args(&["xdp_replace","xdp_teardown"])))]
+            .args(&["xdp_replace","xdp_teardown", "teardown"])))]
 struct Opt {
     /// The target network interface name
     #[clap(short, long, default_value = "lo")]
@@ -30,6 +30,9 @@ struct Opt {
     /// Tears down the current attached program
     #[clap(long)]
     xdp_teardown: bool,
+    // Tears down both the attached program and the associated maps for the input interface
+    #[clap(long)]
+    teardown: bool,
 }
 
 // This will include your eBPF object file as raw bytes at compile-time and load it at
@@ -84,6 +87,47 @@ fn mapdata_from_pinned_map(ifname: &str, map_name: &str) -> Option<MapData> {
     })
 }
 
+fn teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
+    let iter = std::fs::read_dir("/sys/fs/bpf/").context("Failed to iterate bpffs")?;
+
+    for path in iter
+        .into_iter()
+        .filter_map(|entry| entry.map_or(None, |p| Some(p.path())))
+        .filter_map(|path| if path.is_file() { Some(path) } else { None })
+        .filter_map(|path| {
+            if path
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+                .starts_with(prefix)
+            {
+                Some(path)
+            } else {
+                None
+            }
+        })
+    {
+        match std::fs::remove_file(&path) {
+            Ok(_) => {
+                info!(
+                    "Removing pinned link: {}",
+                    &path.to_str().unwrap_or_default()
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to remove pinned link: {}, e: {}",
+                    &path.to_str().unwrap_or_default(),
+                    e.to_string()
+                );
+            }
+        };
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let opt = Opt::parse();
@@ -117,25 +161,33 @@ async fn main() -> Result<(), anyhow::Error> {
         .context("Can't verify if zon-lb bpffs exists")?;
 
     // Tear down the program only
-    if opt.xdp_teardown {
-        if zlblink_exists {
-            info!(
-                "Try unpin link for program attached to interface: {}",
-                &opt.ifname
-            );
+    if zlblink_exists && (opt.xdp_teardown || opt.teardown) {
+        info!(
+            "Try unpin link for program attached to interface: {}",
+            &opt.ifname
+        );
 
-            let link = PinnedLink::from_pin(zdpath)
-                .context("Failed to load pinned link for zon-lb bpffs")?;
-            link.unpin().context("Can't unpin program link")?;
-        } else {
-            info!("No pinned link program for interface: {}", &opt.ifname);
-        }
+        let link =
+            PinnedLink::from_pin(&zdpath).context("Failed to load pinned link for zon-lb bpffs")?;
+        link.unpin().context("Can't unpin program link")?;
+    }
 
+    // Teardown the maps associated with the interface
+    if opt.teardown {
+        match pinned_link_name(&opt.ifname, "") {
+            None => {
+                warn!("Invalid link for interface: {}", &opt.ifname);
+            }
+            Some(prefix) => {
+                teardown_maps(&prefix)?;
+            }
+        };
+    }
+
+    if opt.teardown || opt.xdp_teardown {
         info!("Tear down program for interface: {} complete", &opt.ifname);
         return Ok(());
     }
-
-    // TODO: add aption to tear down the program and maps first
 
     // TODO: aya::programs::loaded_programs iterate over all programs and
     // check if zon-lb is running. Also, check if there is another xdp
