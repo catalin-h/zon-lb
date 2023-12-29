@@ -19,6 +19,10 @@ use tokio::signal;
             .required(false)
             .multiple(false)
             .args(&["xdp_replace","xdp_teardown", "teardown"])))]
+#[clap(group(clap::ArgGroup::new("xdp_mode")
+            .required(false)
+            .multiple(false)
+            .args(&["xdp_driver_mode","xdp_skb_mode"])))]
 struct Opt {
     /// The target network interface name
     #[clap(short, long, default_value = "lo")]
@@ -30,6 +34,15 @@ struct Opt {
     /// Tears down the current attached program
     #[clap(long)]
     xdp_teardown: bool,
+    /// Try attach the program in driver mode. In this mode the network interface driver must
+    /// support XDP. Linux kernels with versions 5.x support virtual interfaces like veth or tun.
+    /// For physical network cards must check the kernel version and the driver XDP support.
+    #[clap(long)]
+    xdp_driver_mode: bool,
+    /// Try attach the program in skb mode. This is the default attach mode and it is supported even
+    /// if the network interface driver doesn't support XDP.
+    #[clap(long)]
+    xdp_skb_mode: bool,
     // Tears down both the attached program and the associated maps for the input interface
     #[clap(long)]
     teardown: bool,
@@ -218,6 +231,8 @@ async fn main() -> Result<(), anyhow::Error> {
         };
     }
 
+    // TODO: add reload option teardown + load
+
     if opt.teardown || opt.xdp_teardown {
         info!("Tear down program for interface: {} complete", &opt.ifname);
         return Ok(());
@@ -261,15 +276,20 @@ async fn main() -> Result<(), anyhow::Error> {
         } else {
             info!("Try attach current program to interface: {}", &opt.ifname);
 
-            // TODO: add option to choose skb or driver mode
-
-            // Try changing XdpFlags::default() to XdpFlags::SKB_MODE if it failed to attach
-            // the XDP program with default flags
-            let xdpflags = XdpFlags::default();
-
-            //for flag in xdpflags {
-            //    info!("Flags: {:?}", flag);
-            //}
+            let xdpflags = XdpFlags::default()
+                | if opt.xdp_driver_mode {
+                    info!("Attach program to {} in DRIVER mode", &opt.ifname);
+                    XdpFlags::DRV_MODE
+                } else if opt.xdp_skb_mode {
+                    info!("Attach program to {} in SKB mode", &opt.ifname);
+                    XdpFlags::SKB_MODE
+                } else {
+                    info!(
+                        "Attach program to {} using default kernel mode",
+                        &opt.ifname
+                    );
+                    XdpFlags::default()
+                };
 
             let xdplinkid = program
                 .attach(&opt.ifname, xdpflags)
