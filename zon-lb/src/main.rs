@@ -6,7 +6,7 @@ use aya::{
         links::{FdLink, PinnedLink},
         Xdp, XdpFlags,
     },
-    BpfLoader, Btf,
+    Bpf, BpfLoader, Btf,
 };
 use aya_log::BpfLogger;
 use clap::Parser;
@@ -33,6 +33,11 @@ struct Opt {
     // Tears down both the attached program and the associated maps for the input interface
     #[clap(long)]
     teardown: bool,
+    /// Repin all links for unpinned maps. It should be used after fixing the bpffs error
+    /// that prevented the pinned link creation. The program and other created maps are not
+    /// affected.
+    #[clap(long)]
+    maps_fix_pinning: bool,
 }
 
 // This will include your eBPF object file as raw bytes at compile-time and load it at
@@ -128,6 +133,35 @@ fn teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+fn create_pinned_links_for_maps(bpf: &mut Bpf, ifname: &str) -> Result<(), anyhow::Error> {
+    for (name, map) in bpf.maps() {
+        if let Some(path) = pinned_link_bpffs_path(ifname, name) {
+            let path_str = path.to_str().unwrap_or_default();
+            match path.try_exists() {
+                Ok(false) => {
+                    map.pin(&path)
+                        .context("Failed to create pinned link for map")?;
+                    info!("Pinned link created for map {} at {}", name, path_str);
+                }
+                Ok(true) => {
+                    info!("Map {} already pinned at {}", name, path_str);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to check if pinned link exists for map {} at {}, {}",
+                        name,
+                        path_str,
+                        e.to_string()
+                    );
+                }
+            }
+        } else {
+            info!("Skip non zon-lb map: {}", name);
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let opt = Opt::parse();
@@ -208,6 +242,8 @@ async fn main() -> Result<(), anyhow::Error> {
         let program: &mut Xdp = bpf.program_mut("zon_lb").unwrap().try_into()?;
         program.load().context("Failed to load program in kernel")?;
 
+        let mut pinned_maps = opt.maps_fix_pinning;
+
         // There is an exiting pinned link to the program
         if zlblink_exists && opt.xdp_replace {
             // TODO: show found and current program versions
@@ -225,7 +261,7 @@ async fn main() -> Result<(), anyhow::Error> {
         } else {
             info!("Try attach current program to interface: {}", &opt.ifname);
 
-            // TODO: add option to choose the
+            // TODO: add option to choose skb or driver mode
 
             // Try changing XdpFlags::default() to XdpFlags::SKB_MODE if it failed to attach
             // the XDP program with default flags
@@ -246,36 +282,17 @@ async fn main() -> Result<(), anyhow::Error> {
                 .pin(zdpath)
                 .context("Failed to create pinned link for program")?;
 
-            // TODO: add option to force recreate a map or all maps
+            pinned_maps = true;
+        }
 
-            for (name, map) in bpf.maps() {
-                if let Some(path) = pinned_link_bpffs_path(&opt.ifname, name) {
-                    match path.try_exists() {
-                        Ok(false) => {
-                            map.pin(path)
-                                .context("Failed to create pinned link for map")?;
-                        }
-                        Ok(true) => {
-                            info!(
-                                "Map {} already pinned to {}",
-                                name,
-                                path.to_str().unwrap_or_default()
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to check if map bpffs exist: {}, skip create link, {:?}",
-                                path.to_str().unwrap_or_default(),
-                                e
-                            );
-                        }
-                    }
-                }
-            }
+        if pinned_maps {
+            create_pinned_links_for_maps(&mut bpf, &opt.ifname)?;
         }
     } else {
         info!("No Xdp program was loaded, access maps only mode");
     }
+
+    // TODO: add option to reset a single map or all maps
 
     let map = mapdata_from_pinned_map(&opt.ifname, "ZLB_BACKENDS").unwrap();
     let map = Map::HashMap(map);
