@@ -18,7 +18,7 @@ use tokio::signal;
 #[clap(group(clap::ArgGroup::new("xdp")
             .required(false)
             .multiple(false)
-            .args(&["xdp_replace","xdp_teardown", "teardown"])))]
+            .args(&["xdp_replace","xdp_teardown", "teardown", "reload"])))]
 #[clap(group(clap::ArgGroup::new("xdp_mode")
             .required(false)
             .multiple(false)
@@ -27,30 +27,40 @@ struct Opt {
     /// The target network interface name
     #[clap(short, long, default_value = "lo")]
     ifname: String,
+
     /// By default the user app won't replace the current xdp program attached to the interface.
     /// This flag will instruct the user app to override the existing program.
     #[clap(long)]
     xdp_replace: bool,
+
     /// Tears down the current attached program
     #[clap(long)]
     xdp_teardown: bool,
+
     /// Try attach the program in driver mode. In this mode the network interface driver must
     /// support XDP. Linux kernels with versions 5.x support virtual interfaces like veth or tun.
     /// For physical network cards must check the kernel version and the driver XDP support.
     #[clap(long)]
     xdp_driver_mode: bool,
+
     /// Try attach the program in skb mode. This is the default attach mode and it is supported even
     /// if the network interface driver doesn't support XDP.
     #[clap(long)]
     xdp_skb_mode: bool,
-    // Tears down both the attached program and the associated maps for the input interface
-    #[clap(long)]
-    teardown: bool,
+
     /// Repin all links for unpinned maps. It should be used after fixing the bpffs error
     /// that prevented the pinned link creation. The program and other created maps are not
     /// affected.
     #[clap(long)]
     maps_fix_pinning: bool,
+
+    /// Tears down both the attached program and the associated maps for the input interface
+    #[clap(long)]
+    teardown: bool,
+
+    /// Tears downs ands reloads both xdp program and maps for the input interface
+    #[clap(long)]
+    reload: bool,
 }
 
 // This will include your eBPF object file as raw bytes at compile-time and load it at
@@ -129,7 +139,7 @@ fn teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
         match std::fs::remove_file(&path) {
             Ok(_) => {
                 info!(
-                    "Removing pinned link: {}",
+                    "Pinned link removed: {}",
                     &path.to_str().unwrap_or_default()
                 );
             }
@@ -203,24 +213,25 @@ async fn main() -> Result<(), anyhow::Error> {
     let zdpath_str = zdpath.to_str().unwrap_or_default();
 
     info!("Using zon-lb bpffs: {}", zdpath_str);
-    let zlblink_exists = zdpath
+    let mut zlblink_exists = zdpath
         .try_exists()
         .context("Can't verify if zon-lb bpffs exists")?;
 
     // Tear down the program only
-    if zlblink_exists && (opt.xdp_teardown || opt.teardown) {
-        info!(
-            "Try unpin link for program attached to interface: {}",
-            &opt.ifname
-        );
-
+    if zlblink_exists && (opt.xdp_teardown || opt.teardown || opt.reload) {
         let link =
             PinnedLink::from_pin(&zdpath).context("Failed to load pinned link for zon-lb bpffs")?;
         link.unpin().context("Can't unpin program link")?;
+
+        info!(
+            "Pinned link for program attached to {} removed: {}",
+            &opt.ifname, zdpath_str
+        );
+        zlblink_exists = false;
     }
 
     // Teardown the maps associated with the interface
-    if opt.teardown {
+    if opt.teardown || opt.reload {
         match pinned_link_name(&opt.ifname, "") {
             None => {
                 warn!("Invalid link for interface: {}", &opt.ifname);
@@ -231,12 +242,15 @@ async fn main() -> Result<(), anyhow::Error> {
         };
     }
 
-    // TODO: add reload option teardown + load
+    if opt.teardown || opt.xdp_teardown || opt.reload {
+        info!("Tear down for interface: {} complete", &opt.ifname);
 
-    if opt.teardown || opt.xdp_teardown {
-        info!("Tear down program for interface: {} complete", &opt.ifname);
-        return Ok(());
+        if !opt.reload {
+            return Ok(());
+        }
     }
+
+    // TODO: show loaded xdp programs on interfaces
 
     // TODO: aya::programs::loaded_programs iterate over all programs and
     // check if zon-lb is running. Also, check if there is another xdp
