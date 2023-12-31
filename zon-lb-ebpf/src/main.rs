@@ -35,6 +35,10 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 #[map]
 static ZLB_BACKENDS: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(1024, 0);
 
+fn get_backend(ip: u32) -> u32 {
+    *unsafe { ZLB_BACKENDS.get(&ip).unwrap_or(&0) }
+}
+
 #[xdp]
 pub fn zon_lb(ctx: XdpContext) -> u32 {
     match try_zon_lb(ctx) {
@@ -61,6 +65,12 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
     let src_addr = u32::from_be(unsafe { (*ipv4hdr).src_addr });
     let dst_addr = u32::from_be(unsafe { (*ipv4hdr).dst_addr });
+
+    if get_backend(src_addr) != 0 {
+        unsafe {
+            (*(ipv4hdr as *mut Ipv4Hdr)).src_addr = dst_addr;
+        }
+    }
 
     Ok(xdp_action::XDP_PASS)
 }
