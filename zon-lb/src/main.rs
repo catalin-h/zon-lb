@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context};
 use aya::{
     include_bytes_aligned,
-    maps::{loaded_maps, HashMap, Map, MapData, MapInfo},
+    maps::{HashMap, Map, MapData, MapInfo},
     programs::{
         links::{FdLink, PinnedLink},
         loaded_links, loaded_programs, ProgramInfo, Xdp, XdpFlags,
@@ -10,8 +10,7 @@ use aya::{
 };
 use aya_log::BpfLogger;
 use aya_obj::generated::bpf_prog_type;
-use clap::{builder::NonEmptyStringValueParser, Parser};
-use libc::printf;
+use clap::Parser;
 use log::{debug, info, warn};
 use std::{
     collections::HashMap as StdHashMap,
@@ -295,10 +294,25 @@ fn list_info() -> Result<(), anyhow::Error> {
         let header = format!("program_id: {}", id);
         println!("{header}");
         println!("tag: {:>x}", info.prog.tag());
-        let ifname = if_index_to_name(info.ifindex).unwrap_or(info.ifindex.to_string());
-        println!("ifname: {}", ifname);
-        println!("link_id: {}", info.link_id);
-        // TODO: show pin path
+        let ifname = if_index_to_name(info.ifindex);
+        match ifname {
+            Some(name) => {
+                println!("ifname: {}", name);
+                if let Some(pb) = pinned_link_bpffs_path(&name, "") {
+                    match pb.try_exists() {
+                        Ok(true) => println!("pin: {}", pb.to_string_lossy()),
+                        _ => {}
+                    }
+                }
+            }
+            None => {
+                println!("ifindex: {}", info.ifindex);
+            }
+        }
+        if info.link_id != 0 {
+            println!("link_id: {}", info.link_id);
+        }
+
         let mut ids = info.prog.map_ids().unwrap_or_default();
         ids.sort();
         println!(
