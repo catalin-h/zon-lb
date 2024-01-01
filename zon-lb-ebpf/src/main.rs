@@ -4,7 +4,7 @@
 use aya_bpf::{
     bindings::xdp_action,
     macros::{map, xdp},
-    maps::HashMap,
+    maps::{Array, HashMap},
     programs::XdpContext,
 };
 use aya_log_ebpf::info;
@@ -16,6 +16,7 @@ use network_types::{
     tcp::TcpHdr,
     udp::UdpHdr,
 };
+use zon_lb_common::ZonInfo;
 
 #[inline(always)]
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
@@ -34,6 +35,9 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 // Global common maps start just with ZLBX
 #[map]
 static ZLB_BACKENDS: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(1024, 0);
+
+#[map]
+static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
 
 fn get_backend(ip: u32) -> u32 {
     *unsafe { ZLB_BACKENDS.get(&ip).unwrap_or(&0) }

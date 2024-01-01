@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context};
 use aya::{
     include_bytes_aligned,
-    maps::{HashMap, Map, MapData, MapInfo},
+    maps::{Array, HashMap, Map, MapData, MapInfo},
     programs::{
         links::{FdLink, PinnedLink},
         loaded_links, loaded_programs, ProgramInfo, Xdp, XdpFlags,
@@ -18,6 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::signal;
+use zon_lb_common::ZonInfo;
 
 #[derive(Debug, Parser)]
 #[clap(group(clap::ArgGroup::new("xdp")
@@ -114,14 +115,7 @@ fn pinned_link_bpffs_path(ifname: &str, map_name: &str) -> Option<PathBuf> {
 
 fn mapdata_from_pinned_map(ifname: &str, map_name: &str) -> Option<MapData> {
     pinned_link_bpffs_path(ifname, map_name).map_or(None, |path| match MapData::from_pin(&path) {
-        Err(e) => {
-            warn!(
-                "Failed to get pinned map from link {:?}, {}",
-                &path,
-                e.to_string()
-            );
-            None
-        }
+        Err(_) => None,
         Ok(m) => Some(m),
     })
 }
@@ -167,7 +161,6 @@ fn teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-// TODO: pin AYA and other maps
 fn create_pinned_links_for_maps(bpf: &mut Bpf, ifname: &str) -> Result<(), anyhow::Error> {
     for (name, map) in bpf.maps() {
         if let Some(path) = pinned_link_bpffs_path(ifname, name) {
@@ -197,9 +190,19 @@ fn create_pinned_links_for_maps(bpf: &mut Bpf, ifname: &str) -> Result<(), anyho
     Ok(())
 }
 
-// List formatting
+// TODO: add struct to set/get ZLB_INFO data
+fn get_zon_info(ifname: &str) -> Result<Array<MapData, ZonInfo>, anyhow::Error> {
+    match mapdata_from_pinned_map(ifname, "ZLB_INFO") {
+        Some(map) => {
+            let map = Map::Array(map);
+            let map: Array<_, ZonInfo> = map.try_into()?;
+            Ok(map)
+        }
+        _ => Err(anyhow!("No ZLB_INFO map")),
+    }
+}
 
-//
+/// List formatting
 fn list_info() -> Result<(), anyhow::Error> {
     struct ZLBInfo {
         prog: ProgramInfo,
@@ -262,9 +265,7 @@ fn list_info() -> Result<(), anyhow::Error> {
     // present in the program info id list
 
     for (id, info) in pmap.iter() {
-        let header = format!("\r\nprogram_id: {}", id);
-        println!("{header}");
-        // TODO: show version
+        println!("\r\nprogram_id: {}", id);
         println!("tag: {:>x}", info.prog.tag());
         let dt: DateTime<Local> = info.prog.loaded_at().into();
         println!("loaded_at: {}", dt.format("%H:%M:%S %d-%m-%Y"));
@@ -278,6 +279,15 @@ fn list_info() -> Result<(), anyhow::Error> {
                         _ => {}
                     }
                 }
+                match get_zon_info(&name) {
+                    Ok(map) => match map.get(&0, 0) {
+                        Ok(info) => {
+                            println!("version: {}", info.version);
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
             }
             None => {
                 println!("ifindex: {}", info.ifindex);
@@ -289,6 +299,7 @@ fn list_info() -> Result<(), anyhow::Error> {
 
         let mut ids = info.prog.map_ids().unwrap_or_default();
         ids.sort();
+
         println!(
             "maps_ids: {}",
             ids.iter()
@@ -330,7 +341,7 @@ fn list_info() -> Result<(), anyhow::Error> {
                 map.id().to_string(),
                 map.map_type().to_string(),
                 map.max_entries().to_string(),
-                map.map_flags().to_string(),
+                format!("{:x}h", map.map_flags()),
                 pin,
             ];
             for (i, s) in row.iter().enumerate() {
@@ -516,6 +527,11 @@ async fn main() -> Result<(), anyhow::Error> {
         if pinned_maps {
             create_pinned_links_for_maps(&mut bpf, &opt.ifname)?;
         }
+
+        // Initialize program info and start params
+        let mut info: Array<_, ZonInfo> = Array::try_from(bpf.map_mut("ZLB_INFO").unwrap())?;
+        info.set(0, ZonInfo::new(), 0)
+            .context("Failed to set zon info")?;
     } else {
         info!("No Xdp program was loaded, access maps only mode");
     }
