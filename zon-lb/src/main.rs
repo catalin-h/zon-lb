@@ -10,12 +10,12 @@ use aya::{
 };
 use aya_log::BpfLogger;
 use aya_obj::generated::bpf_prog_type;
+use chrono::{DateTime, Local};
 use clap::Parser;
 use log::{debug, info, warn};
 use std::{
     collections::HashMap as StdHashMap,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 use tokio::signal;
 
@@ -294,6 +294,8 @@ fn list_info() -> Result<(), anyhow::Error> {
         let header = format!("program_id: {}", id);
         println!("{header}");
         println!("tag: {:>x}", info.prog.tag());
+        let dt: DateTime<Local> = info.prog.loaded_at().into();
+        println!("loaded_at: {}", dt.format("%H:%M:%S %d-%m-%Y"));
         let ifname = if_index_to_name(info.ifindex);
         match ifname {
             Some(name) => {
