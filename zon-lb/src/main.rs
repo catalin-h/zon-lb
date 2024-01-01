@@ -198,35 +198,7 @@ fn create_pinned_links_for_maps(bpf: &mut Bpf, ifname: &str) -> Result<(), anyho
 }
 
 // List formatting
-//
-// program_id: 565
-// ---------------
-//     version:
-//     tag:
-//     if_name:
-//     pin:
-//     link_id:
-//     loaded_at:
-//     map_ids: ....
-//     -------------
-//     name: ..
-//     id: ..
-//     type: ..
-//     max:
-//     -------------
-//     name: ..
-//     id: ..
-//     type: ..
-//     max:
-//
-// id    if_name  loaded_at                 pinned  version  tag
-// --------------------------------------------------------------------------
-// 564   lo       2023-12-30T22:31:13+0200  Yes     0        8b7d45ef8991ca24
-// Maps: 555,556,..
-// id    name          type   max_entries  pin
-// ---------------------------------------------
-// 555  ZLB_BACKENDS   hash   1024        /sys/fs/bpf/zlb_lo_backends
-// 556  ZLB_INDEX      hash   1024        /sys/fs/bpf/zlb_lo_index
+
 //
 fn list_info() -> Result<(), anyhow::Error> {
     struct ZLBInfo {
@@ -234,7 +206,6 @@ fn list_info() -> Result<(), anyhow::Error> {
         link_id: u32,
         ifindex: u32,
     }
-
     let mut pmap: StdHashMap<u32, ZLBInfo> = StdHashMap::new();
 
     let header = "Loaded zon-lb programs";
@@ -291,13 +262,14 @@ fn list_info() -> Result<(), anyhow::Error> {
     // present in the program info id list
 
     for (id, info) in pmap.iter() {
-        let header = format!("program_id: {}", id);
+        let header = format!("\r\nprogram_id: {}", id);
         println!("{header}");
+        // TODO: show version
         println!("tag: {:>x}", info.prog.tag());
         let dt: DateTime<Local> = info.prog.loaded_at().into();
         println!("loaded_at: {}", dt.format("%H:%M:%S %d-%m-%Y"));
         let ifname = if_index_to_name(info.ifindex);
-        match ifname {
+        match &ifname {
             Some(name) => {
                 println!("ifname: {}", name);
                 if let Some(pb) = pinned_link_bpffs_path(&name, "") {
@@ -323,25 +295,68 @@ fn list_info() -> Result<(), anyhow::Error> {
                 .map(|id| id.to_string() + " ")
                 .collect::<String>()
         );
-        for id in ids {
-            match MapInfo::from_id(id) {
-                Ok(map) => {
-                    let name = map.name_as_str().unwrap_or_default();
-                    if !name.to_lowercase().starts_with("zlb") {
-                        continue;
+
+        let mut tab: Vec<Vec<String>> = vec![vec![
+            "name".to_string(),
+            "id".to_string(),
+            "type".to_string(),
+            "max".to_string(),
+            "flags".to_string(),
+            "pin".to_string(),
+        ]];
+        let mut sizes = tab[0].iter().map(|s| s.len()).collect::<Vec<_>>();
+        for (name, map) in ids.iter().filter_map(|&id| {
+            MapInfo::from_id(id).map_or(None, |map| match map.name_as_str() {
+                Some(name) => Some((name.to_string(), map)),
+                _ => None,
+            })
+        }) {
+            let pin = match &ifname {
+                Some(iname) => {
+                    if let Some(pb) = pinned_link_bpffs_path(iname, &name) {
+                        match pb.try_exists() {
+                            Ok(true) => pb.to_string_lossy().to_string(),
+                            Ok(false) => "n/a".to_string(),
+                            Err(e) => e.to_string(),
+                        }
+                    } else {
+                        "n/a".to_string()
                     }
-
-                    println!("\r\n{name}\r\n{0:-<1$}", "-", name.len());
-                    println!("id: {}", map.id());
-                    println!("max: {}", map.max_entries());
-                    println!("flags: {}", map.map_flags());
-
-                    // TODO: show pin path
                 }
-                Err(_) => {}
+                _ => "err".to_string(),
+            };
+            let row = vec![
+                name,
+                map.id().to_string(),
+                map.map_type().to_string(),
+                map.max_entries().to_string(),
+                map.map_flags().to_string(),
+                pin,
+            ];
+            for (i, s) in row.iter().enumerate() {
+                sizes[i] = sizes[i].max(s.len());
+            }
+            tab.push(row);
+        }
+
+        let mut hdr_len = 0_usize;
+        for (i, row) in tab.iter().enumerate() {
+            let line = format!(
+                "{}",
+                sizes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &size)| format!("{0:<1$}", row[i], size + 1))
+                    .collect::<String>()
+            );
+            println!("{}", line);
+            if i == 0 {
+                hdr_len = line.len() - sizes[row.len() - 1] + row[row.len() - 1].len() - 1;
+                println!("{0:-<1$}", '-', hdr_len);
+            } else if i == tab.len() - 1 {
+                println!("{0:-<1$}", '-', hdr_len);
             }
         }
-        println!("{0:-<1$}", "-", header.len());
     }
 
     Ok(())
