@@ -16,7 +16,7 @@ use network_types::{
     tcp::TcpHdr,
     udp::UdpHdr,
 };
-use zon_lb_common::ZonInfo;
+use zon_lb_common::{ZonInfo, EP4, EP6, LB, MAX_BACKENDS, MAX_LB};
 
 #[inline(always)]
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
@@ -38,6 +38,18 @@ static ZLB_BACKENDS: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(1
 
 #[map]
 static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
+
+#[map]
+static ZLB_LB4FRONTS: HashMap<EP4, LB> = HashMap::<EP4, LB>::with_max_entries(MAX_LB, 0);
+
+#[map]
+static ZLB_V4BACKS: Array<EP4> = Array::with_max_entries(MAX_BACKENDS, 0);
+
+#[map]
+static ZLB_LB6FRONTS: HashMap<EP6, LB> = HashMap::<EP6, LB>::with_max_entries(MAX_LB, 0);
+
+#[map]
+static ZLB_V6BACKS: Array<EP6> = Array::with_max_entries(MAX_BACKENDS, 0);
 
 fn get_backend(ip: u32) -> u32 {
     *unsafe { ZLB_BACKENDS.get(&ip).unwrap_or(&0) }
@@ -69,6 +81,7 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
     let src_addr = u32::from_be(unsafe { (*ipv4hdr).src_addr });
     let dst_addr = u32::from_be(unsafe { (*ipv4hdr).dst_addr });
+    let proto = unsafe { (*ipv4hdr).proto };
 
     if get_backend(src_addr) != 0 {
         unsafe {
