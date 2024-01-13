@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::signal;
-use zon_lb_common::ZonInfo;
+use zon_lb_common::{BEKey, ZonInfo, BE};
 
 #[derive(Debug, Parser)]
 #[clap(group(clap::ArgGroup::new("xdp")
@@ -542,10 +542,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let map = mapdata_from_pinned_map(&opt.ifname, "ZLB_BACKENDS").unwrap();
     let map = Map::HashMap(map);
-    let mut blocklist: HashMap<_, u32, u32> = map.try_into()?;
-    let key = blocklist.keys().count();
+    let mut blocklist: HashMap<_, BEKey, BE> = map.try_into()?;
+    let key = blocklist.keys().count() as u32;
+    let bekey: BEKey = key.into();
 
-    match blocklist.insert(key as u32, 0, 0) {
+    match blocklist.insert(&bekey, BE::default(), 0) {
         Ok(_) => info!("Key: {} inserted", key),
         _ => warn!("Key: {} not inserted", key),
     }

@@ -3,7 +3,7 @@
 use bitflags;
 
 pub const VERSION: u32 = 0x0000001;
-pub const MAX_LB: u32 = 64;
+pub const MAX_GROUPS: u32 = 64;
 pub const MAX_BACKENDS: u32 = 1024;
 
 #[repr(C)]
@@ -23,7 +23,7 @@ impl ZonInfo {
 
 bitflags::bitflags! {
 #[derive(Clone, Copy, Debug, Default)]
-pub struct LBFlags: u32 {
+pub struct EPFlags: u32 {
     const ENABLE = 1;
     const IPV4 = 2;
     const IPV6 = 4;
@@ -31,23 +31,27 @@ pub struct LBFlags: u32 {
 }
 }
 
+/// Holds the backends info (count, group id) for the endpoint that needs load balacing.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct LB {
-    first: usize,
-    last: usize,
-    flags: LBFlags,
+pub struct BEGroup {
+    /// The backend group id
+    pub gid: u16,
+    /// The current backends count in this group
+    pub becount: u16,
+    /// The flags instructs the xdp program to update the IP or/and Port
+    pub flags: EPFlags,
 }
 
 #[cfg(feature = "user")]
-unsafe impl aya::Pod for LB {}
+unsafe impl aya::Pod for BEGroup {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EP6 {
-    address: [u8; 16],
-    port: u16,
-    proto: u16,
+    pub address: [u8; 16],
+    pub port: u16,
+    pub proto: u16,
 }
 
 #[cfg(feature = "user")]
@@ -56,10 +60,47 @@ unsafe impl aya::Pod for EP6 {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EP4 {
-    address: u32,
-    port: u16,
-    proto: u16,
+    pub address: u32,
+    pub port: u16,
+    pub proto: u16,
 }
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for EP4 {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BEKey {
+    pub gid: u16,
+    pub index: u16,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for BEKey {}
+
+impl From<u32> for BEKey {
+    fn from(key: u32) -> Self {
+        Self {
+            gid: (key >> 16) as u16,
+            index: (key & 0xFFFF) as u16,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BE {
+    /// Holds both an IPv4 and IPv6 address (big-endian)
+    pub address: [u8; 16],
+    /// The backend listening port and it should be used
+    /// only if PORT is set in the LB flags.
+    /// The default value is 0 and it should be ignored regardless of
+    /// the LB flag.
+    pub port: u16,
+    /// The group id for current backend. It allows to group backends
+    /// servicing an LB frontend.
+    pub gid: u16,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for BE {}

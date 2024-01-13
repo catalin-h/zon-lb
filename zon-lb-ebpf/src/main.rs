@@ -8,7 +8,7 @@ use aya_bpf::{
     programs::XdpContext,
 };
 use aya_log_ebpf::info;
-use core::mem;
+use core::{cell::UnsafeCell, mem};
 use network_types::{
     eth::{EthHdr, EtherType},
     icmp::IcmpHdr,
@@ -16,7 +16,7 @@ use network_types::{
     tcp::TcpHdr,
     udp::UdpHdr,
 };
-use zon_lb_common::{ZonInfo, EP4, EP6, LB, MAX_BACKENDS, MAX_LB};
+use zon_lb_common::{BEGroup, BEKey, ZonInfo, BE, EP4, EP6, MAX_BACKENDS, MAX_GROUPS};
 
 #[inline(always)]
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
@@ -34,25 +34,20 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 // Per interface maps start with ZLB.
 // Global common maps start just with ZLBX
 #[map]
-static ZLB_BACKENDS: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(1024, 0);
-
-#[map]
 static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
 
 #[map]
-static ZLB_LB4FRONTS: HashMap<EP4, LB> = HashMap::<EP4, LB>::with_max_entries(MAX_LB, 0);
+static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::with_max_entries(MAX_GROUPS, 0);
 
 #[map]
-static ZLB_V4BACKS: Array<EP4> = Array::with_max_entries(MAX_BACKENDS, 0);
+static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::with_max_entries(MAX_GROUPS, 0);
 
 #[map]
-static ZLB_LB6FRONTS: HashMap<EP6, LB> = HashMap::<EP6, LB>::with_max_entries(MAX_LB, 0);
+static ZLB_BACKENDS: HashMap<BEKey, BE> = HashMap::<BEKey, BE>::with_max_entries(MAX_BACKENDS, 0);
 
-#[map]
-static ZLB_V6BACKS: Array<EP6> = Array::with_max_entries(MAX_BACKENDS, 0);
-
-fn get_backend(ip: u32) -> u32 {
-    *unsafe { ZLB_BACKENDS.get(&ip).unwrap_or(&0) }
+fn get_backend(index: u32) -> Option<&'static BE> {
+    let key: BEKey = index.into();
+    unsafe { ZLB_BACKENDS.get(&key) }
 }
 
 #[xdp]
@@ -83,7 +78,7 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     let dst_addr = u32::from_be(unsafe { (*ipv4hdr).dst_addr });
     let proto = unsafe { (*ipv4hdr).proto };
 
-    if get_backend(src_addr) != 0 {
+    if get_backend(src_addr).is_some() {
         unsafe {
             (*(ipv4hdr as *mut Ipv4Hdr)).src_addr = dst_addr;
         }
