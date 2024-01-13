@@ -1,3 +1,5 @@
+mod helpers;
+
 use anyhow::{anyhow, Context};
 use aya::{
     include_bytes_aligned,
@@ -6,17 +8,15 @@ use aya::{
         links::{FdLink, PinnedLink},
         loaded_links, loaded_programs, ProgramInfo, Xdp, XdpFlags,
     },
-    Bpf, BpfLoader, Btf,
+    BpfLoader, Btf,
 };
 use aya_log::BpfLogger;
 use aya_obj::generated::bpf_prog_type;
 use chrono::{DateTime, Local};
 use clap::Parser;
+use helpers::*;
 use log::{debug, info, warn};
-use std::{
-    collections::HashMap as StdHashMap,
-    path::{Path, PathBuf},
-};
+use std::collections::HashMap as StdHashMap;
 use tokio::signal;
 use zon_lb_common::{BEKey, ZonInfo, BE};
 
@@ -83,112 +83,6 @@ const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/rel
 
 /// Program name or main function of xdp program
 const PROG_NAME: &str = "zon_lb";
-
-//
-// Pinned link naming scheme used by the loading user app
-//  program: zlb_<ifname>
-//  prog maps: zlb_<ifname>_<map-name>
-//  common maps: zlbx_<lowcase_name>
-//
-fn pinned_link_name(ifname: &str, map_name: &str) -> Option<String> {
-    if map_name.is_empty() {
-        Some(format!("zlb_{}", ifname))
-    } else if ifname.is_empty() && map_name.starts_with("ZLBX") {
-        Some(map_name.to_ascii_lowercase())
-    } else if !ifname.is_empty() && map_name.starts_with("ZLB") && map_name.len() >= 5 {
-        let mut name = map_name.to_ascii_lowercase();
-        if map_name.starts_with("ZLB_") {
-            name.insert(3, '_');
-        } else {
-            name.insert_str(3, "__");
-        }
-        name.insert_str(4, ifname);
-        Some(name)
-    } else {
-        None
-    }
-}
-
-fn pinned_link_bpffs_path(ifname: &str, map_name: &str) -> Option<PathBuf> {
-    pinned_link_name(ifname, map_name).map(|pname| Path::new("/sys/fs/bpf").join(pname))
-}
-
-fn mapdata_from_pinned_map(ifname: &str, map_name: &str) -> Option<MapData> {
-    pinned_link_bpffs_path(ifname, map_name).map_or(None, |path| match MapData::from_pin(&path) {
-        Err(_) => None,
-        Ok(m) => Some(m),
-    })
-}
-
-fn teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
-    let iter = std::fs::read_dir("/sys/fs/bpf/").context("Failed to iterate bpffs")?;
-
-    for path in iter
-        .into_iter()
-        .filter_map(|entry| entry.map_or(None, |p| Some(p.path())))
-        .filter_map(|path| if path.is_file() { Some(path) } else { None })
-        .filter_map(|path| {
-            if path
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default()
-                .starts_with(prefix)
-            {
-                Some(path)
-            } else {
-                None
-            }
-        })
-    {
-        match std::fs::remove_file(&path) {
-            Ok(_) => {
-                info!(
-                    "Pinned link removed: {}",
-                    &path.to_str().unwrap_or_default()
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to remove pinned link: {}, e: {}",
-                    &path.to_str().unwrap_or_default(),
-                    e.to_string()
-                );
-            }
-        };
-    }
-
-    Ok(())
-}
-
-fn create_pinned_links_for_maps(bpf: &mut Bpf, ifname: &str) -> Result<(), anyhow::Error> {
-    for (name, map) in bpf.maps() {
-        if let Some(path) = pinned_link_bpffs_path(ifname, name) {
-            let path_str = path.to_str().unwrap_or_default();
-            match path.try_exists() {
-                Ok(false) => {
-                    map.pin(&path)
-                        .context("Failed to create pinned link for map")?;
-                    info!("Pinned link created for map {} at {}", name, path_str);
-                }
-                Ok(true) => {
-                    info!("Map {} already pinned at {}", name, path_str);
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to check if pinned link exists for map {} at {}, {}",
-                        name,
-                        path_str,
-                        e.to_string()
-                    );
-                }
-            }
-        } else {
-            info!("Skip non zon-lb map: {}", name);
-        }
-    }
-    Ok(())
-}
 
 // TODO: add struct to set/get ZLB_INFO data
 fn get_zon_info(ifname: &str) -> Result<Array<MapData, ZonInfo>, anyhow::Error> {
@@ -371,19 +265,6 @@ fn list_info() -> Result<(), anyhow::Error> {
     }
 
     Ok(())
-}
-
-fn if_index_to_name(index: u32) -> Option<String> {
-    let mut name = [0_i8; libc::IF_NAMESIZE];
-    let iname = unsafe { libc::if_indextoname(index, name.as_mut_ptr()) };
-
-    if iname.is_null() {
-        None
-    } else {
-        let str = unsafe { std::ffi::CStr::from_ptr(iname) };
-        let str = str.to_string_lossy();
-        Some(str.to_string())
-    }
 }
 
 #[tokio::main]
