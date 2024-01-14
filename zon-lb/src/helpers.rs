@@ -129,7 +129,26 @@ pub fn ifindex(ifname: &str) -> Result<u32, anyhow::Error> {
     let c_interface = std::ffi::CString::new(ifname)?;
     let if_index = unsafe { libc::if_nametoindex(c_interface.as_ptr()) };
     if if_index == 0 {
-        return Err(anyhow!("No interface named {}", ifname));
+        Err(anyhow!("No interface named {}", ifname))
+    } else {
+        Ok(if_index)
     }
-    Ok(if_index)
+}
+
+pub fn _increase_memlocked() -> Result<(), anyhow::Error> {
+    // Bump the memlock rlimit. This is needed for older kernels that don't use the
+    // new memcg based accounting, see https://lwn.net/Articles/837122/
+    let rlim = libc::rlimit {
+        rlim_cur: libc::RLIM_INFINITY,
+        rlim_max: libc::RLIM_INFINITY,
+    };
+    let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
+    if ret != 0 {
+        Err(anyhow!(
+            "remove limit on locked memory failed, ret is: {}",
+            ret
+        ))
+    } else {
+        Ok(())
+    }
 }
