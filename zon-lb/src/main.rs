@@ -106,16 +106,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let opt: &Cli = &cli;
 
-    ifindex(&cli.ifname)?;
-
-    // Default location for bpffs
-    let zdpath = pinned_link_bpffs_path(&opt.ifname, "").unwrap();
+    let (zdpath, mut zlblink_exists) = prog_bpffs(&cli.ifname)?;
     let zdpath_str = zdpath.to_str().unwrap_or_default();
-
     info!("Using zon-lb bpffs: {}", zdpath_str);
-    let mut zlblink_exists = zdpath
-        .try_exists()
-        .context("Can't verify if zon-lb bpffs exists")?;
 
     // Tear down the program only
     if zlblink_exists && (opt.xdp_teardown || opt.teardown || opt.reload) {

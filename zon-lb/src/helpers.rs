@@ -125,7 +125,7 @@ pub(crate) fn if_index_to_name(index: u32) -> Option<String> {
     }
 }
 
-pub fn ifindex(ifname: &str) -> Result<u32, anyhow::Error> {
+fn ifindex(ifname: &str) -> Result<u32, anyhow::Error> {
     let c_interface = std::ffi::CString::new(ifname)?;
     let if_index = unsafe { libc::if_nametoindex(c_interface.as_ptr()) };
     if if_index == 0 {
@@ -151,4 +151,18 @@ pub fn _increase_memlocked() -> Result<(), anyhow::Error> {
     } else {
         Ok(())
     }
+}
+
+pub fn prog_bpffs(ifname: &str) -> Result<(PathBuf, bool), anyhow::Error> {
+    // Check if name exists
+    ifindex(ifname)?;
+
+    // Default location for bpffs
+    let zdpath = pinned_link_bpffs_path(ifname, "").unwrap();
+
+    let zlblink_exists = zdpath
+        .try_exists()
+        .context("Can't verify if zon-lb bpffs exists")?;
+
+    Ok((zdpath, zlblink_exists))
 }
