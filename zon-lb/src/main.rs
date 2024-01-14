@@ -1,7 +1,7 @@
 mod helpers;
 mod info;
 
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use aya::{
     include_bytes_aligned,
     maps::{Array, HashMap, Map},
@@ -117,11 +117,7 @@ async fn main() -> Result<(), anyhow::Error> {
         debug!("remove limit on locked memory failed, ret is: {}", ret);
     }
 
-    let c_interface = std::ffi::CString::new((&opt.ifname).as_str()).unwrap();
-    let if_index = unsafe { libc::if_nametoindex(c_interface.as_ptr()) };
-    if if_index == 0 {
-        return Err(anyhow!("No interface {}", &opt.ifname));
-    }
+    ifindex(&cli.ifname)?;
 
     // Default location for bpffs
     let zdpath = pinned_link_bpffs_path(&opt.ifname, "").unwrap();
