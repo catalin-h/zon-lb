@@ -12,17 +12,58 @@ use aya::{
     BpfLoader, Btf,
 };
 use aya_log::BpfLogger;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use helpers::*;
 use info::*;
 use log::{info, warn};
 use tokio::signal;
 use zon_lb_common::{BEKey, ZonInfo, BE};
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+enum ProgAttachMode {
+    /// Try attach the program in driver mode. In this mode the network interface driver must
+    /// support XDP. Linux kernels with versions 5.x support virtual interfaces like veth or tun.
+    /// For physical network cards must check the kernel version and the driver XDP support.
+    Driver,
+    /// Try attach the program in skb mode. This is the default attach mode and it is supported even
+    /// if the network interface driver doesn't support XDP.
+    Skb,
+}
+
+#[derive(clap::Args, Debug)]
+struct ProgLoadOpt {
+    #[arg(value_enum)]
+    mode: Option<ProgAttachMode>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum ProgAction {
+    /// Loads the xdp program to target interface
+    Load(ProgLoadOpt),
+    /// Unloads only the current xdp program but leaves any maps untouched
+    Unload,
+    /// Atomically replaces the current program for current interface
+    Replace,
+    /// Tears down both the program and any attached maps and link for the provided interface
+    Teardown,
+    /// Reloads both the program and maps for the input interface
+    Reload,
+}
+
+#[derive(clap::Args, Debug)]
+struct ProgOpt {
+    #[clap(default_value = "lo")]
+    ifname: String,
+    #[clap(subcommand)]
+    action: ProgAction,
+}
+
 #[derive(clap::Subcommand, Debug)]
 enum Command {
     /// Shows information about loaded programs and the used maps
     Info,
+    /// Program only options: load, unload and replace
+    Prog(ProgOpt),
 }
 
 #[derive(Debug, Parser)]
@@ -98,6 +139,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let result = match &cli.command {
         Command::Info => list_info(),
+        _ => Ok(()),
     };
 
     if result.is_ok() {
