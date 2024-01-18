@@ -70,11 +70,27 @@ struct ProgOpt {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum GroupAction {
+    /// Adds a new group of backends for load balancing
+    Add,
+}
+
+#[derive(clap::Args, Debug)]
+struct GroupOpt {
+    #[clap(default_value = "lo")]
+    ifname: String,
+    #[clap(subcommand)]
+    action: GroupAction,
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum Command {
     /// Shows information about loaded programs and the used maps
     Info,
     /// Program only options: load, unload and replace
     Prog(ProgOpt),
+    /// Backend group manage options
+    Group(GroupOpt),
 }
 
 #[derive(Debug, Parser)]
@@ -134,30 +150,12 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    let cli = Cli::parse();
-
-    env_logger::init();
-
-    let result = match &cli.command {
-        Command::Info => list_info(),
-        Command::Prog(opt) => handle_prog(opt),
-    };
-
-    if result.is_ok() {
-        return Ok(());
-    }
-
-    // TODO: aya::programs::loaded_programs iterate over all programs and
-    // check if zon-lb is running. Also, check if there is another xdp
-    // program attached to current interface.
+fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
     // TODO: add option to reset a specific map
     // TODO: add option to add/update/delete a specific value from a specific map
     // TODO: add option to dump entries from a specific map
-    // TODO: add option to enable debug mode and listen for messages
 
-    let map = mapdata_from_pinned_map(&cli.ifname, "ZLB_BACKENDS").unwrap();
+    let map = mapdata_from_pinned_map(&opt.ifname, "ZLB_BACKENDS").unwrap();
     let map = Map::HashMap(map);
     let mut blocklist: HashMap<_, BEKey, BE> = map.try_into()?;
     let key = blocklist.keys().count() as u32;
@@ -167,6 +165,26 @@ async fn main() -> Result<(), anyhow::Error> {
         Ok(_) => info!("Key: {} inserted", key),
         _ => warn!("Key: {} not inserted", key),
     }
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    let cli = Cli::parse();
+
+    env_logger::init();
+
+    match &cli.command {
+        Command::Info => list_info(),
+        Command::Prog(opt) => handle_prog(opt),
+        Command::Group(opt) => handle_group(opt),
+    }?;
+
+    // TODO: aya::programs::loaded_programs iterate over all programs and
+    // check if zon-lb is running. Also, check if there is another xdp
+    // program attached to current interface.
+    // TODO: add option to enable debug mode and listen for messages
 
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
