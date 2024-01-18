@@ -1,5 +1,6 @@
 mod helpers;
 mod info;
+mod prog;
 
 use anyhow::Context;
 use aya::{
@@ -16,6 +17,7 @@ use clap::{Parser, ValueEnum};
 use helpers::*;
 use info::*;
 use log::{info, warn};
+use prog::*;
 use tokio::signal;
 use zon_lb_common::{BEKey, ZonInfo, BE};
 
@@ -131,6 +133,15 @@ const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/rel
 /// Program name or main function of xdp program
 pub const PROG_NAME: &str = "zon_lb";
 
+fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
+    let mut prg = prog::Prog::new(&opt.ifname)?;
+    match opt.action {
+        ProgAction::Teardown => prg.teardown(),
+        ProgAction::Unload => prg.unload(),
+        _ => Ok(()),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -139,7 +150,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let result = match &cli.command {
         Command::Info => list_info(),
-        _ => Ok(()),
+        Command::Prog(opt) => handle_prog(opt),
     };
 
     if result.is_ok() {
