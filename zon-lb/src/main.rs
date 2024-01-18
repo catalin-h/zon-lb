@@ -160,6 +160,9 @@ fn bpf_instance(ebpf: &[u8]) -> Result<aya::Bpf, anyhow::Error> {
 
 fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
     let mut prg = Prog::new(&opt.ifname)?;
+
+    info!("Using zon-lb bpffs: {}", prg.link_path_str);
+
     match &opt.action {
         ProgAction::Teardown => prg.teardown(),
         ProgAction::Unload => prg.unload(),

@@ -16,7 +16,7 @@ use zon_lb_common::ZonInfo;
 pub struct Prog {
     ifname: String,
     link_path: PathBuf,
-    link_path_str: String,
+    pub link_path_str: String,
     link_exists: bool,
 }
 
@@ -24,8 +24,6 @@ impl Prog {
     pub fn new(ifname: &str) -> Result<Self, anyhow::Error> {
         let (zdpath, zlblink_exists) = prog_bpffs(ifname)?;
         let path_str = zdpath.to_string_lossy().to_string();
-
-        info!("Using zon-lb bpffs: {}", path_str);
 
         Ok(Self {
             ifname: ifname.to_string(),
