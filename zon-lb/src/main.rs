@@ -61,7 +61,7 @@ enum ProgAction {
     /// Tears down both the program and any attached maps and link for the provided interface
     Teardown,
     /// Reloads both the program and maps for the input interface
-    Reload,
+    Reload(ProgLoadOpt),
 }
 
 #[derive(clap::Args, Debug)]
@@ -165,10 +165,14 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
         ProgAction::Unload => prg.unload(),
         ProgAction::Replace => prg.replace(&mut bpf_instance(ZONLB)?),
         ProgAction::Load(load_opt) => {
-            info!("Try attach current program to interface: {}", &opt.ifname);
+            info!("Try attach program to interface: {}", &opt.ifname);
             prg.load(&mut bpf_instance(ZONLB)?, load_opt.xdp_flags())
         }
-        _ => Ok(()),
+        ProgAction::Reload(load_opt) => {
+            info!("Try reattach program to interface: {}", &opt.ifname);
+            prg.teardown()?;
+            prg.load(&mut bpf_instance(ZONLB)?, load_opt.xdp_flags())
+        }
     }
 }
 
