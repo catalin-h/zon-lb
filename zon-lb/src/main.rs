@@ -38,6 +38,18 @@ struct ProgLoadOpt {
     mode: Option<ProgAttachMode>,
 }
 
+impl ProgLoadOpt {
+    fn xdp_flags(&self) -> XdpFlags {
+        match self.mode {
+            None => XdpFlags::default(),
+            Some(attach_mode) => match attach_mode {
+                ProgAttachMode::Driver => XdpFlags::DRV_MODE,
+                ProgAttachMode::Skb => XdpFlags::SKB_MODE,
+            },
+        }
+    }
+}
+
 #[derive(clap::Subcommand, Debug)]
 enum ProgAction {
     /// Loads the xdp program to target interface
@@ -148,10 +160,14 @@ fn bpf_instance(ebpf: &[u8]) -> Result<aya::Bpf, anyhow::Error> {
 
 fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
     let mut prg = Prog::new(&opt.ifname)?;
-    match opt.action {
+    match &opt.action {
         ProgAction::Teardown => prg.teardown(),
         ProgAction::Unload => prg.unload(),
         ProgAction::Replace => prg.replace(&mut bpf_instance(ZONLB)?),
+        ProgAction::Load(load_opt) => {
+            info!("Try attach current program to interface: {}", &opt.ifname);
+            prg.load(&mut bpf_instance(ZONLB)?, load_opt.xdp_flags())
+        }
         _ => Ok(()),
     }
 }
