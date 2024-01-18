@@ -133,11 +133,25 @@ const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/rel
 /// Program name or main function of xdp program
 pub const PROG_NAME: &str = "zon_lb";
 
+fn bpf_instance(ebpf: &[u8]) -> Result<aya::Bpf, anyhow::Error> {
+    let mut bpf = BpfLoader::new()
+        .btf(Btf::from_sys_fs().ok().as_ref())
+        .load(ebpf)
+        .context("Failed to load the program blob")?;
+
+    if let Err(e) = BpfLogger::init(&mut bpf) {
+        // This can happen if all log statements are removed from eBPF program.
+        warn!("Failed to initialize eBPF logger: {}", e);
+    }
+    Ok(bpf)
+}
+
 fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
-    let mut prg = prog::Prog::new(&opt.ifname)?;
+    let mut prg = Prog::new(&opt.ifname)?;
     match opt.action {
         ProgAction::Teardown => prg.teardown(),
         ProgAction::Unload => prg.unload(),
+        ProgAction::Replace => prg.replace(&mut bpf_instance(ZONLB)?),
         _ => Ok(()),
     }
 }
