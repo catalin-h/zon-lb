@@ -10,6 +10,8 @@ pub const MAX_BACKENDS: u32 = 1024;
 #[derive(Clone, Copy)]
 pub struct ZonInfo {
     pub version: u32,
+    // TODO: add attach mode, skb or driver
+    // TODO: add debug log mode
 }
 
 #[cfg(feature = "user")]
