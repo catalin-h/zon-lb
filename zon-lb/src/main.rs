@@ -1,6 +1,7 @@
 mod helpers;
 mod info;
 mod prog;
+mod protocols;
 
 use anyhow::Context;
 use aya::{
@@ -70,14 +71,6 @@ struct ProgOpt {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-enum Protocol {
-    /// ICMP
-    Icmp = 1,
-    /// Add UDP flow and port number
-    Igmp = 2,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum Service {
     /// Add TCP flow and port number
     Git = 0,
@@ -101,7 +94,7 @@ enum ProtocolInfo {
     /// A service with a known ip protocol and port number,
     Service { service: Service },
     /// Other IP protocols besides TCP and UDP. For eg. ICMP
-    Proto { protocol: Protocol },
+    Proto { protocol: protocols::Protocol },
 }
 
 #[derive(clap::Args, Debug)]
