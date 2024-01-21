@@ -69,16 +69,65 @@ struct ProgOpt {
     action: ProgAction,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+enum Protocol {
+    /// ICMP
+    Icmp = 1,
+    /// Add UDP flow and port number
+    Igmp = 2,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+enum Service {
+    /// Add TCP flow and port number
+    Git = 0,
+    /// Add UDP flow and port number
+    Ssh = 1,
+}
+
+#[derive(clap::Args, Clone, Debug)]
+struct PortOpt {
+    /// Port number
+    port: u16,
+}
+
 #[derive(clap::Subcommand, Debug)]
-enum GroupAction {
-    /// Adds a new group of backends for load balancing
-    Add,
+#[command(flatten_help = true, disable_help_flag = true)]
+enum ProtocolInfo {
+    /// Add TCP flow and port number
+    Tcp(PortOpt),
+    /// Add UDP flow and port number
+    Udp(PortOpt),
+    /// A service with a known ip protocol and port number,
+    Service { service: Service },
+    /// Other IP protocols besides TCP and UDP. For eg. ICMP
+    Proto { protocol: Protocol },
 }
 
 #[derive(clap::Args, Debug)]
+//#[command(args_conflicts_with_subcommands = true)]
+#[command(flatten_help = true)]
+struct AddEpOpt {
+    /// Endpoint IP address. Both IP v4 and v6 formats are accepted.
+    ip_address: String,
+    /// The IP protocol details
+    #[command(subcommand)]
+    protocol_info: ProtocolInfo,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum GroupAction {
+    /// Adds a new group of backends for load balancing
+    Add(AddEpOpt),
+}
+
+#[derive(clap::Args, Debug)]
+//#[command(flatten_help = true)]
 struct GroupOpt {
+    /// Target net interface name, eg. eth0
     #[clap(default_value = "lo")]
     ifname: String,
+    /// Group action
     #[clap(subcommand)]
     action: GroupAction,
 }
