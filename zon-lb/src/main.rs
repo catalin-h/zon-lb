@@ -2,6 +2,7 @@ mod helpers;
 mod info;
 mod prog;
 mod protocols;
+mod services;
 
 use anyhow::Context;
 use aya::{
@@ -70,14 +71,6 @@ struct ProgOpt {
     action: ProgAction,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-enum Service {
-    /// Add TCP flow and port number
-    Git = 0,
-    /// Add UDP flow and port number
-    Ssh = 1,
-}
-
 #[derive(clap::Args, Clone, Debug)]
 struct PortOpt {
     /// Port number
@@ -85,21 +78,21 @@ struct PortOpt {
 }
 
 #[derive(clap::Subcommand, Debug)]
-#[command(flatten_help = true, disable_help_flag = true)]
+#[command(flatten_help = false, disable_help_flag = true)]
 enum ProtocolInfo {
     /// Add TCP flow and port number
     Tcp(PortOpt),
     /// Add UDP flow and port number
     Udp(PortOpt),
     /// A service with a known ip protocol and port number,
-    Service { service: Service },
+    Service { service: services::Service },
     /// Other IP protocols besides TCP and UDP. For eg. ICMP
     Proto { protocol: protocols::Protocol },
 }
 
 #[derive(clap::Args, Debug)]
 //#[command(args_conflicts_with_subcommands = true)]
-#[command(flatten_help = true)]
+#[command(flatten_help = false)]
 struct AddEpOpt {
     /// Endpoint IP address. Both IP v4 and v6 formats are accepted.
     ip_address: String,
