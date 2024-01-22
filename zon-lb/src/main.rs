@@ -1,3 +1,4 @@
+mod backends;
 mod helpers;
 mod info;
 mod prog;
@@ -12,11 +13,13 @@ use aya::{
     BpfLoader, Btf,
 };
 use aya_log::BpfLogger;
+use backends::EndPoint;
 use clap::{Parser, ValueEnum};
 use helpers::*;
 use info::*;
 use log::{info, warn};
 use prog::*;
+use protocols::Protocol;
 use tokio::signal;
 use zon_lb_common::{BEKey, BE};
 
@@ -87,7 +90,7 @@ enum ProtocolInfo {
     /// A service with a known ip protocol and port number,
     Service { service: services::Service },
     /// Other IP protocols besides TCP and UDP. For eg. ICMP
-    Proto { protocol: protocols::Protocol },
+    Proto { protocol: Protocol },
 }
 
 #[derive(clap::Args, Debug)]
@@ -185,7 +188,34 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
     }
 }
 
+fn handler_add_ep(opt: &AddEpOpt) -> Result<EndPoint, anyhow::Error> {
+    let (proto, port) = match &opt.protocol_info {
+        ProtocolInfo::Tcp(port_opt) => (Protocol::Tcp, Some(port_opt.port)),
+        ProtocolInfo::Udp(port_opt) => (Protocol::Udp, Some(port_opt.port)),
+        ProtocolInfo::Service { service } => (service.protocol(), Some(service.port())),
+        ProtocolInfo::Proto { protocol } => (*protocol, None),
+    };
+
+    let ep = EndPoint::new(&opt.ip_address, proto, port)?;
+
+    Ok(ep)
+}
+
 fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
+    let group = backends::Group::new(&opt.ifname)?;
+
+    match &opt.action {
+        GroupAction::Add(add_opt) => {
+            let ep = handler_add_ep(&add_opt)?;
+            let gid = group.add(&ep)?;
+            info!("[{}][group] {} added => {:x}", &opt.ifname, ep, gid);
+        }
+    }
+
+    Ok(())
+}
+
+fn _handle_backends(opt: &GroupOpt) -> Result<(), anyhow::Error> {
     // TODO: add option to reset a specific map
     // TODO: add option to add/update/delete a specific value from a specific map
     // TODO: add option to dump entries from a specific map

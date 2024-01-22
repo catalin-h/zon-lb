@@ -1,3 +1,5 @@
+use crate::protocols::Protocol;
+
 /// Welknown services with that listen on known protocols and ports.
 ///
 /// Generated using the following script:
@@ -640,8 +642,8 @@ pub enum Service {
 }
 
 impl Service {
-    pub fn protocol(&self) -> u16 {
-        (*self as u32 >> 16) as u16
+    pub fn protocol(&self) -> Protocol {
+        Protocol::from((*self as u32 >> 16) as u8)
     }
     pub fn port(&self) -> u16 {
         *self as u16
