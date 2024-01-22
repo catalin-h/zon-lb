@@ -1,5 +1,13 @@
+use clap::ValueEnum;
+
+/// Generated with awk
+/// awk '{$1=toupper(substr($1,0,1))substr($1,2);
+/// if ($2 >= 1 && $2 < 255 && $1 != "#") { printf("/// %s \n%s = %d,\n", $0, $1, $2)} }'
+/// /etc/protocols | tee -a zon-lb/src/protocols.rs
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum, Debug)]
 pub enum Protocol {
+    /// No protocol
+    None = 0,
     /// Icmp 1 ICMP # internet control message protocol
     Icmp = 1,
     /// Igmp 2 IGMP # Internet Group Management
@@ -108,4 +116,15 @@ pub enum Protocol {
     Rohc = 142,
     /// Ethernet 143 Ethernet # Ethernet encapsulation for SRv6 [RFC8986]
     Ethernet = 143,
+}
+
+impl From<u8> for Protocol {
+    fn from(v: u8) -> Self {
+        for e in Self::value_variants() {
+            if *e as u8 == v {
+                return e.clone();
+            }
+        }
+        Self::None
+    }
 }
