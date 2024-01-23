@@ -38,7 +38,7 @@ pub struct EPFlags: u32 {
 #[derive(Clone, Copy)]
 pub struct BEGroup {
     /// The backend group id
-    pub gid: u16,
+    pub gid: u64,
     /// The current backends count in this group
     pub becount: u16,
     /// The flags instructs the xdp program to update the IP or/and Port
@@ -49,7 +49,7 @@ pub struct BEGroup {
 unsafe impl aya::Pod for BEGroup {}
 
 impl BEGroup {
-    pub fn new(id: u16) -> Self {
+    pub fn new(id: u64) -> Self {
         Self {
             gid: id,
             becount: 0_u16,
@@ -74,7 +74,7 @@ unsafe impl aya::Pod for EP6 {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EP4 {
-    pub address: u32,
+    pub address: [u8; 4],
     pub port: u16,
     pub proto: u16,
 }

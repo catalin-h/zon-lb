@@ -1,6 +1,6 @@
 use crate::helpers::{mapdata_from_pinned_map, prog_bpffs};
 use crate::protocols::Protocol;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map};
 use std::{
     collections::hash_map::DefaultHasher,
@@ -8,7 +8,7 @@ use std::{
     hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr},
 };
-use zon_lb_common::{BEGroup, EP4, EP6};
+use zon_lb_common::{BEGroup, EPFlags, EP4, EP6};
 
 /// Little endian
 #[derive(Hash)]
@@ -38,6 +38,11 @@ impl fmt::Display for EndPoint {
     }
 }
 
+enum EPIp {
+    EPIpV4(EP4),
+    EPIpV6(EP6),
+}
+
 impl EndPoint {
     pub fn new(
         ip_address: &str,
@@ -56,11 +61,25 @@ impl EndPoint {
         self.hash(&mut hasher);
         hasher.finish()
     }
+
+    fn ep_key(&self) -> EPIp {
+        match &self.ipaddr {
+            IpAddr::V4(ip) => EPIp::EPIpV4(EP4 {
+                address: ip.octets(),
+                port: self.port,
+                proto: self.proto as u16,
+            }),
+            IpAddr::V6(ip) => EPIp::EPIpV6(EP6 {
+                address: ip.octets(),
+                port: self.port,
+                proto: self.proto as u16,
+            }),
+        }
+    }
 }
 
 pub struct Group {
     pub ifname: String,
-    pub ep: EndPoint,
 }
 
 impl Group {
@@ -70,15 +89,36 @@ impl Group {
         if exists {
             Ok(Self {
                 ifname: ifname.to_string(),
-                ep: EndPoint::default(),
             })
         } else {
             Err(anyhow!("No program loaded for interface: {}", ifname))
         }
     }
 
-    pub fn add(&self, ep: &EndPoint) -> Result<u32, anyhow::Error> {
-        Ok(0)
+    fn group_mapdata(&self, gmap: &str) -> Result<Map, anyhow::Error> {
+        let map = mapdata_from_pinned_map(&self.ifname, gmap)
+            .ok_or(anyhow!("Failed to get group map: {}", gmap))?;
+        Ok(Map::HashMap(map))
+    }
+
+    pub fn add(&self, ep: &EndPoint) -> Result<u64, anyhow::Error> {
+        let mut beg = BEGroup::new(ep.id());
+        match ep.ep_key() {
+            EPIp::EPIpV4(ep4) => {
+                beg.flags |= EPFlags::IPV4;
+                let map = self.group_mapdata("ZLB_LB4")?;
+                let mut gmap: HashMap<_, EP4, BEGroup> = map.try_into().context("IPv4 group")?;
+                gmap.insert(ep4, beg, 0)
+            }
+            EPIp::EPIpV6(ep6) => {
+                beg.flags |= EPFlags::IPV6;
+                let map = self.group_mapdata("ZLB_LB6")?;
+                let mut gmap: HashMap<_, EP6, BEGroup> = map.try_into().context("IPv6 group")?;
+                gmap.insert(ep6, beg, 0)
+            }
+        }?;
+
+        Ok(beg.gid)
     }
 }
 
