@@ -129,6 +129,8 @@ enum Command {
     Prog(ProgOpt),
     /// Backend group manage options
     Group(GroupOpt),
+    /// Debug and monitor program activity
+    Debug,
 }
 
 #[derive(Debug, Parser)]
@@ -208,7 +210,7 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
         GroupAction::Add(add_opt) => {
             let ep = handler_add_ep(&add_opt)?;
             let gid = group.add(&ep)?;
-            info!("[{}][group] {} added => {:x}", &opt.ifname, ep, gid);
+            info!("[{}] group {} added => {:x}", &opt.ifname, ep, gid);
         }
     }
 
@@ -244,16 +246,18 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Info => list_info(),
         Command::Prog(opt) => handle_prog(opt),
         Command::Group(opt) => handle_group(opt),
+        Command::Debug => {
+            info!("Waiting for Ctrl-C...");
+            signal::ctrl_c().await?;
+            info!("Exiting...");
+            Ok(())
+        }
     }?;
 
     // TODO: aya::programs::loaded_programs iterate over all programs and
     // check if zon-lb is running. Also, check if there is another xdp
     // program attached to current interface.
     // TODO: add option to enable debug mode and listen for messages
-
-    info!("Waiting for Ctrl-C...");
-    signal::ctrl_c().await?;
-    info!("Exiting...");
 
     Ok(())
 }
