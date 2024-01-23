@@ -1,10 +1,11 @@
 use clap::ValueEnum;
+use std::hash::Hash;
 
 /// Generated with awk
 /// awk '{$1=toupper(substr($1,0,1))substr($1,2);
 /// if ($2 >= 1 && $2 < 255 && $1 != "#") { printf("/// %s \n%s = %d,\n", $0, $1, $2)} }'
 /// /etc/protocols | tee -a zon-lb/src/protocols.rs
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum, Debug)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum, Debug)]
 pub enum Protocol {
     /// No protocol
     None = 0,

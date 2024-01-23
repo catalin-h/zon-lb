@@ -1,11 +1,17 @@
-use crate::helpers::prog_bpffs;
+use crate::helpers::{mapdata_from_pinned_map, prog_bpffs};
 use crate::protocols::Protocol;
-use crate::services::Service;
 use anyhow::{anyhow, Result};
-use std::fmt;
-use std::net::{IpAddr, Ipv4Addr};
+use aya::maps::{HashMap, Map};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt,
+    hash::{Hash, Hasher},
+    net::{IpAddr, Ipv4Addr},
+};
+use zon_lb_common::{BEGroup, EP4, EP6};
 
 /// Little endian
+#[derive(Hash)]
 pub struct EndPoint {
     pub ipaddr: IpAddr,
     pub proto: Protocol,
@@ -43,6 +49,12 @@ impl EndPoint {
             proto: proto.clone(),
             port: port.unwrap_or_default(),
         })
+    }
+
+    fn id(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
     }
 }
 
