@@ -48,6 +48,18 @@ pub struct BEGroup {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for BEGroup {}
 
+impl BEGroup {
+    pub fn new(id: u16) -> Self {
+        Self {
+            gid: id,
+            becount: 0_u16,
+            flags: EPFlags::default(),
+        }
+    }
+}
+
+// TODO: add 32-bit hash for generic hashing for different ip protocols
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EP6 {
