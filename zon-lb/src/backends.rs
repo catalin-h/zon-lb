@@ -1,4 +1,5 @@
-use crate::helpers::{mapdata_from_pinned_map, prog_bpffs};
+use crate::helpers::mapdata_from_pinned_map;
+use crate::info::InfoTable;
 use crate::protocols::Protocol;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map};
@@ -8,7 +9,7 @@ use std::{
     hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr},
 };
-use zon_lb_common::{BEGroup, EPFlags, EP4, EP6};
+use zon_lb_common::{BEGroup, EPFlags, EP4, EP6, EPX};
 
 /// Little endian
 #[derive(Hash)]
@@ -16,6 +17,26 @@ pub struct EndPoint {
     pub ipaddr: IpAddr,
     pub proto: Protocol,
     pub port: u16,
+}
+
+impl From<&EP4> for EndPoint {
+    fn from(value: &EP4) -> Self {
+        Self {
+            ipaddr: IpAddr::from(value.address),
+            proto: Protocol::from(value.proto as u8),
+            port: value.port,
+        }
+    }
+}
+
+impl From<&EP6> for EndPoint {
+    fn from(value: &EP6) -> Self {
+        Self {
+            ipaddr: IpAddr::from(value.address),
+            proto: Protocol::from(value.proto as u8),
+            port: value.port,
+        }
+    }
 }
 
 impl Default for EndPoint {
@@ -116,6 +137,63 @@ impl Group {
         }?;
 
         Ok(beg.gid)
+    }
+
+    fn group_iterate<K: aya::Pod, F>(
+        &self,
+        name: &str,
+        mut apply: F,
+        on_error: &mut impl FnMut(),
+    ) -> Result<(), anyhow::Error>
+    where
+        F: FnMut(&K, &BEGroup),
+    {
+        let map = self.group_mapdata(name)?;
+        let gmap = HashMap::<_, K, BEGroup>::try_from(&map)?;
+        for res in gmap.iter() {
+            match res {
+                Ok((epx, group)) => apply(&epx, &group),
+                _ => on_error(),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn list(&self) -> Result<(), anyhow::Error> {
+        let mut table = InfoTable::new(vec!["gid", "endpoint", "flags", "be_count"]);
+        let mut err_cnt = 0;
+        let mut on_error = || {
+            err_cnt += 1;
+        };
+        let to_row = |ep: &EndPoint, g: &BEGroup| {
+            vec![
+                format!("{:x}", g.gid),
+                ep.to_string(),
+                format!("{:x}", g.flags),
+                format!("{}", g.becount),
+            ]
+        };
+
+        self.group_iterate::<EP4, _>(
+            "ZLB_LB4",
+            |ep4, begroup| table.push_row(to_row(&EndPoint::from(ep4), begroup)),
+            &mut on_error,
+        )
+        .context("IPv4 group")?;
+
+        self.group_iterate::<EP6, _>(
+            "ZLB_LB6",
+            |ep6, begroup| table.push_row(to_row(&EndPoint::from(ep6), begroup)),
+            &mut on_error,
+        )
+        .context("IPv6 group")?;
+
+        table.print("Backend groups");
+        if err_cnt != 0 {
+            println!("there were {} errors", err_cnt);
+        }
+        table.reset();
+        Ok(())
     }
 }
 

@@ -108,6 +108,8 @@ struct AddEpOpt {
 enum GroupAction {
     /// Adds a new group of backends for load balancing
     Add(AddEpOpt),
+    /// Lists all backend groups attached to current interface
+    List,
 }
 
 #[derive(clap::Args, Debug)]
@@ -212,6 +214,7 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
             let gid = group.add(&ep)?;
             info!("[{}] group {} added => {:x}", &opt.ifname, ep, gid);
         }
+        GroupAction::List => group.list()?,
     }
 
     Ok(())
