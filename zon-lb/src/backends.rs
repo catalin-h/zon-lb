@@ -84,20 +84,17 @@ pub struct Group {
 
 impl Group {
     pub fn new(ifname: &str) -> Result<Self, anyhow::Error> {
-        let (_, exists) = prog_bpffs(ifname)?;
-
-        if exists {
-            Ok(Self {
-                ifname: ifname.to_string(),
-            })
-        } else {
-            Err(anyhow!("No program loaded for interface: {}", ifname))
-        }
+        Ok(Self {
+            ifname: ifname.to_string(),
+        })
     }
 
     fn group_mapdata(&self, gmap: &str) -> Result<Map, anyhow::Error> {
-        let map = mapdata_from_pinned_map(&self.ifname, gmap)
-            .ok_or(anyhow!("Failed to get group map: {}", gmap))?;
+        let map = mapdata_from_pinned_map(&self.ifname, gmap).ok_or(anyhow!(
+            "Failed to get group map: {} on interface: {}",
+            gmap,
+            &self.ifname
+        ))?;
         Ok(Map::HashMap(map))
     }
 
