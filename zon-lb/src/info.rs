@@ -11,6 +11,57 @@ use log::warn;
 use std::collections::HashMap as StdHashMap;
 use zon_lb_common::ZonInfo;
 
+pub struct InfoTable {
+    header: Vec<String>,
+    table: Vec<Vec<String>>,
+    align: Vec<usize>,
+}
+
+impl InfoTable {
+    fn to_sizes(row: &Vec<String>) -> Vec<usize> {
+        row.iter().map(|x| x.len()).collect()
+    }
+
+    pub fn new<T: AsRef<str>>(hdr: Vec<T>) -> Self {
+        let header: Vec<_> = hdr.into_iter().map(|s| String::from(s.as_ref())).collect();
+        let align = Self::to_sizes(&header);
+        Self {
+            header,
+            table: vec![],
+            align,
+        }
+    }
+    pub fn push_row<T: AsRef<str>>(&mut self, row: Vec<T>) {
+        let mut trow = vec![String::from(""); self.align.len()];
+        for (i, s) in row.into_iter().enumerate() {
+            trow[i] = s.as_ref().to_string();
+            self.align[i] = self.align[i].max(trow[i].len());
+        }
+        self.table.push(trow);
+    }
+
+    fn to_aligned_column(&self, row: &Vec<String>) -> String {
+        row.iter()
+            .enumerate()
+            .map(|(i, s)| format!("{0:<1$}", s, self.align[i] + 1))
+            .collect()
+    }
+
+    pub fn print(&self, description: &str) {
+        let hdr = self.to_aligned_column(&self.header);
+        println!("\r\n{description}\r\n{hdr}");
+        println!("{0:-<1$}", '-', hdr.len());
+        for row in &self.table {
+            println!("{}", self.to_aligned_column(row));
+        }
+        println!("{0:-<1$}", '-', hdr.len());
+    }
+    pub fn reset(&mut self) {
+        self.table.clear();
+        self.align = Self::to_sizes(&self.header);
+    }
+}
+
 // TODO: add struct to set/get ZLB_INFO data
 pub(crate) fn get_zon_info(ifname: &str) -> Result<Array<MapData, ZonInfo>, anyhow::Error> {
     match mapdata_from_pinned_map(ifname, "ZLB_INFO") {
