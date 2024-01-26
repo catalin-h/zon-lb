@@ -163,59 +163,40 @@ impl Group {
         Ok(beg.gid)
     }
 
-    fn group_iterate<K: aya::Pod, F>(
-        &self,
-        name: &str,
-        mut apply: F,
-        on_error: &mut impl FnMut(),
-    ) -> Result<(), anyhow::Error>
+    fn iterate_mut<K, F>(&self, name: &str, mut apply: F) -> Result<(), anyhow::Error>
     where
-        F: FnMut(&K, &BEGroup),
+        F: FnMut(&EndPoint, &BEGroup),
+        K: aya::Pod + ToEndPoint,
     {
         let map = self.group_mapdata(name)?;
         let gmap = HashMap::<_, K, BEGroup>::try_from(&map)?;
-        for res in gmap.iter() {
-            match res {
-                Ok((epx, group)) => apply(&epx, &group),
-                _ => on_error(),
-            }
+
+        for (e, g) in gmap.iter().filter_map(|res| res.ok()) {
+            let ep = e.as_endpoint();
+            apply(&ep, &g);
         }
         Ok(())
     }
 
     pub fn list(&self) -> Result<(), anyhow::Error> {
         let mut table = InfoTable::new(vec!["gid", "endpoint", "flags", "be_count"]);
-        let mut err_cnt = 0;
-        let mut on_error = || {
-            err_cnt += 1;
-        };
-        let to_row = |ep: &EndPoint, g: &BEGroup| {
-            vec![
+        let mut to_row = |ep: &EndPoint, g: &BEGroup| {
+            let row = vec![
                 format!("{:x}", g.gid),
                 ep.to_string(),
                 format!("{:x}", g.flags),
                 format!("{}", g.becount),
-            ]
+            ];
+            table.push_row(row);
         };
 
-        self.group_iterate::<EP4, _>(
-            "ZLB_LB4",
-            |ep4, begroup| table.push_row(to_row(&EndPoint::from(ep4), begroup)),
-            &mut on_error,
-        )
-        .context("IPv4 group")?;
-
-        self.group_iterate::<EP6, _>(
-            "ZLB_LB6",
-            |ep6, begroup| table.push_row(to_row(&EndPoint::from(ep6), begroup)),
-            &mut on_error,
-        )
-        .context("IPv6 group")?;
+        self.iterate_mut::<EP4, _>("ZLB_LB4", &mut to_row)
+            .context("IPv4 group")?;
+        self.iterate_mut::<EP6, _>("ZLB_LB6", &mut to_row)
+            .context("IPv6 group")?;
 
         table.print("Backend groups");
-        if err_cnt != 0 {
-            println!("there were {} errors", err_cnt);
-        }
+
         table.reset();
         Ok(())
     }
