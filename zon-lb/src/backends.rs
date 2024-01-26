@@ -7,9 +7,9 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt,
     hash::{Hash, Hasher},
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
-use zon_lb_common::{BEGroup, EPFlags, EP4, EP6, EPX};
+use zon_lb_common::{BEGroup, EPFlags, EP4, EP6};
 
 /// Little endian
 #[derive(Hash)]
@@ -35,6 +35,30 @@ impl From<&EP6> for EndPoint {
             ipaddr: IpAddr::from(value.address),
             proto: Protocol::from(value.proto as u8),
             port: value.port,
+        }
+    }
+}
+
+pub trait ToEndPoint {
+    fn as_endpoint(&self) -> EndPoint;
+}
+
+impl ToEndPoint for EP4 {
+    fn as_endpoint(&self) -> EndPoint {
+        EndPoint {
+            ipaddr: IpAddr::V4(Ipv4Addr::from(self.address)),
+            proto: Protocol::from(self.proto as u8),
+            port: self.port,
+        }
+    }
+}
+
+impl ToEndPoint for EP6 {
+    fn as_endpoint(&self) -> EndPoint {
+        EndPoint {
+            ipaddr: IpAddr::V6(Ipv6Addr::from(self.address)),
+            proto: Protocol::from(self.proto as u8),
+            port: self.port,
         }
     }
 }
