@@ -1,7 +1,24 @@
 use anyhow::{anyhow, Context, Result};
 use aya::{maps::MapData, Bpf};
+use aya_obj::generated::{BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
+use bitflags;
 use log::{info, warn};
 use std::path::{Path, PathBuf};
+
+bitflags::bitflags! {
+/// Flags for BPF_MAP_UPDATE_ELEM command
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BpfMapUpdateFlags: u64 {
+/// 0, create new element or update existing
+const ANY = BPF_ANY as u64;
+/// 1, create new element if it didn't exist
+const NOEXIST = BPF_NOEXIST as u64;
+/// 2, update existing element
+const EXIST = BPF_EXIST as u64;
+/// 4, spin_lock-ed map_lookup/map_update
+const F_LOCK = BPF_F_LOCK as u64;
+}
+}
 
 //
 // Pinned link naming scheme used by the loading user app

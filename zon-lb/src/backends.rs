@@ -1,4 +1,4 @@
-use crate::helpers::mapdata_from_pinned_map;
+use crate::helpers::{mapdata_from_pinned_map, BpfMapUpdateFlags as MUFlags};
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
 use anyhow::{anyhow, Context, Result};
@@ -145,18 +145,19 @@ impl Group {
 
     pub fn add(&self, ep: &EndPoint) -> Result<u64, anyhow::Error> {
         let mut beg = BEGroup::new(ep.id());
+
         match ep.ep_key() {
             EPIp::EPIpV4(ep4) => {
                 beg.flags |= EPFlags::IPV4;
                 let map = self.group_mapdata("ZLB_LB4")?;
                 let mut gmap: HashMap<_, EP4, BEGroup> = map.try_into().context("IPv4 group")?;
-                gmap.insert(ep4, beg, 0)
+                gmap.insert(ep4, beg, MUFlags::NOEXIST.bits())
             }
             EPIp::EPIpV6(ep6) => {
                 beg.flags |= EPFlags::IPV6;
                 let map = self.group_mapdata("ZLB_LB6")?;
                 let mut gmap: HashMap<_, EP6, BEGroup> = map.try_into().context("IPv6 group")?;
-                gmap.insert(ep6, beg, 0)
+                gmap.insert(ep6, beg, MUFlags::NOEXIST.bits())
             }
         }?;
 
@@ -201,6 +202,8 @@ impl Group {
         Ok(())
     }
 }
+
+// TODO: add BPF_F_LOCK
 
 #[cfg(todo_code)]
 fn _handle_backends(opt: &GroupOpt) -> Result<(), anyhow::Error> {
