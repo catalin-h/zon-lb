@@ -143,8 +143,26 @@ impl Group {
         Ok(Map::HashMap(map))
     }
 
+    fn next_gid(&self, ghash: u64) -> Result<u64, anyhow::Error> {
+        let map = self.group_mapdata("ZLB_GIDS")?;
+        let mut map: HashMap<_, u64, u64> = map.try_into().context("Group IDs")?;
+        let max_id = map.keys().filter_map(|x| x.ok()).max().unwrap_or_default();
+        let mut id = max_id + 1;
+        while id != max_id {
+            if let Ok(_) = map.insert(id, ghash, MUFlags::NOEXIST.bits()) {
+                return Ok(id);
+            }
+            id = (id + 1) % (u16::MAX as u64 + 1);
+        }
+
+        Err(anyhow!(
+            "Failed to allocate new group id, try reload application!"
+        ))
+    }
+
     pub fn add(&self, ep: &EndPoint) -> Result<u64, anyhow::Error> {
-        let mut beg = BEGroup::new(ep.id());
+        let id = self.next_gid(ep.id())?;
+        let mut beg = BEGroup::new(id);
 
         match ep.ep_key() {
             EPIp::EPIpV4(ep4) => {
@@ -183,7 +201,7 @@ impl Group {
         let mut table = InfoTable::new(vec!["gid", "endpoint", "flags", "be_count"]);
         let mut to_row = |ep: &EndPoint, g: &BEGroup| {
             let row = vec![
-                format!("{:x}", g.gid),
+                g.gid.to_string(),
                 ep.to_string(),
                 format!("{:x}", g.flags),
                 format!("{}", g.becount),

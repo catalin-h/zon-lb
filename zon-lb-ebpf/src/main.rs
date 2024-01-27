@@ -37,6 +37,9 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
 
 #[map]
+static ZLB_GIDS: HashMap<u64, u64> = HashMap::<u64, u64>::with_max_entries(MAX_GROUPS, 0);
+
+#[map]
 static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::with_max_entries(MAX_GROUPS, 0);
 
 #[map]

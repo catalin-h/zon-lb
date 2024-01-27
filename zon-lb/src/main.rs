@@ -212,7 +212,7 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
         GroupAction::Add(add_opt) => {
             let ep = handler_add_ep(&add_opt)?;
             let gid = group.add(&ep)?;
-            info!("[{}] group {} added => {:x}", &opt.ifname, ep, gid);
+            info!("[{}] group {} added => {}", &opt.ifname, ep, gid);
         }
         GroupAction::List => group.list()?,
     }
