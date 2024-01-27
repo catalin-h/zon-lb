@@ -110,6 +110,11 @@ enum GroupAction {
     Add(AddEpOpt),
     /// Lists all backend groups attached to current interface
     List,
+    /// Remove group
+    Remove {
+        /// The group Id returned by 'group add' or 'group list' commands
+        gid: u16,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -215,6 +220,12 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
             info!("[{}] group {} added => {}", &opt.ifname, ep, gid);
         }
         GroupAction::List => group.list()?,
+        GroupAction::Remove { gid } => {
+            let eps = group.remove(*gid as u64)?;
+            for ep in eps {
+                info!("[{}] group {} deleted => {}", &opt.ifname, ep, gid);
+            }
+        }
     }
 
     Ok(())

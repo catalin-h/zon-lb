@@ -12,7 +12,7 @@ use std::{
 use zon_lb_common::{BEGroup, EPFlags, EP4, EP6};
 
 /// Little endian
-#[derive(Hash)]
+#[derive(Hash, Copy, Clone)]
 pub struct EndPoint {
     pub ipaddr: IpAddr,
     pub proto: Protocol,
@@ -160,6 +160,13 @@ impl Group {
         ))
     }
 
+    fn remove_gid(&self, gid: u64) -> Result<(), anyhow::Error> {
+        let map = self.group_mapdata("ZLB_GIDS")?;
+        let mut map: HashMap<_, u64, u64> = map.try_into().context("Group IDs")?;
+        map.remove(&gid)?;
+        Ok(())
+    }
+
     pub fn add(&self, ep: &EndPoint) -> Result<u64, anyhow::Error> {
         let id = self.next_gid(ep.id())?;
         let mut beg = BEGroup::new(id);
@@ -217,6 +224,48 @@ impl Group {
         table.print("Backend groups");
 
         table.reset();
+        Ok(())
+    }
+
+    pub fn remove(&self, gid: u64) -> Result<Vec<EndPoint>, anyhow::Error> {
+        let mut rem_eps = vec![];
+        let mut search = |ep: &EndPoint, g: &BEGroup| {
+            if g.gid == gid {
+                rem_eps.push(*ep);
+            }
+        };
+        self.iterate_mut::<EP4, _>("ZLB_LB4", &mut search)
+            .context("IPv4 group")?;
+        self.iterate_mut::<EP6, _>("ZLB_LB6", &mut search)
+            .context("IPv6 group")?;
+
+        if rem_eps.len() == 0 {
+            return Err(anyhow!("Can't find group with id {}", gid));
+        }
+
+        for ep in &rem_eps {
+            self.remove_group(ep)?;
+        }
+
+        self.remove_gid(gid)?;
+
+        Ok(rem_eps)
+    }
+
+    fn remove_group(&self, ep: &EndPoint) -> Result<(), anyhow::Error> {
+        match ep.ep_key() {
+            EPIp::EPIpV4(ep4) => self.remove_group_from_map::<EP4>("ZLB_LB4", &ep4),
+            EPIp::EPIpV6(ep6) => self.remove_group_from_map::<EP6>("ZLB_LB6", &ep6),
+        }
+    }
+
+    fn remove_group_from_map<K>(&self, map_name: &str, ep: &K) -> Result<(), anyhow::Error>
+    where
+        K: aya::Pod,
+    {
+        let map = self.group_mapdata(map_name)?;
+        let mut map: HashMap<_, K, BEGroup> = map.try_into()?;
+        map.remove(ep)?;
         Ok(())
     }
 }
