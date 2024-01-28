@@ -29,7 +29,7 @@ const F_LOCK = BPF_F_LOCK as u64;
 pub(crate) fn pinned_link_name(ifname: &str, map_name: &str) -> Option<String> {
     if map_name.is_empty() {
         Some(format!("zlb_{}", ifname))
-    } else if ifname.is_empty() && map_name.starts_with("ZLBX") {
+    } else if map_name.starts_with("ZLBX") {
         Some(map_name.to_ascii_lowercase())
     } else if !ifname.is_empty() && map_name.starts_with("ZLB") && map_name.len() >= 5 {
         let mut name = map_name.to_ascii_lowercase();
