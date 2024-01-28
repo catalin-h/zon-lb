@@ -270,8 +270,6 @@ impl Group {
     }
 }
 
-// TODO: add BPF_F_LOCK
-
 #[cfg(todo_code)]
 fn _handle_backends(opt: &GroupOpt) -> Result<(), anyhow::Error> {
     // TODO: add option to reset a specific map

@@ -106,9 +106,9 @@ struct AddEpOpt {
 
 #[derive(clap::Subcommand, Debug)]
 enum GroupAction {
-    /// Adds a new group of backends for load balancing
+    /// Add a new group of backends for load balancing
     Add(AddEpOpt),
-    /// Lists all backend groups attached to current interface
+    /// List all backend groups attached to current interface
     List,
     /// Remove group
     Remove {
@@ -129,6 +129,28 @@ struct GroupOpt {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum BackendAction {
+    /// Add a new backend for load balancing
+    Add(AddEpOpt),
+    /// List all backends in the group
+    List,
+    /// Remove backend
+    Remove {
+        /// The backend id returned by 'backend add' or 'backend list' commands
+        bid: u64,
+    },
+}
+
+#[derive(clap::Args, Debug)]
+struct BackendOpt {
+    /// Target backend group id.
+    gid: u64,
+    /// Backend actions
+    #[clap(subcommand)]
+    action: BackendAction,
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum Command {
     /// Shows information about loaded programs and the used maps
     Info,
@@ -136,6 +158,8 @@ enum Command {
     Prog(ProgOpt),
     /// Backend group manage options
     Group(GroupOpt),
+    /// Backends manage options
+    Backend(BackendOpt),
     /// Debug and monitor program activity
     Debug,
 }
@@ -231,21 +255,10 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn _handle_backends(opt: &GroupOpt) -> Result<(), anyhow::Error> {
+fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
     // TODO: add option to reset a specific map
     // TODO: add option to add/update/delete a specific value from a specific map
     // TODO: add option to dump entries from a specific map
-
-    let map = mapdata_from_pinned_map(&opt.ifname, "ZLB_BACKENDS").unwrap();
-    let map = Map::HashMap(map);
-    let mut blocklist: HashMap<_, BEKey, BE> = map.try_into()?;
-    let key = blocklist.keys().count() as u32;
-    let bekey: BEKey = key.into();
-
-    match blocklist.insert(&bekey, BE::default(), 0) {
-        Ok(_) => info!("Key: {} inserted", key),
-        _ => warn!("Key: {} not inserted", key),
-    }
 
     Ok(())
 }
@@ -260,6 +273,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Info => list_info(),
         Command::Prog(opt) => handle_prog(opt),
         Command::Group(opt) => handle_group(opt),
+        Command::Backend(opt) => handle_backends(opt),
         Command::Debug => {
             info!("Waiting for Ctrl-C...");
             signal::ctrl_c().await?;
