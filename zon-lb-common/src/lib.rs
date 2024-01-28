@@ -33,7 +33,8 @@ pub struct EPFlags: u32 {
 }
 }
 
-/// Holds the backends info (count, group id) for the endpoint that needs load balacing.
+/// Holds the group data that the xdp program needs to load balance between backends.
+/// The HasMap containing this data is shared only "within" a certain interface.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BEGroup {
@@ -45,9 +46,6 @@ pub struct BEGroup {
     pub flags: EPFlags,
 }
 
-#[cfg(feature = "user")]
-unsafe impl aya::Pod for BEGroup {}
-
 impl BEGroup {
     pub fn new(id: u64) -> Self {
         Self {
@@ -57,6 +55,37 @@ impl BEGroup {
         }
     }
 }
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for BEGroup {}
+
+/// Holds the backends metadata required by user space application to manage
+/// the groups and backends. The HashMap contaning this data is shared for
+/// multiple groups on multiple interfaces and should start with ZLBX_*.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GroupInfo {
+    /// The backend group id
+    pub gid: u64,
+    /// The current backends count in this group
+    pub becount: u64,
+    /// The flags instructs the xdp program to update the IP or/and Port
+    pub flags: EPFlags,
+    /// Interface index
+    pub ifindex: u32,
+    /// Group endpoint details
+    pub key: EPX,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub enum EPX {
+    V4(EP4),
+    V6(EP6),
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for GroupInfo {}
 
 // TODO: add 32-bit hash for generic hashing for different ip protocols
 

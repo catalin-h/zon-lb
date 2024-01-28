@@ -36,6 +36,11 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 #[map]
 static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
 
+/// Shared meta data between multiples groups and interfaces. Used only by userspace
+/// application but loaded by the first program.
+#[map]
+static ZLBX_GMETA: HashMap<u64, u64> = HashMap::<u64, u64>::with_max_entries(MAX_GROUPS, 0);
+
 #[map]
 static ZLB_GIDS: HashMap<u64, u64> = HashMap::<u64, u64>::with_max_entries(MAX_GROUPS, 0);
 
