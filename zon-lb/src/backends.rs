@@ -4,7 +4,7 @@ use crate::helpers::{
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
 use anyhow::{anyhow, Context, Result};
-use aya::maps::{HashMap, Map};
+use aya::maps::{HashMap, Map, MapData};
 use std::{
     collections::hash_map::DefaultHasher,
     fmt,
@@ -61,6 +61,15 @@ impl ToEndPoint for EP6 {
             ipaddr: IpAddr::V6(Ipv6Addr::from(self.address)),
             proto: Protocol::from(self.proto as u8),
             port: self.port,
+        }
+    }
+}
+
+impl ToEndPoint for EPX {
+    fn as_endpoint(&self) -> EndPoint {
+        match &self {
+            EPX::V4(ep4) => ep4.as_endpoint(),
+            EPX::V6(ep6) => ep6.as_endpoint(),
         }
     }
 }
@@ -175,9 +184,13 @@ impl Group {
         Ok(Map::HashMap(map))
     }
 
-    fn allocate_group(&self, ginfo: &GroupInfo) -> Result<u64, anyhow::Error> {
+    fn group_meta(&self) -> Result<HashMap<MapData, u64, GroupInfo>, anyhow::Error> {
         let map = self.group_mapdata("ZLBX_GMETA")?;
-        let mut map: HashMap<_, u64, GroupInfo> = map.try_into().context("Groups meta")?;
+        map.try_into().context("Groups meta")
+    }
+
+    fn allocate_group(&self, ginfo: &GroupInfo) -> Result<u64, anyhow::Error> {
+        let mut map = self.group_meta()?;
         let max_id = map.keys().filter_map(|x| x.ok()).max().unwrap_or_default();
         let mut id = max_id + 1;
         while id != max_id {
@@ -193,8 +206,7 @@ impl Group {
     }
 
     fn free_group(&self, gid: u64) -> Result<(), anyhow::Error> {
-        let map = self.group_mapdata("ZLBX_GMETA")?;
-        let mut map: HashMap<_, u64, GroupInfo> = map.try_into().context("Group meta")?;
+        let mut map = self.group_meta()?;
         map.remove(&gid)?;
         Ok(())
     }
@@ -243,18 +255,12 @@ impl Group {
 
     pub fn list(&self) -> Result<(), anyhow::Error> {
         let mut table = InfoTable::new(vec!["gid", "endpoint", "netdev", "flags", "be_count"]);
-        let map = self.group_mapdata("ZLBX_GMETA")?;
-        let map: HashMap<_, u64, GroupInfo> = map.try_into().context("Groups meta")?;
+        let map = self.group_meta()?;
 
         for (gid, ginfo) in map.iter().filter_map(|pair| pair.ok()) {
-            let ep = match ginfo.key {
-                EPX::V4(ep4) => ToEndPoint::as_endpoint(&ep4),
-                EPX::V6(ep6) => ToEndPoint::as_endpoint(&ep6),
-            };
-
             table.push_row(vec![
                 gid.to_string(),
-                ep.to_string(),
+                ginfo.key.as_endpoint().to_string(),
                 if_index_to_name(ginfo.ifindex).unwrap_or(ginfo.ifindex.to_string()),
                 format!("{:x}", ginfo.flags),
                 format!("{}", ginfo.becount),
@@ -269,15 +275,21 @@ impl Group {
 
     pub fn remove(&self, gid: u64) -> Result<Vec<EndPoint>, anyhow::Error> {
         let mut rem_eps = vec![];
-        let mut search = |ep: &EndPoint, g: &BEGroup| {
-            if g.gid == gid {
-                rem_eps.push(*ep);
-            }
-        };
-        self.iterate_mut::<EP4, _>("ZLB_LB4", &mut search)
-            .context("IPv4 group")?;
-        self.iterate_mut::<EP6, _>("ZLB_LB6", &mut search)
-            .context("IPv6 group")?;
+        let gmap = self.group_meta()?;
+
+        if let Ok(ginfo) = gmap.get(&gid, 0) {
+            rem_eps.push(ginfo.key.as_endpoint());
+        } else {
+            let mut search = |ep: &EndPoint, g: &BEGroup| {
+                if g.gid == gid {
+                    rem_eps.push(*ep);
+                }
+            };
+            self.iterate_mut::<EP4, _>("ZLB_LB4", &mut search)
+                .context("IPv4 group")?;
+            self.iterate_mut::<EP6, _>("ZLB_LB6", &mut search)
+                .context("IPv6 group")?;
+        }
 
         if rem_eps.len() == 0 {
             return Err(anyhow!("Can't find group with id {}", gid));
