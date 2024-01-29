@@ -1,7 +1,8 @@
-use crate::helpers::{self, mapdata_from_pinned_map, BpfMapUpdateFlags as MUFlags};
+use crate::helpers::{
+    self, if_index_to_name, mapdata_from_pinned_map, BpfMapUpdateFlags as MUFlags,
+};
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
-use crate::GroupAction;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map};
 use std::{
@@ -241,21 +242,24 @@ impl Group {
     }
 
     pub fn list(&self) -> Result<(), anyhow::Error> {
-        let mut table = InfoTable::new(vec!["gid", "endpoint", "flags", "be_count"]);
-        let mut to_row = |ep: &EndPoint, g: &BEGroup| {
-            let row = vec![
-                g.gid.to_string(),
-                ep.to_string(),
-                format!("{:x}", g.flags),
-                format!("{}", g.becount),
-            ];
-            table.push_row(row);
-        };
+        let mut table = InfoTable::new(vec!["gid", "endpoint", "netdev", "flags", "be_count"]);
+        let map = self.group_mapdata("ZLBX_GMETA")?;
+        let map: HashMap<_, u64, GroupInfo> = map.try_into().context("Groups meta")?;
 
-        self.iterate_mut::<EP4, _>("ZLB_LB4", &mut to_row)
-            .context("IPv4 group")?;
-        self.iterate_mut::<EP6, _>("ZLB_LB6", &mut to_row)
-            .context("IPv6 group")?;
+        for (gid, ginfo) in map.iter().filter_map(|pair| pair.ok()) {
+            let ep = match ginfo.key {
+                EPX::V4(ep4) => ToEndPoint::as_endpoint(&ep4),
+                EPX::V6(ep6) => ToEndPoint::as_endpoint(&ep6),
+            };
+
+            table.push_row(vec![
+                gid.to_string(),
+                ep.to_string(),
+                if_index_to_name(ginfo.ifindex).unwrap_or(ginfo.ifindex.to_string()),
+                format!("{:x}", ginfo.flags),
+                format!("{}", ginfo.becount),
+            ]);
+        }
 
         table.print("Backend groups");
 
