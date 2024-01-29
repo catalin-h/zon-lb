@@ -1,6 +1,7 @@
-use crate::helpers::{mapdata_from_pinned_map, BpfMapUpdateFlags as MUFlags};
+use crate::helpers::{self, mapdata_from_pinned_map, BpfMapUpdateFlags as MUFlags};
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
+use crate::GroupAction;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map};
 use std::{
@@ -9,7 +10,7 @@ use std::{
     hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
-use zon_lb_common::{BEGroup, EPFlags, EP4, EP6};
+use zon_lb_common::{BEGroup, EPFlags, GroupInfo, EP4, EP6, EPX};
 
 /// Little endian
 #[derive(Hash, Copy, Clone)]
@@ -121,6 +122,36 @@ impl EndPoint {
             }),
         }
     }
+
+    fn as_group_info(&self, ifname: &str) -> Result<GroupInfo, anyhow::Error> {
+        let (key, flags) = match &self.ipaddr {
+            IpAddr::V4(ip) => (
+                EPX::V4(EP4 {
+                    address: ip.octets(),
+                    port: self.port,
+                    proto: self.proto as u16,
+                }),
+                EPFlags::IPV4,
+            ),
+            IpAddr::V6(ip) => (
+                EPX::V6(EP6 {
+                    address: ip.octets(),
+                    port: self.port,
+                    proto: self.proto as u16,
+                }),
+                EPFlags::IPV6,
+            ),
+        };
+
+        let ifindex = helpers::ifindex(ifname)?;
+
+        Ok(GroupInfo {
+            becount: 0,
+            flags,
+            ifindex,
+            key,
+        })
+    }
 }
 
 pub struct Group {
@@ -143,47 +174,52 @@ impl Group {
         Ok(Map::HashMap(map))
     }
 
-    fn next_gid(&self, ghash: u64) -> Result<u64, anyhow::Error> {
-        let map = self.group_mapdata("ZLB_GIDS")?;
-        let mut map: HashMap<_, u64, u64> = map.try_into().context("Group IDs")?;
+    fn allocate_group(&self, ginfo: &GroupInfo) -> Result<u64, anyhow::Error> {
+        let map = self.group_mapdata("ZLBX_GMETA")?;
+        let mut map: HashMap<_, u64, GroupInfo> = map.try_into().context("Groups meta")?;
         let max_id = map.keys().filter_map(|x| x.ok()).max().unwrap_or_default();
         let mut id = max_id + 1;
         while id != max_id {
-            if let Ok(_) = map.insert(id, ghash, MUFlags::NOEXIST.bits()) {
+            if let Ok(_) = map.insert(id, ginfo, MUFlags::NOEXIST.bits()) {
                 return Ok(id);
             }
             id = (id + 1) % (u16::MAX as u64 + 1);
         }
 
         Err(anyhow!(
-            "Failed to allocate new group id, try reload application!"
+            "Failed to allocate backend group, try reload application!"
         ))
     }
 
-    fn remove_gid(&self, gid: u64) -> Result<(), anyhow::Error> {
-        let map = self.group_mapdata("ZLB_GIDS")?;
-        let mut map: HashMap<_, u64, u64> = map.try_into().context("Group IDs")?;
+    fn free_group(&self, gid: u64) -> Result<(), anyhow::Error> {
+        let map = self.group_mapdata("ZLBX_GMETA")?;
+        let mut map: HashMap<_, u64, GroupInfo> = map.try_into().context("Group meta")?;
         map.remove(&gid)?;
         Ok(())
     }
 
-    pub fn add(&self, ep: &EndPoint) -> Result<u64, anyhow::Error> {
-        let id = self.next_gid(ep.id())?;
-        let mut beg = BEGroup::new(id);
+    fn insert_group<K: aya::Pod>(
+        &self,
+        map_name: &str,
+        ep: &K,
+        beg: &BEGroup,
+    ) -> Result<(), anyhow::Error> {
+        let map = self.group_mapdata(map_name)?;
+        let mut gmap: HashMap<_, K, BEGroup> = map.try_into().context(map_name.to_string())?;
+        gmap.insert(ep, beg, MUFlags::NOEXIST.bits())?;
+        Ok(())
+    }
 
-        match ep.ep_key() {
-            EPIp::EPIpV4(ep4) => {
-                beg.flags |= EPFlags::IPV4;
-                let map = self.group_mapdata("ZLB_LB4")?;
-                let mut gmap: HashMap<_, EP4, BEGroup> = map.try_into().context("IPv4 group")?;
-                gmap.insert(ep4, beg, MUFlags::NOEXIST.bits())
-            }
-            EPIp::EPIpV6(ep6) => {
-                beg.flags |= EPFlags::IPV6;
-                let map = self.group_mapdata("ZLB_LB6")?;
-                let mut gmap: HashMap<_, EP6, BEGroup> = map.try_into().context("IPv6 group")?;
-                gmap.insert(ep6, beg, MUFlags::NOEXIST.bits())
-            }
+    pub fn add(&self, ep: &EndPoint) -> Result<u64, anyhow::Error> {
+        let ginfo = ep.as_group_info(&self.ifname)?;
+        let gid = self.allocate_group(&ginfo)?;
+        let mut beg = BEGroup::new(gid);
+
+        beg.flags = ginfo.flags;
+
+        match &ginfo.key {
+            EPX::V4(ep4) => self.insert_group("ZLB_LB4", ep4, &beg),
+            EPX::V6(ep6) => self.insert_group("ZLB_LB6", ep6, &beg),
         }?;
 
         Ok(beg.gid)
@@ -247,7 +283,7 @@ impl Group {
             self.remove_group(ep)?;
         }
 
-        self.remove_gid(gid)?;
+        self.free_group(gid)?;
 
         Ok(rem_eps)
     }

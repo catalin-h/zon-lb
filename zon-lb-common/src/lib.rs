@@ -65,8 +65,6 @@ unsafe impl aya::Pod for BEGroup {}
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GroupInfo {
-    /// The backend group id
-    pub gid: u64,
     /// The current backends count in this group
     pub becount: u64,
     /// The flags instructs the xdp program to update the IP or/and Port
