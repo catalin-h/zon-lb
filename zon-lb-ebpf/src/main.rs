@@ -43,20 +43,17 @@ static ZLBX_GMETA: HashMap<u64, GroupInfo> =
     HashMap::<u64, GroupInfo>::with_max_entries(MAX_GROUPS, 0);
 
 #[map]
-static ZLB_GIDS: HashMap<u64, u64> = HashMap::<u64, u64>::with_max_entries(MAX_GROUPS, 0);
-
-#[map]
 static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::with_max_entries(MAX_GROUPS, 0);
 
 #[map]
 static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::with_max_entries(MAX_GROUPS, 0);
 
 #[map]
-static ZLB_BACKENDS: HashMap<BEKey, BE> = HashMap::<BEKey, BE>::with_max_entries(MAX_BACKENDS, 0);
+static ZLBX_BACKENDS: HashMap<BEKey, BE> = HashMap::<BEKey, BE>::with_max_entries(MAX_BACKENDS, 0);
 
 fn get_backend(index: u32) -> Option<&'static BE> {
     let key: BEKey = index.into();
-    unsafe { ZLB_BACKENDS.get(&key) }
+    unsafe { ZLBX_BACKENDS.get(&key) }
 }
 
 #[xdp]
