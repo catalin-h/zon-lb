@@ -92,11 +92,6 @@ impl fmt::Display for EndPoint {
     }
 }
 
-enum EPIp {
-    EPIpV4(EP4),
-    EPIpV6(EP6),
-}
-
 impl EndPoint {
     pub fn new(
         ip_address: &str,
@@ -110,14 +105,14 @@ impl EndPoint {
         })
     }
 
-    fn ep_key(&self) -> EPIp {
+    fn ep_key(&self) -> EPX {
         match &self.ipaddr {
-            IpAddr::V4(ip) => EPIp::EPIpV4(EP4 {
+            IpAddr::V4(ip) => EPX::V4(EP4 {
                 address: ip.octets(),
                 port: self.port,
                 proto: self.proto as u16,
             }),
-            IpAddr::V6(ip) => EPIp::EPIpV6(EP6 {
+            IpAddr::V6(ip) => EPX::V6(EP6 {
                 address: ip.octets(),
                 port: self.port,
                 proto: self.proto as u16,
@@ -298,8 +293,8 @@ impl Group {
 
     fn remove_group(&self, ep: &EndPoint) -> Result<(), anyhow::Error> {
         match ep.ep_key() {
-            EPIp::EPIpV4(ep4) => self.remove_group_from_map::<EP4>("ZLB_LB4", &ep4),
-            EPIp::EPIpV6(ep6) => self.remove_group_from_map::<EP6>("ZLB_LB6", &ep6),
+            EPX::V4(ep4) => self.remove_group_from_map::<EP4>("ZLB_LB4", &ep4),
+            EPX::V6(ep6) => self.remove_group_from_map::<EP6>("ZLB_LB6", &ep6),
         }
     }
 
