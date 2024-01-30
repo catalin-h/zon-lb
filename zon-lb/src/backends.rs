@@ -121,32 +121,18 @@ impl EndPoint {
     }
 
     fn as_group_info(&self, ifname: &str) -> Result<GroupInfo, anyhow::Error> {
-        let (key, flags) = match &self.ipaddr {
-            IpAddr::V4(ip) => (
-                EPX::V4(EP4 {
-                    address: ip.octets(),
-                    port: self.port,
-                    proto: self.proto as u16,
-                }),
-                EPFlags::IPV4,
-            ),
-            IpAddr::V6(ip) => (
-                EPX::V6(EP6 {
-                    address: ip.octets(),
-                    port: self.port,
-                    proto: self.proto as u16,
-                }),
-                EPFlags::IPV6,
-            ),
+        let key = self.ep_key();
+        let flags = match key {
+            EPX::V4(_) => EPFlags::IPV4,
+            EPX::V6(_) => EPFlags::IPV6,
         };
-
         let ifindex = helpers::ifindex(ifname)?;
 
         Ok(GroupInfo {
             becount: 0,
             flags,
             ifindex,
-            key,
+            key: self.ep_key(),
         })
     }
 }
