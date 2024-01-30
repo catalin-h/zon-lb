@@ -112,7 +112,7 @@ impl EndPoint {
         })
     }
 
-    fn id(&self) -> u64 {
+    fn _id(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
         hasher.finish()

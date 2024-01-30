@@ -6,22 +6,15 @@ mod protocols;
 mod services;
 
 use anyhow::Context;
-use aya::{
-    include_bytes_aligned,
-    maps::{HashMap, Map},
-    programs::XdpFlags,
-    BpfLoader, Btf,
-};
+use aya::{include_bytes_aligned, programs::XdpFlags, BpfLoader, Btf};
 use aya_log::BpfLogger;
 use backends::EndPoint;
 use clap::{Parser, ValueEnum};
-use helpers::*;
 use info::*;
 use log::{info, warn};
 use prog::*;
 use protocols::Protocol;
 use tokio::signal;
-use zon_lb_common::{BEKey, BE};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum ProgAttachMode {
@@ -255,7 +248,7 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
+fn handle_backends(_opt: &BackendOpt) -> Result<(), anyhow::Error> {
     // TODO: add option to reset a specific map
     // TODO: add option to add/update/delete a specific value from a specific map
     // TODO: add option to dump entries from a specific map
