@@ -157,13 +157,14 @@ impl Group {
         Ok(Map::HashMap(map))
     }
 
-    fn group_meta(&self) -> Result<HashMap<MapData, u64, GroupInfo>, anyhow::Error> {
-        let map = self.group_mapdata("ZLBX_GMETA")?;
+    fn group_meta() -> Result<HashMap<MapData, u64, GroupInfo>, anyhow::Error> {
+        let map = mapdata_from_pinned_map("", "ZLBX_GMETA").context("Group meta")?;
+        let map = Map::HashMap(map);
         map.try_into().context("Groups meta")
     }
 
     fn allocate_group(&self, ginfo: &GroupInfo) -> Result<u64, anyhow::Error> {
-        let mut map = self.group_meta()?;
+        let mut map = Self::group_meta()?;
         let max_id = map.keys().filter_map(|x| x.ok()).max().unwrap_or_default();
         let mut id = max_id + 1;
         while id != max_id {
@@ -179,7 +180,7 @@ impl Group {
     }
 
     fn free_group(&self, gid: u64) -> Result<(), anyhow::Error> {
-        let mut map = self.group_meta()?;
+        let mut map = Self::group_meta()?;
         map.remove(&gid)?;
         Ok(())
     }
@@ -228,7 +229,7 @@ impl Group {
 
     pub fn list(&self) -> Result<(), anyhow::Error> {
         let mut table = InfoTable::new(vec!["gid", "endpoint", "netdev", "flags", "be_count"]);
-        let map = self.group_meta()?;
+        let map = Self::group_meta()?;
 
         for (gid, ginfo) in map.iter().filter_map(|pair| pair.ok()) {
             table.push_row(vec![
@@ -248,7 +249,7 @@ impl Group {
 
     pub fn remove(&self, gid: u64) -> Result<Vec<EndPoint>, anyhow::Error> {
         let mut rem_eps = vec![];
-        let gmap = self.group_meta()?;
+        let gmap = Self::group_meta()?;
 
         if let Ok(ginfo) = gmap.get(&gid, 0) {
             rem_eps.push(ginfo.key.as_endpoint());
@@ -292,6 +293,23 @@ impl Group {
         let mut map: HashMap<_, K, BEGroup> = map.try_into()?;
         map.remove(ep)?;
         Ok(())
+    }
+}
+
+pub struct Backend {
+    gid: u64,
+    group: Group,
+}
+
+impl Backend {
+    pub fn new(gid: u64) -> Result<Backend, anyhow::Error> {
+        let gmap = Group::group_meta()?;
+        let ginfo = gmap.get(&gid, 0).context("No group in metadata")?;
+        let ifname = if_index_to_name(ginfo.ifindex).ok_or(anyhow!("Can't get netdev name"))?;
+        Ok(Self {
+            gid,
+            group: Group::new(&ifname)?,
+        })
     }
 }
 

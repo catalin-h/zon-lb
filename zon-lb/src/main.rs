@@ -8,7 +8,7 @@ mod services;
 use anyhow::Context;
 use aya::{include_bytes_aligned, programs::XdpFlags, BpfLoader, Btf};
 use aya_log::BpfLogger;
-use backends::EndPoint;
+use backends::{Backend, EndPoint};
 use clap::{Parser, ValueEnum};
 use info::*;
 use log::{info, warn};
@@ -108,6 +108,7 @@ enum GroupAction {
         /// The group Id returned by 'group add' or 'group list' commands
         gid: u16,
     },
+    // TODO: add disable/enable group
 }
 
 #[derive(clap::Args, Debug)]
@@ -132,6 +133,8 @@ enum BackendAction {
         /// The backend id returned by 'backend add' or 'backend list' commands
         bid: u64,
     },
+    /// Clear all backends from group
+    Clear,
 }
 
 #[derive(clap::Args, Debug)]
@@ -248,11 +251,17 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn handle_backends(_opt: &BackendOpt) -> Result<(), anyhow::Error> {
+fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
     // TODO: add option to reset a specific map
     // TODO: add option to add/update/delete a specific value from a specific map
     // TODO: add option to dump entries from a specific map
 
+    let _backend = Backend::new(opt.gid)?;
+
+    match &opt.action {
+        BackendAction::Add(add_opt) => {}
+        _ => {}
+    };
     Ok(())
 }
 
