@@ -6,15 +6,13 @@ use crate::protocols::Protocol;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt,
-    hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 use zon_lb_common::{BEGroup, EPFlags, GroupInfo, EP4, EP6, EPX};
 
 /// Little endian
-#[derive(Hash, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct EndPoint {
     pub ipaddr: IpAddr,
     pub proto: Protocol,
@@ -110,12 +108,6 @@ impl EndPoint {
             proto: proto.clone(),
             port: port.unwrap_or_default(),
         })
-    }
-
-    fn _id(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
     }
 
     fn ep_key(&self) -> EPIp {
