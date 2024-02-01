@@ -181,7 +181,7 @@ impl Group {
 
     fn free_group(&self, gid: u64) -> Result<(), anyhow::Error> {
         let mut map = Self::group_meta()?;
-        map.remove(&gid)?;
+        map.remove(&gid).context("Remove group meta")?;
         Ok(())
     }
 
@@ -270,10 +270,19 @@ impl Group {
         }
 
         for ep in &rem_eps {
-            self.remove_group(ep)?;
+            if let Err(e) = self.remove_group(ep) {
+                log::warn!("[{}] failed to remove group for {}, {}", self.ifname, ep, e);
+            }
         }
 
-        self.free_group(gid)?;
+        if let Err(e) = self.free_group(gid) {
+            log::warn!(
+                "[{}] failed to remove group for {}, {}",
+                self.ifname,
+                gid,
+                e
+            );
+        }
 
         Ok(rem_eps)
     }

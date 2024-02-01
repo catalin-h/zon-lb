@@ -271,7 +271,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     env_logger::init();
 
-    match &cli.command {
+    let res = match &cli.command {
         Command::Info => list_info(),
         Command::Prog(opt) => handle_prog(opt),
         Command::Group(opt) => handle_group(opt),
@@ -282,7 +282,11 @@ async fn main() -> Result<(), anyhow::Error> {
             info!("Exiting...");
             Ok(())
         }
-    }?;
+    };
+
+    if let Err(e) = res {
+        log::error!("{}", e);
+    }
 
     // TODO: aya::programs::loaded_programs iterate over all programs and
     // check if zon-lb is running. Also, check if there is another xdp
