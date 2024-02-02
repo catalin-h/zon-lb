@@ -9,7 +9,7 @@ use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
-use zon_lb_common::{BEGroup, EPFlags, GroupInfo, EP4, EP6, EPX};
+use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX};
 
 /// Little endian
 #[derive(Copy, Clone)]
@@ -135,6 +135,21 @@ impl EndPoint {
             key: self.ep_key(),
         })
     }
+
+    fn as_backend(&self, gid: u64) -> BE {
+        BE {
+            address: match &self.ipaddr {
+                IpAddr::V4(ip) => {
+                    let mut v6: [u8; 16] = [0; 16];
+                    v6[..4].clone_from_slice(&ip.octets()[..]);
+                    v6
+                }
+                IpAddr::V6(ip) => ip.octets(),
+            },
+            port: self.port,
+            gid: gid as u16,
+        }
+    }
 }
 
 pub struct Group {
@@ -190,10 +205,11 @@ impl Group {
         map_name: &str,
         ep: &K,
         beg: &BEGroup,
+        flags: MUFlags,
     ) -> Result<(), anyhow::Error> {
         let map = self.group_mapdata(map_name)?;
         let mut gmap: HashMap<_, K, BEGroup> = map.try_into().context(map_name.to_string())?;
-        gmap.insert(ep, beg, MUFlags::NOEXIST.bits())?;
+        gmap.insert(ep, beg, flags.bits())?;
         Ok(())
     }
 
@@ -205,8 +221,8 @@ impl Group {
         beg.flags = ginfo.flags;
 
         match &ginfo.key {
-            EPX::V4(ep4) => self.insert_group("ZLB_LB4", ep4, &beg),
-            EPX::V6(ep6) => self.insert_group("ZLB_LB6", ep6, &beg),
+            EPX::V4(ep4) => self.insert_group("ZLB_LB4", ep4, &beg, MUFlags::NOEXIST),
+            EPX::V6(ep6) => self.insert_group("ZLB_LB6", ep6, &beg, MUFlags::NOEXIST),
         }?;
 
         Ok(beg.gid)
@@ -306,8 +322,8 @@ impl Group {
 }
 
 pub struct Backend {
-    gid: u64,
-    group: Group,
+    pub gid: u64,
+    pub group: Group,
 }
 
 impl Backend {
@@ -319,6 +335,59 @@ impl Backend {
             gid,
             group: Group::new(&ifname)?,
         })
+    }
+
+    fn backends() -> Result<HashMap<MapData, BEKey, BE>, anyhow::Error> {
+        let map =
+            mapdata_from_pinned_map("", "ZLBX_BACKENDS").context("Get pinned backends map")?;
+        let map = Map::HashMap(map);
+        map.try_into().context("Diff data size for backends map")
+    }
+
+    pub fn add(&self, ep: &EndPoint) -> Result<(), anyhow::Error> {
+        let mut backends = Self::backends()?;
+        let mut gmap = Group::group_meta()?;
+        let mut ginfo = gmap.get(&self.gid, 0)?;
+        let index = ginfo.becount as u16;
+        let iflags = MUFlags::EXIST;
+
+        let be = ep.as_backend(self.gid);
+        let key = BEKey {
+            gid: self.gid as u16,
+            index,
+        };
+        backends
+            .insert(key, be, MUFlags::ANY.bits())
+            .context("Insert backend")?;
+
+        ginfo.becount += 1;
+        gmap.insert(self.gid, ginfo, iflags.bits())
+            .context("Update group meta")?;
+
+        let beg = BEGroup {
+            gid: self.gid,
+            becount: index + 1,
+            flags: ginfo.flags,
+        };
+
+        match &ginfo.key {
+            EPX::V4(ep4) => self
+                .group
+                .insert_group("ZLB_LB4", ep4, &beg, iflags)
+                .context("Update v4 group")?,
+            EPX::V6(ep6) => self
+                .group
+                .insert_group("ZLB_LB6", ep6, &beg, iflags)
+                .context("Update v6 group")?,
+        }
+
+        Ok(())
+    }
+
+    pub fn list(gid: Option<u64>) -> Result<(), anyhow::Error> {
+        let mut gtable = InfoTable::new(vec!["gid", "id", "endpoint", "backend"]);
+        let mut btable = InfoTable::new(vec!["id", "backend"]);
+        Ok(())
     }
 }
 

@@ -255,11 +255,18 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
     // TODO: add option to reset a specific map
     // TODO: add option to add/update/delete a specific value from a specific map
     // TODO: add option to dump entries from a specific map
-
-    let _backend = Backend::new(opt.gid)?;
+    // TODO: healthcheck for backends
+    let backend = Backend::new(opt.gid)?;
 
     match &opt.action {
-        BackendAction::Add(add_opt) => {}
+        BackendAction::Add(add_opt) => {
+            let ep = handler_add_ep(&add_opt)?;
+            backend.add(&ep)?;
+            info!(
+                "[{}] backend {} added for group {}",
+                backend.group.ifname, ep, backend.gid
+            );
+        }
         _ => {}
     };
     Ok(())
