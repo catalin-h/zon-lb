@@ -43,6 +43,29 @@ pub trait ToEndPoint {
     fn as_endpoint(&self) -> EndPoint;
 }
 
+pub trait BackendInfo {
+    fn ipv4(&self) -> IpAddr;
+    fn ipv6(&self) -> IpAddr;
+    fn port(&self) -> u16;
+}
+
+impl BackendInfo for BE {
+    fn ipv4(&self) -> IpAddr {
+        IpAddr::from([
+            self.address[0],
+            self.address[1],
+            self.address[2],
+            self.address[3],
+        ])
+    }
+    fn ipv6(&self) -> IpAddr {
+        IpAddr::from(self.address)
+    }
+    fn port(&self) -> u16 {
+        self.port
+    }
+}
+
 impl ToEndPoint for EP4 {
     fn as_endpoint(&self) -> EndPoint {
         EndPoint {
@@ -84,10 +107,14 @@ impl Default for EndPoint {
 
 impl fmt::Display for EndPoint {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let proto = match self.proto {
+            Protocol::None => "".to_string(),
+            _ => format!("{:?}: ", self.proto),
+        };
         if self.port == 0 {
-            write!(f, "{:?}: {}", &self.proto, &self.ipaddr)
+            write!(f, "{}{}", proto, &self.ipaddr)
         } else {
-            write!(f, "{:?}: [{}]:{}", &self.proto, &self.ipaddr, &self.port)
+            write!(f, "{}[{}]:{}", proto, &self.ipaddr, &self.port)
         }
     }
 }
@@ -107,11 +134,8 @@ impl EndPoint {
 
     fn from_backend(be: &BE, ginfo: &GroupInfo) -> Self {
         let (ipaddr, proto) = match ginfo.key {
-            EPX::V4(ep) => (
-                IpAddr::from([be.address[0], be.address[1], be.address[2], be.address[3]]),
-                ep.proto,
-            ),
-            EPX::V6(ep) => (IpAddr::from(be.address), ep.proto),
+            EPX::V4(ep) => (be.ipv4(), ep.proto),
+            EPX::V6(ep) => (be.ipv6(), ep.proto),
         };
 
         Self {
