@@ -5,6 +5,7 @@ use crate::info::InfoTable;
 use crate::protocols::Protocol;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
+use std::collections::HashMap as StdHashMap;
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -445,6 +446,43 @@ impl Backend {
     }
 
     fn list_all() -> Result<(), anyhow::Error> {
+        let mut table = InfoTable::new(vec!["gid:id", "backend", "", "if/endpoint"]);
+        let backends = Self::backends()?;
+        let gmap = Group::group_meta()?;
+        let mut cache: StdHashMap<u64, String> = StdHashMap::new();
+        let mut fetch = |gid: &u64| {
+            if let Some(ginfo) = cache.get(gid) {
+                return ginfo.clone();
+            }
+            let value = match gmap.get(gid, 0) {
+                Ok(ginfo) => {
+                    format!(
+                        "{} / {}",
+                        if_index_to_name(ginfo.ifindex)
+                            .unwrap_or_else(|| format!("if#{}", ginfo.ifindex.to_string())),
+                        ginfo.key.as_endpoint()
+                    )
+                }
+                Err(_) => String::from("n/a"),
+            };
+            cache.insert(*gid, value.clone());
+            value
+        };
+
+        for (key, be) in backends.iter().filter_map(|x| x.ok()) {
+            let ep = EndPoint {
+                ipaddr: be.ipv4(),
+                proto: Protocol::None,
+                port: be.port,
+            };
+            table.push_row(vec![
+                format!("{}:{}", key.gid, key.index),
+                ep.to_string(),
+                "<->".to_string(),
+                fetch(&(key.gid as u64)),
+            ]);
+        }
+        table.print("Backends list:");
         Ok(())
     }
 
