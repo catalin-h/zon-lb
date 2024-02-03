@@ -140,6 +140,7 @@ enum BackendAction {
 #[derive(clap::Args, Debug)]
 struct BackendOpt {
     /// Target backend group id.
+    #[clap(default_value_t = 0)]
     gid: u64,
     /// Backend actions
     #[clap(subcommand)]
@@ -256,10 +257,9 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
     // TODO: add option to add/update/delete a specific value from a specific map
     // TODO: add option to dump entries from a specific map
     // TODO: healthcheck for backends
-    let backend = Backend::new(opt.gid)?;
-
     match &opt.action {
         BackendAction::Add(add_opt) => {
+            let backend = Backend::new(opt.gid)?;
             let ep = handler_add_ep(&add_opt)?;
             backend.add(&ep)?;
             info!(
@@ -267,6 +267,7 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
                 backend.group.ifname, ep, backend.gid
             );
         }
+        BackendAction::List => Backend::list(opt.gid)?,
         _ => {}
     };
     Ok(())

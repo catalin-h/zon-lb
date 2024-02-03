@@ -105,6 +105,22 @@ impl EndPoint {
         })
     }
 
+    fn from_backend(be: &BE, ginfo: &GroupInfo) -> Self {
+        let (ipaddr, proto) = match ginfo.key {
+            EPX::V4(ep) => (
+                IpAddr::from([be.address[0], be.address[1], be.address[2], be.address[3]]),
+                ep.proto,
+            ),
+            EPX::V6(ep) => (IpAddr::from(be.address), ep.proto),
+        };
+
+        Self {
+            ipaddr,
+            proto: (proto as u8).into(),
+            port: be.port,
+        }
+    }
+
     fn ep_key(&self) -> EPX {
         match &self.ipaddr {
             IpAddr::V4(ip) => EPX::V4(EP4 {
@@ -384,9 +400,55 @@ impl Backend {
         Ok(())
     }
 
-    pub fn list(gid: Option<u64>) -> Result<(), anyhow::Error> {
-        let mut gtable = InfoTable::new(vec!["gid", "id", "endpoint", "backend"]);
-        let mut btable = InfoTable::new(vec!["id", "backend"]);
+    fn build_backend_list(gid: u16, ginfo: &GroupInfo) -> Result<InfoTable, anyhow::Error> {
+        let mut table = InfoTable::new(vec!["id", "endpoint"]);
+        let backends = Self::backends()?;
+
+        for index in 0..ginfo.becount as u16 {
+            let key = BEKey { gid, index };
+            match backends.get(&key, 0) {
+                Ok(be) => {
+                    table.push_row(vec![
+                        index.to_string(),
+                        EndPoint::from_backend(&be, &ginfo).to_string(),
+                    ]);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(table)
+    }
+
+    fn list_all() -> Result<(), anyhow::Error> {
+        Ok(())
+    }
+
+    pub fn list(gid: u64) -> Result<(), anyhow::Error> {
+        if gid == 0 {
+            return Self::list_all();
+        }
+
+        let mut table = InfoTable::new(vec!["gid", "endpoint", "netdev", "flags", "be_count"]);
+        let to_row = |gid: u16, ginfo: &GroupInfo| {
+            vec![
+                gid.to_string(),
+                ginfo.key.as_endpoint().to_string(),
+                if_index_to_name(ginfo.ifindex).unwrap_or(ginfo.ifindex.to_string()),
+                format!("{:x}", ginfo.flags),
+                format!("{}", ginfo.becount),
+            ]
+        };
+
+        let gmap = Group::group_meta()?;
+        let ginfo = gmap
+            .get(&gid, 0)
+            .context("Failed to retrieve group for id")?;
+        let bt = Self::build_backend_list(gid as u16, &ginfo)?;
+        table.push_row(to_row(gid as u16, &ginfo));
+        table.print("Backend group info:");
+        bt.print("Backends list:");
+
         Ok(())
     }
 }

@@ -60,6 +60,9 @@ impl InfoTable {
         self.table.clear();
         self.align = Self::to_sizes(&self.header);
     }
+    pub fn is_empty(&self) -> bool {
+        self.table.is_empty()
+    }
 }
 
 // TODO: add struct to set/get ZLB_INFO data
