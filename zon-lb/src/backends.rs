@@ -446,32 +446,36 @@ impl Backend {
     }
 
     fn list_all() -> Result<(), anyhow::Error> {
-        let mut table = InfoTable::new(vec!["gid:id", "backend", "", "if/endpoint"]);
+        let mut table = InfoTable::new(vec!["gid:id", "backend", "", "if / lb_endpoint"]);
         let backends = Self::backends()?;
         let gmap = Group::group_meta()?;
-        let mut cache: StdHashMap<u64, String> = StdHashMap::new();
+        let mut cache: StdHashMap<u64, (String, EPFlags)> = StdHashMap::new();
         let mut fetch = |gid: &u64| {
             if let Some(ginfo) = cache.get(gid) {
                 return ginfo.clone();
             }
             let value = match gmap.get(gid, 0) {
                 Ok(ginfo) => {
-                    format!(
-                        "{} / {}",
-                        if_index_to_name(ginfo.ifindex)
-                            .unwrap_or_else(|| format!("if#{}", ginfo.ifindex.to_string())),
-                        ginfo.key.as_endpoint()
-                    )
+                    let ifname = if_index_to_name(ginfo.ifindex)
+                        .unwrap_or_else(|| format!("if#{}", ginfo.ifindex.to_string()));
+                    let out = format!("{} / {}", ifname, ginfo.key.as_endpoint());
+                    (out, ginfo.flags)
                 }
-                Err(_) => String::from("n/a"),
+                Err(_) => ("n/a".to_string(), EPFlags::empty()),
             };
             cache.insert(*gid, value.clone());
             value
         };
 
         for (key, be) in backends.iter().filter_map(|x| x.ok()) {
+            let gid = key.gid as u64;
+            let (ep_str, flags) = fetch(&gid);
             let ep = EndPoint {
-                ipaddr: be.ipv4(),
+                ipaddr: if flags.contains(EPFlags::IPV4) {
+                    be.ipv4()
+                } else {
+                    be.ipv6()
+                },
                 proto: Protocol::None,
                 port: be.port,
             };
@@ -479,7 +483,7 @@ impl Backend {
                 format!("{}:{}", key.gid, key.index),
                 ep.to_string(),
                 "<->".to_string(),
-                fetch(&(key.gid as u64)),
+                ep_str,
             ]);
         }
         table.print("Backends list:");
