@@ -130,8 +130,8 @@ enum BackendAction {
     List,
     /// Remove backend
     Remove {
-        /// The backend id returned by 'backend add' or 'backend list' commands
-        bid: u64,
+        /// The backend index returned by 'backend add' or 'backend list' commands
+        index: u16,
     },
     /// Clear all backends from group
     Clear,
@@ -268,6 +268,14 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
             );
         }
         BackendAction::List => Backend::list(opt.gid)?,
+        BackendAction::Remove { index } => {
+            let backend = Backend::new(opt.gid)?;
+            let ep = backend.remove(*index)?;
+            info!(
+                "[{}] backend {} removed for group {}",
+                backend.group.ifname, ep, backend.gid
+            );
+        }
         _ => {}
     };
     Ok(())

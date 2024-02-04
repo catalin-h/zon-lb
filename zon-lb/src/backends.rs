@@ -548,6 +548,78 @@ impl Backend {
 
         Ok(())
     }
+
+    fn replace(&self, src: u16, dst: u16) -> Result<(), anyhow::Error> {
+        if dst == src {
+            return Ok(());
+        }
+
+        let mut backends = Self::backends()?;
+
+        let dkey = BEKey {
+            gid: self.gid as u16,
+            index: dst,
+        };
+        let skey = BEKey {
+            gid: self.gid as u16,
+            index: src,
+        };
+        let sbe = backends
+            .get(&skey, 0)
+            .context("replace: get source backend")?;
+        backends
+            .insert(&dkey, &sbe, MUFlags::EXIST.bits())
+            .context("replace: update destination backend")
+    }
+
+    pub fn remove(&self, index: u16) -> Result<EndPoint, anyhow::Error> {
+        let mut backends = Self::backends()?;
+        // TODO: remove backend independent of group
+        let mut gmap = Group::group_meta()?;
+        let mut ginfo = gmap.get(&self.gid, 0)?;
+        let mut begroup = self.group.get_by_ep(&ginfo.key.as_endpoint())?;
+        let mut key = BEKey {
+            gid: self.gid as u16,
+            index,
+        };
+        let iflags = MUFlags::EXIST;
+        let mut count = begroup.becount.min(ginfo.becount as u16);
+
+        if count > 0 && index < count {
+            self.replace(count - 1, index)?;
+            count -= 1;
+            key.index = count;
+        }
+
+        if count != begroup.becount {
+            begroup.becount = count;
+            match &ginfo.key {
+                EPX::V4(ep4) => self
+                    .group
+                    .insert_group("ZLB_LB4", ep4, &begroup, iflags)
+                    .context("Update v4 group")?,
+                EPX::V6(ep6) => self
+                    .group
+                    .insert_group("ZLB_LB6", ep6, &begroup, iflags)
+                    .context("Update v6 group")?,
+            }
+        }
+
+        let count: u64 = count.into();
+        if count != ginfo.becount {
+            ginfo.becount = count;
+            gmap.insert(self.gid, ginfo, iflags.bits())
+                .context("Update group meta")?;
+        }
+
+        let be = backends.get(&key, 0).context(format!(
+            "Remove: can't find backend: {} : {}",
+            key.gid, key.index
+        ))?;
+        backends.remove(&key).context("Fail to remove backend")?;
+
+        Ok(EndPoint::from_backend(&be, &ginfo))
+    }
 }
 
 #[cfg(todo_code)]
