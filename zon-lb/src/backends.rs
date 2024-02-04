@@ -1,5 +1,5 @@
 use crate::helpers::{
-    self, if_index_to_name, mapdata_from_pinned_map, BpfMapUpdateFlags as MUFlags,
+    if_index_to_name, ifindex, mapdata_from_pinned_map, stou64, BpfMapUpdateFlags as MUFlags,
 };
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
@@ -167,7 +167,7 @@ impl EndPoint {
             EPX::V4(_) => EPFlags::IPV4,
             EPX::V6(_) => EPFlags::IPV6,
         };
-        let ifindex = helpers::ifindex(ifname)?;
+        let ifindex = ifindex(ifname)?;
 
         Ok(GroupInfo {
             becount: 0,
@@ -321,8 +321,7 @@ impl Group {
                 format!("{}", ginfo.becount),
             ]);
         }
-        let extract_key = Some(&|s: &String| u64::from_str_radix(&s, 10).unwrap_or_default());
-        table.sort_by_key(0, extract_key);
+        table.sort_by_key(0, Some(&|s: &String| stou64(&s, 10)));
         table.print("Backend groups");
 
         table.reset();
@@ -511,6 +510,13 @@ impl Backend {
                 ep_str,
             ]);
         }
+        let extract_key = |ids: &String| -> u64 {
+            match ids.split_once(':') {
+                Some((gid, id)) => stou64(&gid, 10).pow(16) + stou64(&id, 10),
+                None => 0_u64,
+            }
+        };
+        table.sort_by_key(0, Some(extract_key));
         table.print("Backends list:");
         Ok(())
     }

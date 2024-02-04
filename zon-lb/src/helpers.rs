@@ -182,3 +182,7 @@ pub fn prog_bpffs(ifname: &str) -> Result<(PathBuf, bool), anyhow::Error> {
 
     Ok((zdpath, zlblink_exists))
 }
+
+pub fn stou64(number: &str, base: u32) -> u64 {
+    u64::from_str_radix(number, base).unwrap_or_default()
+}
