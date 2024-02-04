@@ -60,6 +60,15 @@ impl InfoTable {
         self.table.clear();
         self.align = Self::to_sizes(&self.header);
     }
+    pub fn sort(&mut self) {
+        self.table.sort();
+    }
+    pub fn sort_by_key(&mut self, index: usize, extract_key: Option<impl Fn(&String) -> u64>) {
+        match extract_key {
+            Some(extfun) => self.table.sort_by_cached_key(|v| extfun(&v[index])),
+            None => self.table.sort_by(|a, b| a[index].cmp(&b[index])),
+        };
+    }
 }
 
 // TODO: add struct to set/get ZLB_INFO data
@@ -202,6 +211,7 @@ pub(crate) fn list_info() -> Result<(), anyhow::Error> {
                 pin,
             ]);
         }
+        tab.sort();
         tab.print(&format!(
             "maps_ids: {}",
             ids.iter()

@@ -321,7 +321,8 @@ impl Group {
                 format!("{}", ginfo.becount),
             ]);
         }
-
+        let extract_key = Some(&|s: &String| u64::from_str_radix(&s, 10).unwrap_or_default());
+        table.sort_by_key(0, extract_key);
         table.print("Backend groups");
 
         table.reset();
