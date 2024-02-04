@@ -254,7 +254,31 @@ impl Group {
         Ok(())
     }
 
+    fn get<K: aya::Pod>(&self, map_name: &str, ep: &K) -> Result<BEGroup, anyhow::Error> {
+        let map = self.group_mapdata(map_name)?;
+        let gmap: HashMap<_, K, BEGroup> = map.try_into().context(map_name.to_string())?;
+        gmap.get(ep, 0).context("get backend group")
+    }
+
+    fn get_by_ep(&self, ep: &EndPoint) -> Result<BEGroup, anyhow::Error> {
+        match ep.ep_key() {
+            EPX::V4(ep4) => self.get("ZLB_LB4", &ep4),
+            EPX::V6(ep6) => self.get("ZLB_LB6", &ep6),
+        }
+    }
+
     pub fn add(&self, ep: &EndPoint) -> Result<u64, anyhow::Error> {
+        match self.get_by_ep(ep) {
+            Ok(beg) => {
+                return Err(anyhow!(
+                    "Backend group {} already exists, gid: {}",
+                    ep,
+                    beg.gid
+                ))
+            }
+            Err(_) => {}
+        }
+
         let ginfo = ep.as_group_info(&self.ifname)?;
         let gid = self.allocate_group(&ginfo)?;
         let mut beg = BEGroup::new(gid);
