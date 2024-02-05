@@ -620,6 +620,24 @@ impl Backend {
 
         Ok(EndPoint::from_backend(&be, &ginfo))
     }
+
+    pub fn clear(&self) -> Result<Vec<EndPoint>, anyhow::Error> {
+        let backends = Self::backends()?;
+        let mut rem_eps = Vec::<EndPoint>::new();
+
+        for (key, _) in backends
+            .iter()
+            .filter_map(|x| x.ok())
+            .filter(|(k, _)| self.gid == k.gid as u64)
+        {
+            match self.remove(key.index) {
+                Ok(ep) => rem_eps.push(ep),
+                Err(_) => {}
+            }
+        }
+
+        Ok(rem_eps)
+    }
 }
 
 #[cfg(todo_code)]

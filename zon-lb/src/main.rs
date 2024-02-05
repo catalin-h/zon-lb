@@ -276,7 +276,16 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
                 backend.group.ifname, ep, backend.gid
             );
         }
-        _ => {}
+        BackendAction::Clear => {
+            let backend = Backend::new(opt.gid)?;
+            let eps = backend.clear()?;
+            for ep in eps {
+                info!(
+                    "[{}] backend {} removed for group {}",
+                    backend.group.ifname, ep, backend.gid
+                );
+            }
+        }
     };
     Ok(())
 }
