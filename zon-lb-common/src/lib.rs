@@ -85,6 +85,22 @@ pub enum EPX {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for GroupInfo {}
 
+#[cfg(feature = "user")]
+impl EPX {
+    pub fn port(&self) -> u16 {
+        match self {
+            Self::V4(ep4) => ep4.port,
+            Self::V6(ep6) => ep6.port,
+        }
+    }
+    pub fn proto(&self) -> u8 {
+        match self {
+            Self::V4(ep4) => ep4.proto as u8,
+            Self::V6(ep6) => ep6.proto as u8,
+        }
+    }
+}
+
 // TODO: add 32-bit hash for generic hashing for different ip protocols
 
 #[repr(C)]

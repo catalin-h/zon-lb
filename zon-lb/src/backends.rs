@@ -413,6 +413,39 @@ impl GroupMap {
         let group = Group::new(&ifname)?;
         Ok(Self { group, meta, info })
     }
+
+    fn check_compat(&self, ep: &EndPoint) -> Result<(), anyhow::Error> {
+        match ep.ipaddr {
+            IpAddr::V4(_) => {
+                if !self.info.flags.contains(EPFlags::IPV4) {
+                    return Err(anyhow!(
+                        "Incompatible IPv4 backend {} with target IPv6 group {}",
+                        ep,
+                        self.info.key.as_endpoint()
+                    ));
+                }
+            }
+            IpAddr::V6(_) => {
+                if !self.info.flags.contains(EPFlags::IPV6) {
+                    return Err(anyhow!(
+                        "Incompatible IPv6 backend {} with target IPv4 group {}",
+                        ep,
+                        self.info.key.as_endpoint()
+                    ));
+                }
+            }
+        }
+
+        if ep.proto != Protocol::None && ep.proto != self.info.key.proto().into() {
+            return Err(anyhow!(
+                "Incompatible backend protocol {} with target group protocol {}",
+                ep,
+                self.info.key.as_endpoint()
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 impl Backend {
@@ -432,6 +465,8 @@ impl Backend {
         let mut gmap = GroupMap::new(self.gid)?;
         let index = gmap.info.becount as u16;
         let iflags = MUFlags::EXIST;
+
+        gmap.check_compat(ep)?;
 
         let be = ep.as_backend(self.gid);
         let key = BEKey {
