@@ -134,13 +134,18 @@ pub struct BE {
     /// Holds both an IPv4 and IPv6 address (big-endian)
     pub address: [u8; 16],
     /// The backend listening port and it should be used
-    /// only if PORT is set in the LB flags.
-    /// The default value is 0 and it should be ignored regardless of
-    /// the LB flag.
+    /// only if PORT flag is set. The default value is 0
+    // and it should be ignored regardless of the LB flag.
     pub port: u16,
     /// The group id for current backend. It allows to group backends
     /// servicing an LB frontend.
     pub gid: u16,
+    /// Used to decode the address field intro IPv4 or v6.
+    /// If the PORT flag is enabled the LB port should be replaced
+    /// with the backend port.
+    pub flags: EPFlags,
+    /// The protocol from LB.
+    pub proto: u8,
 }
 
 #[cfg(feature = "user")]

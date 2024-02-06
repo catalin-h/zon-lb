@@ -96,6 +96,24 @@ impl ToEndPoint for EPX {
     }
 }
 
+impl ToEndPoint for BE {
+    fn as_endpoint(&self) -> EndPoint {
+        let ipaddr = if self.flags.contains(EPFlags::IPV4) {
+            self.ipv4()
+        } else if self.flags.contains(EPFlags::IPV6) {
+            self.ipv6()
+        } else {
+            IpAddr::from(self.address)
+        };
+
+        EndPoint {
+            ipaddr,
+            proto: self.proto.into(),
+            port: self.port,
+        }
+    }
+}
+
 impl Default for EndPoint {
     fn default() -> Self {
         Self {
@@ -133,19 +151,6 @@ impl EndPoint {
         })
     }
 
-    fn from_backend(be: &BE, ginfo: &GroupInfo) -> Self {
-        let (ipaddr, proto) = match ginfo.key {
-            EPX::V4(ep) => (be.ipv4(), ep.proto),
-            EPX::V6(ep) => (be.ipv6(), ep.proto),
-        };
-
-        Self {
-            ipaddr,
-            proto: (proto as u8).into(),
-            port: be.port,
-        }
-    }
-
     fn ep_key(&self) -> EPX {
         match &self.ipaddr {
             IpAddr::V4(ip) => EPX::V4(EP4 {
@@ -178,17 +183,21 @@ impl EndPoint {
     }
 
     fn as_backend(&self, gid: u64) -> BE {
+        let (address, flags) = match &self.ipaddr {
+            IpAddr::V4(ip) => {
+                let mut v6: [u8; 16] = [0; 16];
+                v6[..4].clone_from_slice(&ip.octets()[..]);
+                (v6, EPFlags::IPV4)
+            }
+            IpAddr::V6(ip) => (ip.octets(), EPFlags::IPV6),
+        };
+
         BE {
-            address: match &self.ipaddr {
-                IpAddr::V4(ip) => {
-                    let mut v6: [u8; 16] = [0; 16];
-                    v6[..4].clone_from_slice(&ip.octets()[..]);
-                    v6
-                }
-                IpAddr::V6(ip) => ip.octets(),
-            },
+            address,
             port: self.port,
             gid: gid as u16,
+            proto: self.proto as u8,
+            flags,
         }
     }
 }
@@ -466,10 +475,7 @@ impl Backend {
             let key = BEKey { gid, index };
             match backends.get(&key, 0) {
                 Ok(be) => {
-                    table.push_row(vec![
-                        index.to_string(),
-                        EndPoint::from_backend(&be, &ginfo).to_string(),
-                    ]);
+                    table.push_row(vec![index.to_string(), be.as_endpoint().to_string()]);
                 }
                 _ => {}
             }
@@ -630,9 +636,7 @@ impl Backend {
         ))?;
         backends.remove(&key).context("Failed to remove backend")?;
 
-        let gmap = Group::group_meta()?;
-        let ginfo = gmap.get(&self.gid, 0)?;
-        Ok(EndPoint::from_backend(&be, &ginfo))
+        Ok(be.as_endpoint())
     }
 
     pub fn clear(&self) -> Result<Vec<EndPoint>, anyhow::Error> {
