@@ -261,29 +261,23 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
         BackendAction::Add(add_opt) => {
             let backend = Backend::new(opt.gid)?;
             let ep = handler_add_ep(&add_opt)?;
-            backend.add(&ep)?;
+            let group = backend.add(&ep)?;
             info!(
                 "[{}] backend {} added for group {}",
-                backend.group.ifname, ep, backend.gid
+                group.ifname, ep, backend.gid
             );
         }
         BackendAction::List => Backend::list(opt.gid)?,
         BackendAction::Remove { index } => {
             let backend = Backend::new(opt.gid)?;
             let ep = backend.remove(*index)?;
-            info!(
-                "[{}] backend {} removed for group {}",
-                backend.group.ifname, ep, backend.gid
-            );
+            info!("backend {} removed for group {}", ep, backend.gid);
         }
         BackendAction::Clear => {
             let backend = Backend::new(opt.gid)?;
             let eps = backend.clear()?;
             for ep in eps {
-                info!(
-                    "[{}] backend {} removed for group {}",
-                    backend.group.ifname, ep, backend.gid
-                );
+                info!("backend {} removed for group {}", ep, backend.gid);
             }
         }
     };

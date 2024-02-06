@@ -388,18 +388,27 @@ impl Group {
 
 pub struct Backend {
     pub gid: u64,
-    pub group: Group,
+}
+
+struct GroupMap {
+    group: Group,
+    info: GroupInfo,
+    meta: HashMap<MapData, u64, GroupInfo>,
+}
+
+impl GroupMap {
+    fn new(gid: u64) -> Result<GroupMap, anyhow::Error> {
+        let meta = Group::group_meta()?;
+        let info = meta.get(&gid, 0).context("No group in metadata")?;
+        let ifname = if_index_to_name(info.ifindex).ok_or(anyhow!("Can't get netdev name"))?;
+        let group = Group::new(&ifname)?;
+        Ok(Self { group, meta, info })
+    }
 }
 
 impl Backend {
     pub fn new(gid: u64) -> Result<Backend, anyhow::Error> {
-        let gmap = Group::group_meta()?;
-        let ginfo = gmap.get(&gid, 0).context("No group in metadata")?;
-        let ifname = if_index_to_name(ginfo.ifindex).ok_or(anyhow!("Can't get netdev name"))?;
-        Ok(Self {
-            gid,
-            group: Group::new(&ifname)?,
-        })
+        Ok(Self { gid })
     }
 
     fn backends() -> Result<HashMap<MapData, BEKey, BE>, anyhow::Error> {
@@ -409,11 +418,10 @@ impl Backend {
         map.try_into().context("Diff data size for backends map")
     }
 
-    pub fn add(&self, ep: &EndPoint) -> Result<(), anyhow::Error> {
+    pub fn add(&self, ep: &EndPoint) -> Result<Group, anyhow::Error> {
         let mut backends = Self::backends()?;
-        let mut gmap = Group::group_meta()?;
-        let mut ginfo = gmap.get(&self.gid, 0)?;
-        let index = ginfo.becount as u16;
+        let mut gmap = GroupMap::new(self.gid)?;
+        let index = gmap.info.becount as u16;
         let iflags = MUFlags::EXIST;
 
         let be = ep.as_backend(self.gid);
@@ -425,28 +433,29 @@ impl Backend {
             .insert(key, be, MUFlags::ANY.bits())
             .context("Insert backend")?;
 
-        ginfo.becount += 1;
-        gmap.insert(self.gid, ginfo, iflags.bits())
+        gmap.info.becount += 1;
+        gmap.meta
+            .insert(self.gid, gmap.info, iflags.bits())
             .context("Update group meta")?;
 
         let beg = BEGroup {
             gid: self.gid,
             becount: index + 1,
-            flags: ginfo.flags,
+            flags: gmap.info.flags,
         };
 
-        match &ginfo.key {
-            EPX::V4(ep4) => self
+        match &gmap.info.key {
+            EPX::V4(ep4) => gmap
                 .group
                 .insert_group("ZLB_LB4", ep4, &beg, iflags)
                 .context("Update v4 group")?,
-            EPX::V6(ep6) => self
+            EPX::V6(ep6) => gmap
                 .group
                 .insert_group("ZLB_LB6", ep6, &beg, iflags)
                 .context("Update v6 group")?,
         }
 
-        Ok(())
+        Ok(gmap.group)
     }
 
     fn build_backend_list(gid: u16, ginfo: &GroupInfo) -> Result<InfoTable, anyhow::Error> {
@@ -573,12 +582,11 @@ impl Backend {
     }
 
     fn remove_from_group(&self, index: u16) -> Result<u16, anyhow::Error> {
-        let mut gmap = Group::group_meta()?;
-        let mut ginfo = gmap.get(&self.gid, 0)?;
-        let mut begroup = self.group.get_by_ep(&ginfo.key.as_endpoint())?;
+        let mut gmap = GroupMap::new(self.gid)?;
+        let mut begroup = gmap.group.get_by_ep(&gmap.info.key.as_endpoint())?;
         let mut rem_index = index;
         let iflags = MUFlags::EXIST;
-        let mut count = begroup.becount.min(ginfo.becount as u16);
+        let mut count = begroup.becount.min(gmap.info.becount as u16);
 
         if count > 0 && index < count {
             self.replace(count - 1, index)?;
@@ -588,19 +596,19 @@ impl Backend {
 
         if count != begroup.becount {
             begroup.becount = count;
-            let res = match &ginfo.key {
-                EPX::V4(ep4) => self.group.insert_group("ZLB_LB4", ep4, &begroup, iflags),
-                EPX::V6(ep6) => self.group.insert_group("ZLB_LB6", ep6, &begroup, iflags),
+            let res = match &gmap.info.key {
+                EPX::V4(ep4) => gmap.group.insert_group("ZLB_LB4", ep4, &begroup, iflags),
+                EPX::V6(ep6) => gmap.group.insert_group("ZLB_LB6", ep6, &begroup, iflags),
             };
             if let Err(_) = res {
-                log::warn!("Can't update group {}", ginfo.key.as_endpoint());
+                log::warn!("Can't update group {}", gmap.info.key.as_endpoint());
             }
         }
 
         let count: u64 = count.into();
-        if count != ginfo.becount {
-            ginfo.becount = count;
-            if let Err(_) = gmap.insert(self.gid, ginfo, iflags.bits()) {
+        if count != gmap.info.becount {
+            gmap.info.becount = count;
+            if let Err(_) = gmap.meta.insert(self.gid, gmap.info, iflags.bits()) {
                 log::warn!("Can't update group meta for group {}", self.gid);
             }
         }
@@ -620,7 +628,7 @@ impl Backend {
             "Remove: can't find backend: {} : {}",
             key.gid, key.index
         ))?;
-        backends.remove(&key).context("Fail to remove backend")?;
+        backends.remove(&key).context("Failed to remove backend")?;
 
         let gmap = Group::group_meta()?;
         let ginfo = gmap.get(&self.gid, 0)?;
