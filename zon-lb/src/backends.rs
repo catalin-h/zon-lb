@@ -446,6 +446,10 @@ impl GroupMap {
 
         Ok(())
     }
+
+    fn begroup(&self) -> Result<BEGroup, anyhow::Error> {
+        self.group.get_by_ep(&self.info.key.as_endpoint())
+    }
 }
 
 impl Backend {
@@ -615,7 +619,7 @@ impl Backend {
 
     fn remove_from_group(&self, index: u16) -> Result<u16, anyhow::Error> {
         let mut gmap = GroupMap::new(self.gid)?;
-        let mut begroup = gmap.group.get_by_ep(&gmap.info.key.as_endpoint())?;
+        let mut begroup = gmap.begroup()?;
         let mut rem_index = index;
         let iflags = MUFlags::EXIST;
         let mut count = begroup.becount.min(gmap.info.becount as u16);
