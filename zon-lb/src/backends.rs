@@ -652,7 +652,7 @@ impl Backend {
         Ok(rem_index)
     }
 
-    pub fn remove(&self, index: u16) -> Result<EndPoint, anyhow::Error> {
+    pub fn remove(&self, index: u16) -> Result<BE, anyhow::Error> {
         let mut backends = Self::backends()?;
         let rem_index = self.remove_from_group(index).unwrap_or(index);
         let key = BEKey {
@@ -666,12 +666,12 @@ impl Backend {
         ))?;
         backends.remove(&key).context("Failed to remove backend")?;
 
-        Ok(be.as_endpoint())
+        Ok(be)
     }
 
-    pub fn clear(&self) -> Result<Vec<EndPoint>, anyhow::Error> {
+    pub fn clear(&self) -> Result<Vec<BE>, anyhow::Error> {
         let backends = Self::backends()?;
-        let mut rem_eps = Vec::<EndPoint>::new();
+        let mut rem_eps = Vec::new();
 
         for (key, _) in backends
             .iter()
@@ -679,7 +679,7 @@ impl Backend {
             .filter(|(k, _)| self.gid == k.gid as u64)
         {
             match self.remove(key.index) {
-                Ok(ep) => rem_eps.push(ep),
+                Ok(be) => rem_eps.push(be),
                 Err(_) => {}
             }
         }

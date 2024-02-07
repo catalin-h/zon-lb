@@ -16,6 +16,8 @@ use prog::*;
 use protocols::Protocol;
 use tokio::signal;
 
+use crate::backends::ToEndPoint;
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum ProgAttachMode {
     /// Try attach the program in driver mode. In this mode the network interface driver must
@@ -270,14 +272,14 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
         BackendAction::List => Backend::list(opt.gid)?,
         BackendAction::Remove { index } => {
             let backend = Backend::new(opt.gid)?;
-            let ep = backend.remove(*index)?;
-            info!("backend {} removed for group {}", ep, backend.gid);
+            let be = backend.remove(*index)?;
+            info!("backend {} removed for group {}", be.as_endpoint(), be.gid);
         }
         BackendAction::Clear => {
             let backend = Backend::new(opt.gid)?;
-            let eps = backend.clear()?;
-            for ep in eps {
-                info!("backend {} removed for group {}", ep, backend.gid);
+            let bes = backend.clear()?;
+            for be in bes {
+                info!("backend {} removed for group {}", be.as_endpoint(), be.gid);
             }
         }
     };
