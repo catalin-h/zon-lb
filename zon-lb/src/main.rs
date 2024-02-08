@@ -1,4 +1,5 @@
 mod backends;
+mod config;
 mod helpers;
 mod info;
 mod prog;
@@ -8,15 +9,13 @@ mod services;
 use anyhow::Context;
 use aya::{include_bytes_aligned, programs::XdpFlags, BpfLoader, Btf};
 use aya_log::BpfLogger;
-use backends::{Backend, EndPoint};
+use backends::{Backend, EndPoint, ToEndPoint};
 use clap::{Parser, ValueEnum};
 use info::*;
 use log::{info, warn};
 use prog::*;
 use protocols::Protocol;
 use tokio::signal;
-
-use crate::backends::ToEndPoint;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum ProgAttachMode {
