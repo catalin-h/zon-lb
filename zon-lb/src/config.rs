@@ -57,14 +57,12 @@ impl Config {
 }
 
 pub struct ConfigFile {
-    cfg: Config,
     path: String,
 }
 
 impl ConfigFile {
     pub fn new<S: AsRef<str>>(filename: &S) -> Self {
         Self {
-            cfg: Config::new(),
             path: String::from(filename.as_ref()),
         }
     }
@@ -82,9 +80,9 @@ impl ConfigFile {
 
         log::info!("Read {} bytes from: {}", size, self.path);
 
-        self.cfg = toml::from_str(&contents)?;
+        let cfg: Config = toml::from_str(&contents)?;
 
-        log::info!("Found in config: {}", self.cfg.description());
+        log::info!("Found in config: {}", cfg.description());
         Ok(())
     }
 
