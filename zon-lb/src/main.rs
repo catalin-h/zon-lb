@@ -11,6 +11,7 @@ use aya::{include_bytes_aligned, programs::XdpFlags, BpfLoader, Btf};
 use aya_log::BpfLogger;
 use backends::{Backend, EndPoint, ToEndPoint};
 use clap::{Parser, ValueEnum};
+use config::ConfigFile;
 use info::*;
 use log::{info, warn};
 use prog::*;
@@ -149,6 +150,24 @@ struct BackendOpt {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum ConfigAction {
+    /// Load config file into bpf space. This will override the current loaded maps.
+    Load,
+    /// Save current zon-lb bfs state into toml configuration file.
+    Save,
+}
+
+#[derive(clap::Args, Debug)]
+struct ConfigOpt {
+    /// Configuration file path
+    #[clap(default_value = "zonlb.toml")]
+    file_path: String,
+    /// Configuration file actions
+    #[clap(subcommand)]
+    action: ConfigAction,
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum Command {
     /// Shows information about loaded programs and the used maps
     Info,
@@ -160,6 +179,8 @@ enum Command {
     Backend(BackendOpt),
     /// Debug and monitor program activity
     Debug,
+    /// Config persistence
+    Config(ConfigOpt),
 }
 
 #[derive(Debug, Parser)]
@@ -285,6 +306,15 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+fn handle_config(opt: &ConfigOpt) -> Result<(), anyhow::Error> {
+    let mut config = ConfigFile::new(&opt.file_path);
+
+    match &opt.action {
+        ConfigAction::Load => config.load(),
+        ConfigAction::Save => config.save(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -296,6 +326,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Prog(opt) => handle_prog(opt),
         Command::Group(opt) => handle_group(opt),
         Command::Backend(opt) => handle_backends(opt),
+        Command::Config(opt) => handle_config(opt),
         Command::Debug => {
             info!("Waiting for Ctrl-C...");
             signal::ctrl_c().await?;

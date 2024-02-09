@@ -1,4 +1,10 @@
+use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+    path::Path,
+};
 
 #[derive(Serialize, Deserialize)]
 struct EP {
@@ -27,6 +33,83 @@ struct Backend {
 
 #[derive(Serialize, Deserialize)]
 struct Config {
-    ifaces: NetIf,
+    ifaces: Vec<NetIf>,
     backends: Vec<Backend>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Self {
+            ifaces: vec![],
+            backends: vec![],
+        }
+    }
+
+    pub fn description(&self) -> String {
+        let gcount = self.ifaces.iter().fold(0, |acc, g| acc + g.groups.len());
+        format!(
+            "Groups: {gcount} in {} netifs and {} backends",
+            self.ifaces.len(),
+            self.backends.len()
+        )
+    }
+}
+
+pub struct ConfigFile {
+    cfg: Config,
+    path: String,
+}
+
+impl ConfigFile {
+    pub fn new<S: AsRef<str>>(filename: &S) -> Self {
+        Self {
+            cfg: Config::new(),
+            path: String::from(filename.as_ref()),
+        }
+    }
+
+    pub fn load(&mut self) -> Result<(), anyhow::Error> {
+        if !Path::new(&self.path).try_exists()? {
+            return Err(anyhow!("Config file does not exits, {}", self.path));
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .context(format!("Can't read config file: {}", self.path))?;
+        let mut contents = String::new();
+        let size = file.read_to_string(&mut contents)?;
+
+        log::info!("Read {} bytes from: {}", size, self.path);
+
+        self.cfg = toml::from_str(&contents)?;
+
+        log::info!("Found in config: {}", self.cfg.description());
+        Ok(())
+    }
+
+    pub fn save(&self) -> Result<(), anyhow::Error> {
+        if Path::new(&self.path).try_exists()? {
+            log::info!("Config file will be overridden, {}", self.path);
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&self.path)
+            .context(format!("Can't write to config file: {}", self.path))?;
+
+        log::info!("Saving config: {}", self.cfg.description());
+
+        let contents = toml::to_string_pretty(&self.cfg)?;
+
+        file.write_all(contents.as_bytes())?;
+
+        log::info!(
+            "Wrote {} bytes to config file: {}",
+            contents.len(),
+            self.path
+        );
+
+        Ok(())
+    }
 }
