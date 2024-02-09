@@ -457,7 +457,7 @@ impl Backend {
         Ok(Self { gid })
     }
 
-    fn backends() -> Result<HashMap<MapData, BEKey, BE>, anyhow::Error> {
+    pub fn backends() -> Result<HashMap<MapData, BEKey, BE>, anyhow::Error> {
         let map =
             mapdata_from_pinned_map("", "ZLBX_BACKENDS").context("Get pinned backends map")?;
         let map = Map::HashMap(map);

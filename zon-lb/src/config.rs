@@ -1,3 +1,4 @@
+use crate::backends::{Backend as BCKND, ToEndPoint};
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -98,9 +99,11 @@ impl ConfigFile {
             .open(&self.path)
             .context(format!("Can't write to config file: {}", self.path))?;
 
-        log::info!("Saving config: {}", self.cfg.description());
+        let cfg = self.fetch()?;
 
-        let contents = toml::to_string_pretty(&self.cfg)?;
+        log::info!("Saving config: {}", cfg.description());
+
+        let contents = toml::to_string(&cfg)?;
 
         file.write_all(contents.as_bytes())?;
 
@@ -111,5 +114,23 @@ impl ConfigFile {
         );
 
         Ok(())
+    }
+
+    fn fetch(&self) -> Result<Config, anyhow::Error> {
+        let mut cfg = Config::new();
+
+        log::info!("fetching state ...");
+
+        for (key, be) in BCKND::backends()?.iter().filter_map(|pair| pair.ok()) {
+            let ep = be.as_endpoint();
+            let ep = EP {
+                ip: ep.ipaddr.to_string(),
+                proto: ep.proto as u8,
+                port: ep.port,
+            };
+            cfg.backends.push(Backend { gid: key.gid, ep });
+        }
+
+        Ok(cfg)
     }
 }
