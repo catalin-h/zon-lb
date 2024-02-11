@@ -16,33 +16,29 @@ struct EP {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Group {
-    id: u16,
-    ep: EP,
-}
-
-#[derive(Serialize, Deserialize)]
 struct NetIf {
-    name: String,
-    groups: Vec<Group>,
+    groups: HashMap<String, EP>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct Config {
-    ifaces: Vec<NetIf>,
+    ifaces: HashMap<String, NetIf>,
     backends: HashMap<String, EP>,
 }
 
 impl Config {
     pub fn new() -> Self {
         Self {
-            ifaces: vec![],
+            ifaces: HashMap::new(),
             backends: HashMap::new(),
         }
     }
 
     pub fn description(&self) -> String {
-        let gcount = self.ifaces.iter().fold(0, |acc, g| acc + g.groups.len());
+        let gcount = self
+            .ifaces
+            .iter()
+            .fold(0, |acc, (_, g)| acc + g.groups.len());
         format!(
             "Groups: {gcount} in {} netifs and {} backends",
             self.ifaces.len(),
