@@ -28,12 +28,6 @@ struct NetIf {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Backend {
-    gid: u16,
-    ep: EP,
-}
-
-#[derive(Serialize, Deserialize)]
 struct Config {
     ifaces: Vec<NetIf>,
     backends: HashMap<String, EP>,
