@@ -128,7 +128,7 @@ impl ConfigFile {
                 port: ep.port,
             };
             cfg.backends
-                .entry(format!("{}/{}", key.gid, key.index))
+                .entry(format!("{}:{}", key.gid, key.index))
                 .or_insert(ep);
         }
 
