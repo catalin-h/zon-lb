@@ -35,27 +35,28 @@ impl NetIf {
 
 #[derive(Serialize, Deserialize)]
 struct Config {
-    ifaces: HashMap<String, NetIf>,
-    backends: HashMap<String, EP>,
+    netif: HashMap<String, NetIf>,
+
+    backend: HashMap<String, EP>,
 }
 
 impl Config {
     pub fn new() -> Self {
         Self {
-            ifaces: HashMap::new(),
-            backends: HashMap::new(),
+            netif: HashMap::new(),
+            backend: HashMap::new(),
         }
     }
 
     pub fn description(&self) -> String {
         let gcount = self
-            .ifaces
+            .netif
             .iter()
             .fold(0, |acc, (_, g)| acc + g.groups.len());
         format!(
             "Groups: {gcount} in {} netifs and {} backends",
-            self.ifaces.len(),
-            self.backends.len()
+            self.netif.len(),
+            self.backend.len()
         )
     }
 }
@@ -130,15 +131,15 @@ impl ConfigFile {
                 proto: ep.proto as u8,
                 port: ep.port,
             };
-            cfg.backends
-                .entry(format!("{}:{}", key.gid, key.index))
+            cfg.backend
+                .entry(format!("{}_{}", key.gid, key.index))
                 .or_insert(ep);
         }
 
         for (gid, ginfo) in Group::group_meta()?.iter().filter_map(|pair| pair.ok()) {
             let ifname = ginfo.ifindex.to_string();
             let ifname = helpers::if_index_to_name(ginfo.ifindex).unwrap_or(ifname);
-            let netif = cfg.ifaces.entry(ifname).or_insert(NetIf::new());
+            let netif = cfg.netif.entry(ifname).or_insert(NetIf::new());
             let ep = ginfo.key.as_endpoint();
             let ep = EP {
                 ip: ep.ipaddr,
