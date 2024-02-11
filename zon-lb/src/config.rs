@@ -2,6 +2,7 @@ use crate::backends::{Backend as BCKND, ToEndPoint};
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::OpenOptions,
     io::{Read, Write},
     path::Path,
@@ -35,14 +36,14 @@ struct Backend {
 #[derive(Serialize, Deserialize)]
 struct Config {
     ifaces: Vec<NetIf>,
-    backends: Vec<Backend>,
+    backends: HashMap<String, EP>,
 }
 
 impl Config {
     pub fn new() -> Self {
         Self {
             ifaces: vec![],
-            backends: vec![],
+            backends: HashMap::new(),
         }
     }
 
@@ -126,7 +127,9 @@ impl ConfigFile {
                 proto: ep.proto as u8,
                 port: ep.port,
             };
-            cfg.backends.push(Backend { gid: key.gid, ep });
+            cfg.backends
+                .entry(format!("{}/{}", key.gid, key.index))
+                .or_insert(ep);
         }
 
         Ok(cfg)
