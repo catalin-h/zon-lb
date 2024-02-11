@@ -222,7 +222,7 @@ impl Group {
         Ok(Map::HashMap(map))
     }
 
-    fn group_meta() -> Result<HashMap<MapData, u64, GroupInfo>, anyhow::Error> {
+    pub fn group_meta() -> Result<HashMap<MapData, u64, GroupInfo>, anyhow::Error> {
         let map = mapdata_from_pinned_map("", "ZLBX_GMETA").context("Group meta")?;
         let map = Map::HashMap(map);
         map.try_into().context("Groups meta")

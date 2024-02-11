@@ -1,23 +1,36 @@
-use crate::backends::{Backend as BCKND, ToEndPoint};
+use crate::{
+    backends::{Backend as BCKND, Group, ToEndPoint},
+    helpers,
+};
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::OpenOptions,
     io::{Read, Write},
+    net::IpAddr,
     path::Path,
 };
 
 #[derive(Serialize, Deserialize)]
 struct EP {
-    ip: String,
+    ip: IpAddr,
     proto: u8,
     port: u16,
 }
 
 #[derive(Serialize, Deserialize)]
 struct NetIf {
+    #[serde(flatten)]
     groups: HashMap<String, EP>,
+}
+
+impl NetIf {
+    fn new() -> Self {
+        Self {
+            groups: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -113,13 +126,26 @@ impl ConfigFile {
         for (key, be) in BCKND::backends()?.iter().filter_map(|pair| pair.ok()) {
             let ep = be.as_endpoint();
             let ep = EP {
-                ip: ep.ipaddr.to_string(),
+                ip: ep.ipaddr,
                 proto: ep.proto as u8,
                 port: ep.port,
             };
             cfg.backends
                 .entry(format!("{}:{}", key.gid, key.index))
                 .or_insert(ep);
+        }
+
+        for (gid, ginfo) in Group::group_meta()?.iter().filter_map(|pair| pair.ok()) {
+            let ifname = ginfo.ifindex.to_string();
+            let ifname = helpers::if_index_to_name(ginfo.ifindex).unwrap_or(ifname);
+            let netif = cfg.ifaces.entry(ifname).or_insert(NetIf::new());
+            let ep = ginfo.key.as_endpoint();
+            let ep = EP {
+                ip: ep.ipaddr,
+                proto: ep.proto as u8,
+                port: ep.port,
+            };
+            netif.groups.entry(gid.to_string()).or_insert(ep);
         }
 
         Ok(cfg)
