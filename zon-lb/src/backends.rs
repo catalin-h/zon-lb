@@ -453,8 +453,8 @@ impl GroupMap {
 }
 
 impl Backend {
-    pub fn new(gid: u64) -> Result<Backend, anyhow::Error> {
-        Ok(Self { gid })
+    pub fn new(gid: u64) -> Self {
+        Self { gid }
     }
 
     pub fn backends() -> Result<HashMap<MapData, BEKey, BE>, anyhow::Error> {

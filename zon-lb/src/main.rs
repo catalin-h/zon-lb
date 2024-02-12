@@ -281,7 +281,7 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
     // TODO: healthcheck for backends
     match &opt.action {
         BackendAction::Add(add_opt) => {
-            let backend = Backend::new(opt.gid)?;
+            let backend = Backend::new(opt.gid);
             let ep = handler_add_ep(&add_opt)?;
             let group = backend.add(&ep)?;
             info!(
@@ -291,12 +291,12 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
         }
         BackendAction::List => Backend::list(opt.gid)?,
         BackendAction::Remove { index } => {
-            let backend = Backend::new(opt.gid)?;
+            let backend = Backend::new(opt.gid);
             let be = backend.remove(*index)?;
             info!("backend {} removed for group {}", be.as_endpoint(), be.gid);
         }
         BackendAction::Clear => {
-            let backend = Backend::new(opt.gid)?;
+            let backend = Backend::new(opt.gid);
             let bes = backend.clear()?;
             for be in bes {
                 info!("backend {} removed for group {}", be.as_endpoint(), be.gid);
