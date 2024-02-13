@@ -12,6 +12,7 @@ use std::{
     net::IpAddr,
     path::Path,
 };
+use zon_lb_common::BEKey;
 
 #[derive(Serialize, Deserialize)]
 struct EP {
@@ -136,6 +137,17 @@ impl ConfigFile {
         Ok(())
     }
 
+    fn to_backend_key(key: &BEKey) -> String {
+        format!("{}_{}", key.gid, key.index)
+    }
+
+    fn from_backend_key(key: &str) -> BEKey {
+        let (gid, index) = key.split_once("_").unwrap_or(("0", "0"));
+        let gid = gid.parse::<u16>().unwrap_or(0);
+        let index = index.parse::<u16>().unwrap_or(0);
+        BEKey { gid, index }
+    }
+
     fn fetch(&self) -> Result<Config, anyhow::Error> {
         let mut cfg = Config::new();
 
@@ -148,9 +160,7 @@ impl ConfigFile {
                 proto: ep.proto as u8,
                 port: ep.port,
             };
-            cfg.backend
-                .entry(format!("{}_{}", key.gid, key.index))
-                .or_insert(ep);
+            cfg.backend.entry(Self::to_backend_key(&key)).or_insert(ep);
         }
 
         for (gid, ginfo) in Group::group_meta()?.iter().filter_map(|pair| pair.ok()) {
@@ -192,8 +202,34 @@ impl ConfigWriter {
             match Group::new(&name) {
                 Ok(group) => self.load_groups(group, &nif),
                 Err(e) => {
-                    log::error!("Skip group in {}, {}", name, e)
+                    log::error!("Failed to load all groups in {}, {}", name, e)
                 }
+            }
+        }
+
+        for (key, ep) in &cfg.backend {
+            let key = ConfigFile::from_backend_key(&key);
+            let ep: EndPoint = ep.into();
+            if !self.mapping.contains_key(&key.gid) {
+                log::warn!(
+                    "Backend {} not loaded, no group id {} in config or group not loaded",
+                    ep,
+                    key.gid
+                );
+                continue;
+            }
+            let bemgr = crate::Backend::new(key.gid as u64);
+            match bemgr.add(&ep) {
+                Ok(group) => {
+                    self.bcount += 1;
+                    log::info!(
+                        "Backend {} added for group {} on {}",
+                        ep,
+                        key.gid,
+                        group.ifname,
+                    )
+                }
+                Err(e) => log::error!("Can't add backend {} for group {}, {}", ep, key.gid, e),
             }
         }
 
@@ -208,6 +244,10 @@ impl ConfigWriter {
     }
 
     fn load_groups(&mut self, group: Group, netif: &NetIf) {
+        match group.remove_all() {
+            Ok(()) => log::info!("All groups removed from {}", group.ifname),
+            Err(e) => log::error!("Not all groups were removed from {}, {}", group.ifname, e),
+        };
         for (gid, ep) in netif.groups.iter() {
             let gid = match gid.parse::<u16>() {
                 Ok(g) => g,
@@ -222,7 +262,7 @@ impl ConfigWriter {
                 }
             };
             let ep = ep.into();
-            log::info!("Adding backend group {} to {}", ep, group.ifname);
+            log::info!("Adding backend group {} on {}", ep, group.ifname);
             let actual_gid = match group.add(&ep) {
                 Ok(id) => id,
                 Err(e) => {
