@@ -186,10 +186,6 @@ enum Command {
 #[derive(Debug, Parser)]
 #[clap(propagate_version = false)]
 struct Cli {
-    /// The target network interface name
-    #[clap(short, long, default_value = "lo")]
-    ifname: String,
-
     #[clap(subcommand)]
     command: Command,
 }
