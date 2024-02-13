@@ -101,10 +101,10 @@ struct AddEpOpt {
 
 #[derive(clap::Subcommand, Debug)]
 enum GroupAction {
+    /// List backend groups assigned to current interface [default]
+    List,
     /// Add a new group of backends for load balancing
     Add(AddEpOpt),
-    /// List all backend groups attached to current interface
-    List,
     /// Remove group
     Remove {
         /// The group Id returned by 'group add' or 'group list' commands
@@ -121,7 +121,7 @@ struct GroupOpt {
     ifname: String,
     /// Group action
     #[clap(subcommand)]
-    action: GroupAction,
+    action: Option<GroupAction>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -255,8 +255,8 @@ fn handler_add_ep(opt: &AddEpOpt) -> Result<EndPoint, anyhow::Error> {
 
 fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
     let group = backends::Group::new(&opt.ifname)?;
-
-    match &opt.action {
+    let action = opt.action.as_ref().unwrap_or(&GroupAction::List);
+    match &action {
         GroupAction::Add(add_opt) => {
             let ep = handler_add_ep(&add_opt)?;
             let gid = group.add(&ep)?;
