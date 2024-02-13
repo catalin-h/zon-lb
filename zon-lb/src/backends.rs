@@ -341,6 +341,21 @@ impl Group {
         let mut rem_eps = vec![];
         let gmap = Self::group_meta()?;
 
+        match Backend::new(gid).clear() {
+            Ok(bens) => log::info!(
+                "{} backends removed from group {} on {}",
+                bens.len(),
+                gid,
+                self.ifname
+            ),
+            Err(e) => log::error!(
+                "Failed to remove backends from group {} on {}, {}",
+                gid,
+                self.ifname,
+                e
+            ),
+        };
+
         if let Ok(ginfo) = gmap.get(&gid, 0) {
             rem_eps.push(ginfo.key.as_endpoint());
         } else {
@@ -391,6 +406,29 @@ impl Group {
         let map = self.group_mapdata(map_name)?;
         let mut map: HashMap<_, K, BEGroup> = map.try_into()?;
         map.remove(ep)?;
+        Ok(())
+    }
+
+    pub fn remove_all(&self) -> Result<(), anyhow::Error> {
+        let ifindex = ifindex(&self.ifname)?;
+        let meta = Group::group_meta()?;
+        let gids = meta
+            .iter()
+            .filter_map(|p| p.ok())
+            .filter_map(|(gid, ginfo)| {
+                if ifindex == ginfo.ifindex {
+                    Some(gid)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<u64>>();
+        for gid in gids {
+            match self.remove(gid) {
+                Ok(_) => log::info!("Group {} removed from {}", gid, self.ifname),
+                Err(e) => log::error!("Group {} not removed from {}, {}", gid, self.ifname, e),
+            }
+        }
         Ok(())
     }
 }
