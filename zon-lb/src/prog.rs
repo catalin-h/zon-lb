@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::backends::Group;
 use crate::helpers::*;
 use anyhow::{anyhow, Context};
 use aya::{
@@ -48,6 +49,13 @@ impl Prog {
     }
 
     fn remove_maps(&self) -> Result<(), anyhow::Error> {
+        match Group::new(&self.ifname) {
+            Ok(group) => match group.remove_all() {
+                Ok(()) => log::info!("All groups removed from {}", self.ifname),
+                Err(e) => log::error!("Can't remove groups from {}, {}", self.ifname, e),
+            },
+            Err(e) => log::error!("Can't remove groups, {}", e),
+        }
         match pinned_link_name(&self.ifname, "") {
             None => {
                 warn!("Invalid name for interface: {}", &self.ifname);
