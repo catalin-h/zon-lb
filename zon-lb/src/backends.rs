@@ -725,23 +725,3 @@ impl Backend {
         Ok(rem_eps)
     }
 }
-
-#[cfg(todo_code)]
-fn _handle_backends(opt: &GroupOpt) -> Result<(), anyhow::Error> {
-    // TODO: add option to reset a specific map
-    // TODO: add option to add/update/delete a specific value from a specific map
-    // TODO: add option to dump entries from a specific map
-
-    let map = mapdata_from_pinned_map(&opt.ifname, "ZLB_BACKENDS").unwrap();
-    let map = Map::HashMap(map);
-    let mut blocklist: HashMap<_, BEKey, BE> = map.try_into()?;
-    let key = blocklist.keys().count() as u32;
-    let bekey: BEKey = key.into();
-
-    match blocklist.insert(&bekey, BE::default(), 0) {
-        Ok(_) => info!("Key: {} inserted", key),
-        _ => warn!("Key: {} not inserted", key),
-    }
-
-    Ok(())
-}

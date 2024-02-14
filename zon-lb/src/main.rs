@@ -126,10 +126,10 @@ struct GroupOpt {
 
 #[derive(clap::Subcommand, Debug)]
 enum BackendAction {
+    /// List all backends in the group [default]
+    List,
     /// Add a new backend for load balancing
     Add(AddEpOpt),
-    /// List all backends in the group
-    List,
     /// Remove backend
     Remove {
         /// The backend index returned by 'backend add' or 'backend list' commands
@@ -146,7 +146,7 @@ struct BackendOpt {
     gid: u64,
     /// Backend actions
     #[clap(subcommand)]
-    action: BackendAction,
+    action: Option<BackendAction>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -271,11 +271,8 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
 }
 
 fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
-    // TODO: add option to reset a specific map
-    // TODO: add option to add/update/delete a specific value from a specific map
-    // TODO: add option to dump entries from a specific map
-    // TODO: healthcheck for backends
-    match &opt.action {
+    let action = opt.action.as_ref().unwrap_or(&BackendAction::List);
+    match action {
         BackendAction::Add(add_opt) => {
             let backend = Backend::new(opt.gid);
             let ep = handler_add_ep(&add_opt)?;
