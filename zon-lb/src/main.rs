@@ -321,6 +321,11 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Backend(opt) => handle_backends(opt),
         Command::Config(opt) => handle_config(opt),
         Command::Debug => {
+            let mut bpf = aya::Bpf::load(ZONLB)?;
+            if let Err(e) = BpfLogger::init(&mut bpf) {
+                // This can happen if you remove all log statements from your eBPF program.
+                warn!("failed to initialize eBPF logger: {}", e);
+            }
             info!("Waiting for Ctrl-C...");
             signal::ctrl_c().await?;
             info!("Exiting...");
