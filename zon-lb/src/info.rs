@@ -83,17 +83,14 @@ pub(crate) fn get_zon_info(ifname: &str) -> Result<Array<MapData, ZonInfo>, anyh
     }
 }
 
-/// List formatting
-pub(crate) fn list_info() -> Result<(), anyhow::Error> {
-    struct ZLBInfo {
-        prog: ProgramInfo,
-        link_id: u32,
-        ifindex: u32,
-    }
-    let mut pmap: StdHashMap<u32, ZLBInfo> = StdHashMap::new();
+struct ZLBInfo {
+    prog: ProgramInfo,
+    link_id: u32,
+    ifindex: u32,
+}
 
-    let header = "Loaded zon-lb programs";
-    println!("\r\n{0:-<1$}\r\n{header}\r\n{0:-<1$}", "-", header.len());
+fn build_prog_info() -> Result<StdHashMap<u32, ZLBInfo>, anyhow::Error> {
+    let mut pmap: StdHashMap<u32, ZLBInfo> = StdHashMap::new();
 
     for p in loaded_programs().filter_map(|p| match p {
         Ok(prog) => {
@@ -140,6 +137,16 @@ pub(crate) fn list_info() -> Result<(), anyhow::Error> {
             }
         }
     }
+
+    Ok(pmap)
+}
+
+/// List formatting
+pub(crate) fn list_info() -> Result<(), anyhow::Error> {
+    let pmap = build_prog_info()?;
+
+    let header = "Loaded zon-lb programs";
+    println!("\r\n{0:-<1$}\r\n{header}\r\n{0:-<1$}", "-", header.len());
 
     // NOTE: use if_indextoname to get the interface name from index
     // NOTE: the maps must be used inside the program in order to be
