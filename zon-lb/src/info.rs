@@ -89,7 +89,7 @@ struct ZLBInfo {
     ifindex: u32,
 }
 
-fn build_prog_info() -> Result<StdHashMap<u32, ZLBInfo>, anyhow::Error> {
+fn build_prog_info(ifindex: Option<u32>) -> Result<StdHashMap<u32, ZLBInfo>, anyhow::Error> {
     let mut pmap: StdHashMap<u32, ZLBInfo> = StdHashMap::new();
 
     for p in loaded_programs().filter_map(|p| match p {
@@ -138,12 +138,20 @@ fn build_prog_info() -> Result<StdHashMap<u32, ZLBInfo>, anyhow::Error> {
         }
     }
 
+    pmap.retain(|_, info| {
+        if let Some(index) = ifindex {
+            index == info.ifindex
+        } else {
+            true
+        }
+    });
+
     Ok(pmap)
 }
 
 /// List formatting
 pub(crate) fn list_info() -> Result<(), anyhow::Error> {
-    let pmap = build_prog_info()?;
+    let pmap = build_prog_info(None)?;
 
     let header = "Loaded zon-lb programs";
     println!("\r\n{0:-<1$}\r\n{header}\r\n{0:-<1$}", "-", header.len());
