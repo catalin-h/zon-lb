@@ -8,7 +8,7 @@ use aya::{
 use aya_obj::generated::bpf_prog_type;
 use chrono::{DateTime, Local};
 use log::warn;
-use std::collections::HashMap as StdHashMap;
+use std::collections::BTreeMap;
 use zon_lb_common::ZonInfo;
 
 pub struct InfoTable {
@@ -89,8 +89,8 @@ struct ZLBInfo {
     ifindex: u32,
 }
 
-fn build_prog_info(ifindex: Option<u32>) -> Result<StdHashMap<u32, ZLBInfo>, anyhow::Error> {
-    let mut pmap: StdHashMap<u32, ZLBInfo> = StdHashMap::new();
+fn build_prog_info(ifindex: Option<u32>) -> Result<BTreeMap<u32, ZLBInfo>, anyhow::Error> {
+    let mut pmap = BTreeMap::new();
 
     for p in loaded_programs().filter_map(|p| match p {
         Ok(prog) => {
@@ -147,6 +147,14 @@ fn build_prog_info(ifindex: Option<u32>) -> Result<StdHashMap<u32, ZLBInfo>, any
     });
 
     Ok(pmap)
+}
+
+pub fn get_program_info_by_ifname(ifname: &str) -> Result<ProgramInfo, anyhow::Error> {
+    let ifindex = ifindex(ifname)?;
+    let (_, info) = build_prog_info(Some(ifindex))?
+        .pop_first()
+        .ok_or(anyhow!("No program found {}", ifname))?;
+    Ok(info.prog)
 }
 
 /// List formatting

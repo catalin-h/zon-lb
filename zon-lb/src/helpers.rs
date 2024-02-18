@@ -169,6 +169,7 @@ pub fn _increase_memlocked() -> Result<(), anyhow::Error> {
     }
 }
 
+/// Return the pinned link path for the program attached to the `ifname` interface.
 pub fn prog_bpffs(ifname: &str) -> Result<(PathBuf, bool), anyhow::Error> {
     // Check if name exists
     ifindex(ifname)?;
