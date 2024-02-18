@@ -153,13 +153,18 @@ pub fn get_program_info_by_ifname(ifname: &str) -> Result<ProgramInfo, anyhow::E
     let ifindex = ifindex(ifname)?;
     let (_, info) = build_prog_info(Some(ifindex))?
         .pop_first()
-        .ok_or(anyhow!("No program found {}", ifname))?;
+        .ok_or(anyhow!("No program loaded for interface: {}", ifname))?;
     Ok(info.prog)
 }
 
 /// List formatting
 pub(crate) fn list_info() -> Result<(), anyhow::Error> {
     let pmap = build_prog_info(None)?;
+
+    if pmap.is_empty() {
+        println!("No zon-lb programs loaded");
+        return Ok(());
+    }
 
     let header = "Loaded zon-lb programs";
     println!("\r\n{0:-<1$}\r\n{header}\r\n{0:-<1$}", "-", header.len());
