@@ -2,6 +2,7 @@ mod backends;
 mod config;
 mod helpers;
 mod info;
+mod logging;
 mod prog;
 mod protocols;
 mod services;
@@ -14,6 +15,7 @@ use clap::{Parser, ValueEnum};
 use config::ConfigFile;
 use info::*;
 use log::{info, warn};
+use logging::init_log;
 use prog::*;
 use protocols::Protocol;
 use tokio::signal;
@@ -167,6 +169,13 @@ struct ConfigOpt {
     action: ConfigAction,
 }
 
+#[derive(clap::Args, Debug)]
+struct DebugOpt {
+    /// Target net interface name, eg. eth0
+    #[clap(default_value = "lo")]
+    ifname: String,
+}
+
 #[derive(clap::Subcommand, Debug)]
 enum Command {
     /// Shows information about loaded programs and the used maps
@@ -178,7 +187,7 @@ enum Command {
     /// Backends manage options
     Backend(BackendOpt),
     /// Debug and monitor program activity
-    Debug,
+    Debug(DebugOpt),
     /// Config persistence
     Config(ConfigOpt),
 }
@@ -202,7 +211,11 @@ const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/rel
 /// Program name or main function of xdp program
 pub const PROG_NAME: &str = "zon_lb";
 
-fn bpf_instance(ebpf: &[u8]) -> Result<aya::Bpf, anyhow::Error> {
+pub(crate) fn bpf_instance() -> Result<aya::Bpf, anyhow::Error> {
+    bpf_instance_from(ZONLB)
+}
+
+fn bpf_instance_from(ebpf: &[u8]) -> Result<aya::Bpf, anyhow::Error> {
     let mut bpf = BpfLoader::new()
         .btf(Btf::from_sys_fs().ok().as_ref())
         .load(ebpf)
@@ -223,15 +236,15 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
     match &opt.action {
         ProgAction::Teardown => prg.teardown(),
         ProgAction::Unload => prg.unload(),
-        ProgAction::Replace => prg.replace(&mut bpf_instance(ZONLB)?),
+        ProgAction::Replace => prg.replace(&mut bpf_instance()?),
         ProgAction::Load(load_opt) => {
             info!("Try attach program to interface: {}", &opt.ifname);
-            prg.load(&mut bpf_instance(ZONLB)?, load_opt.xdp_flags())
+            prg.load(&mut bpf_instance()?, load_opt.xdp_flags())
         }
         ProgAction::Reload(load_opt) => {
             info!("Try reattach program to interface: {}", &opt.ifname);
             prg.teardown()?;
-            prg.load(&mut bpf_instance(ZONLB)?, load_opt.xdp_flags())
+            prg.load(&mut bpf_instance()?, load_opt.xdp_flags())
         }
     }
 }
@@ -308,6 +321,14 @@ fn handle_config(opt: &ConfigOpt) -> Result<(), anyhow::Error> {
     }
 }
 
+async fn handle_debug(opt: &DebugOpt) -> Result<(), anyhow::Error> {
+    init_log(&opt.ifname)?;
+    info!("Waiting for Ctrl-C...");
+    signal::ctrl_c().await?;
+    info!("Exiting...");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -320,17 +341,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Group(opt) => handle_group(opt),
         Command::Backend(opt) => handle_backends(opt),
         Command::Config(opt) => handle_config(opt),
-        Command::Debug => {
-            let mut bpf = aya::Bpf::load(ZONLB)?;
-            if let Err(e) = BpfLogger::init(&mut bpf) {
-                // This can happen if you remove all log statements from your eBPF program.
-                warn!("failed to initialize eBPF logger: {}", e);
-            }
-            info!("Waiting for Ctrl-C...");
-            signal::ctrl_c().await?;
-            info!("Exiting...");
-            Ok(())
-        }
+        Command::Debug(opt) => handle_debug(opt).await,
     };
 
     if let Err(e) = res {
