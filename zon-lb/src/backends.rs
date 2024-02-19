@@ -12,6 +12,22 @@ use std::{
 };
 use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX};
 
+pub trait ToMapName {
+    fn map_name() -> &'static str;
+}
+
+impl ToMapName for EP4 {
+    fn map_name() -> &'static str {
+        "ZLB_LB4"
+    }
+}
+
+impl ToMapName for EP6 {
+    fn map_name() -> &'static str {
+        "ZLB_LB6"
+    }
+}
+
 /// Little endian
 #[derive(Copy, Clone)]
 pub struct EndPoint {
@@ -250,29 +266,28 @@ impl Group {
         Ok(())
     }
 
-    fn insert_group<K: aya::Pod>(
+    fn insert_group<K: aya::Pod + ToMapName>(
         &self,
-        map_name: &str,
         ep: &K,
         beg: &BEGroup,
         flags: MUFlags,
     ) -> Result<(), anyhow::Error> {
-        let map = self.group_mapdata(map_name)?;
-        let mut gmap: HashMap<_, K, BEGroup> = map.try_into().context(map_name.to_string())?;
+        let map = self.group_mapdata(K::map_name())?;
+        let mut gmap: HashMap<_, K, BEGroup> = map.try_into()?;
         gmap.insert(ep, beg, flags.bits())?;
         Ok(())
     }
 
-    fn get<K: aya::Pod>(&self, map_name: &str, ep: &K) -> Result<BEGroup, anyhow::Error> {
-        let map = self.group_mapdata(map_name)?;
-        let gmap: HashMap<_, K, BEGroup> = map.try_into().context(map_name.to_string())?;
+    fn get<K: aya::Pod + ToMapName>(&self, ep: &K) -> Result<BEGroup, anyhow::Error> {
+        let map = self.group_mapdata(K::map_name())?;
+        let gmap: HashMap<_, K, BEGroup> = map.try_into()?;
         gmap.get(ep, 0).context("get backend group")
     }
 
     fn get_by_ep(&self, ep: &EndPoint) -> Result<BEGroup, anyhow::Error> {
         match ep.ep_key() {
-            EPX::V4(ep4) => self.get("ZLB_LB4", &ep4),
-            EPX::V6(ep6) => self.get("ZLB_LB6", &ep6),
+            EPX::V4(ep4) => self.get(&ep4),
+            EPX::V6(ep6) => self.get(&ep6),
         }
     }
 
@@ -295,23 +310,22 @@ impl Group {
         beg.flags = ginfo.flags;
 
         match &ginfo.key {
-            EPX::V4(ep4) => self.insert_group("ZLB_LB4", ep4, &beg, MUFlags::NOEXIST),
-            EPX::V6(ep6) => self.insert_group("ZLB_LB6", ep6, &beg, MUFlags::NOEXIST),
+            EPX::V4(ep4) => self.insert_group(ep4, &beg, MUFlags::NOEXIST),
+            EPX::V6(ep6) => self.insert_group(ep6, &beg, MUFlags::NOEXIST),
         }?;
 
         Ok(beg.gid)
     }
 
-    fn iterate_mut<K, F>(&self, name: &str, mut apply: F) -> Result<(), anyhow::Error>
+    fn iterate_mut<K, F>(&self, mut apply: F) -> Result<(), anyhow::Error>
     where
-        F: FnMut(&EndPoint, &BEGroup),
-        K: aya::Pod + ToEndPoint,
+        K: aya::Pod + ToEndPoint + ToMapName,
+        F: FnMut(&K, &BEGroup),
     {
-        let map = self.group_mapdata(name)?;
+        let map = self.group_mapdata(K::map_name())?;
         let gmap = HashMap::<_, K, BEGroup>::try_from(&map)?;
 
-        for (e, g) in gmap.iter().filter_map(|res| res.ok()) {
-            let ep = e.as_endpoint();
+        for (ep, g) in gmap.iter().filter_map(|res| res.ok()) {
             apply(&ep, &g);
         }
         Ok(())
@@ -364,9 +378,9 @@ impl Group {
                     rem_eps.push(*ep);
                 }
             };
-            self.iterate_mut::<EP4, _>("ZLB_LB4", &mut search)
+            self.iterate_mut::<EP4, _>(|e, g| search(&e.as_endpoint(), g))
                 .context("IPv4 group")?;
-            self.iterate_mut::<EP6, _>("ZLB_LB6", &mut search)
+            self.iterate_mut::<EP6, _>(|e, g| search(&e.as_endpoint(), g))
                 .context("IPv6 group")?;
         }
 
@@ -394,16 +408,16 @@ impl Group {
 
     fn remove_group(&self, ep: &EndPoint) -> Result<(), anyhow::Error> {
         match ep.ep_key() {
-            EPX::V4(ep4) => self.remove_group_from_map::<EP4>("ZLB_LB4", &ep4),
-            EPX::V6(ep6) => self.remove_group_from_map::<EP6>("ZLB_LB6", &ep6),
+            EPX::V4(ep4) => self.remove_group_from_map(&ep4),
+            EPX::V6(ep6) => self.remove_group_from_map(&ep6),
         }
     }
 
-    fn remove_group_from_map<K>(&self, map_name: &str, ep: &K) -> Result<(), anyhow::Error>
+    fn remove_group_from_map<K>(&self, ep: &K) -> Result<(), anyhow::Error>
     where
-        K: aya::Pod,
+        K: aya::Pod + ToMapName,
     {
-        let map = self.group_mapdata(map_name)?;
+        let map = self.group_mapdata(K::map_name())?;
         let mut map: HashMap<_, K, BEGroup> = map.try_into()?;
         map.remove(ep)?;
         Ok(())
@@ -533,11 +547,11 @@ impl Backend {
         match &gmap.info.key {
             EPX::V4(ep4) => gmap
                 .group
-                .insert_group("ZLB_LB4", ep4, &beg, iflags)
+                .insert_group(ep4, &beg, iflags)
                 .context("Update v4 group")?,
             EPX::V6(ep6) => gmap
                 .group
-                .insert_group("ZLB_LB6", ep6, &beg, iflags)
+                .insert_group(ep6, &beg, iflags)
                 .context("Update v6 group")?,
         }
 
@@ -671,8 +685,8 @@ impl Backend {
         if count != begroup.becount {
             begroup.becount = count;
             let res = match &gmap.info.key {
-                EPX::V4(ep4) => gmap.group.insert_group("ZLB_LB4", ep4, &begroup, iflags),
-                EPX::V6(ep6) => gmap.group.insert_group("ZLB_LB6", ep6, &begroup, iflags),
+                EPX::V4(ep4) => gmap.group.insert_group(ep4, &begroup, iflags),
+                EPX::V6(ep6) => gmap.group.insert_group(ep6, &begroup, iflags),
             };
             if let Err(_) = res {
                 log::warn!("Can't update group {}", gmap.info.key.as_endpoint());
