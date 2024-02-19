@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::backends::Group;
 use crate::helpers::*;
 use anyhow::{anyhow, Context};
@@ -9,8 +7,10 @@ use aya::{
         links::{FdLink, PinnedLink},
         Xdp, XdpFlags,
     },
+    Bpf,
 };
 use log::{info, warn};
+use std::path::PathBuf;
 use zon_lb_common::ZonInfo;
 
 // Manages the life cycle of a program for a specific network interface
@@ -72,21 +72,21 @@ impl Prog {
         self.remove_maps()
     }
 
-    fn load_program(bpf: &mut aya::Bpf) -> Result<&mut aya::programs::Xdp, anyhow::Error> {
+    fn load_program(bpf: &mut Bpf) -> Result<&mut Xdp, anyhow::Error> {
         let program: &mut Xdp = bpf.program_mut("zon_lb").unwrap().try_into()?;
-        program.load().context("Failed to load program in kernel")?;
+        program.load()?;
         Ok(program)
     }
 
     /// Initialize program info and start params   
-    fn init_info(&self, bpf: &mut aya::Bpf) -> Result<(), anyhow::Error> {
+    fn init_info(&self, bpf: &mut Bpf) -> Result<(), anyhow::Error> {
         let mut info: Array<_, ZonInfo> = Array::try_from(bpf.map_mut("ZLB_INFO").unwrap())?;
         info.set(0, ZonInfo::new(), 0)
             .context("Failed to set zon info")?;
         Ok(())
     }
 
-    pub fn replace(&self, bpf: &mut aya::Bpf) -> Result<(), anyhow::Error> {
+    pub fn replace(&self, bpf: &mut Bpf) -> Result<(), anyhow::Error> {
         if !self.link_exists {
             return Err(anyhow!(
                 "Can't replace program, link {} doesn't exist, try load the program first",
@@ -95,6 +95,7 @@ impl Prog {
         }
 
         let program = Self::load_program(bpf)?;
+
         let link = PinnedLink::from_pin(&self.link_path)
             .context("Failed to load pinned link for zon-lb bpffs")?;
         let link = FdLink::from(link);
@@ -105,7 +106,7 @@ impl Prog {
         self.init_info(bpf)
     }
 
-    pub fn load(&self, bpf: &mut aya::Bpf, flags: XdpFlags) -> Result<(), anyhow::Error> {
+    pub fn load(&self, bpf: &mut Bpf, flags: XdpFlags) -> Result<(), anyhow::Error> {
         if self.link_exists {
             return Err(anyhow!(
                 "Can't load program, link {} already exists, try reload instead",
