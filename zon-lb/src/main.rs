@@ -8,7 +8,7 @@ mod protocols;
 mod services;
 
 use anyhow::Context;
-use aya::{include_bytes_aligned, programs::XdpFlags, BpfLoader, Btf};
+use aya::{include_bytes_aligned, programs::XdpFlags, BpfLoader};
 use aya_log::BpfLogger;
 use backends::{Backend, EndPoint, ToEndPoint};
 use clap::{Parser, ValueEnum};
@@ -18,6 +18,7 @@ use log::{info, warn};
 use logging::init_log;
 use prog::*;
 use protocols::Protocol;
+use std::path::{Path, PathBuf};
 use tokio::signal;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -209,22 +210,34 @@ const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/deb
 const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/release/zon-lb");
 
 /// Program name or main function of xdp program
-pub const PROG_NAME: &str = "zon_lb";
+pub(crate) const PROG_NAME: &str = "zon_lb";
+pub(crate) const BPFFS: &str = "/sys/fs/bpf/";
 
-pub(crate) fn bpf_instance() -> Result<aya::Bpf, anyhow::Error> {
-    bpf_instance_from(ZONLB)
+fn make_if_bpffs(ifname: &str) -> Result<PathBuf, anyhow::Error> {
+    let path = Path::new(BPFFS).join(ifname);
+    let exists = path.try_exists()?;
+
+    if !exists {
+        std::fs::create_dir(&path)?;
+    }
+
+    Ok(path)
 }
 
-fn bpf_instance_from(ebpf: &[u8]) -> Result<aya::Bpf, anyhow::Error> {
+pub(crate) fn bpf_instance(ifname: &str) -> Result<aya::Bpf, anyhow::Error> {
+    // NOTE: no need to specify the pin location as the load method
+    // will use the default bpffs location: /sys/fs/bpf/
     let mut bpf = BpfLoader::new()
-        .btf(Btf::from_sys_fs().ok().as_ref())
-        .load(ebpf)
-        .context("Failed to load the program blob")?;
+        .map_pin_path(make_if_bpffs(ifname)?)
+        .load(ZONLB)
+        .context("Failed to load the maps and program blob")?;
 
+    // NOTE: initialize the log here in order to catch the verifier errors
     if let Err(e) = BpfLogger::init(&mut bpf) {
         // This can happen if all log statements are removed from eBPF program.
         warn!("Failed to initialize eBPF logger: {}", e);
     }
+
     Ok(bpf)
 }
 
@@ -236,15 +249,15 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
     match &opt.action {
         ProgAction::Teardown => prg.teardown(),
         ProgAction::Unload => prg.unload(),
-        ProgAction::Replace => prg.replace(&mut bpf_instance()?),
+        ProgAction::Replace => prg.replace(&mut bpf_instance(&opt.ifname)?),
         ProgAction::Load(load_opt) => {
             info!("Try attach program to interface: {}", &opt.ifname);
-            prg.load(&mut bpf_instance()?, load_opt.xdp_flags())
+            prg.load(&mut bpf_instance(&opt.ifname)?, load_opt.xdp_flags())
         }
         ProgAction::Reload(load_opt) => {
             info!("Try reattach program to interface: {}", &opt.ifname);
             prg.teardown()?;
-            prg.load(&mut bpf_instance()?, load_opt.xdp_flags())
+            prg.load(&mut bpf_instance(&opt.ifname)?, load_opt.xdp_flags())
         }
     }
 }
