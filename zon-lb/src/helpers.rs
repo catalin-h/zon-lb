@@ -56,7 +56,7 @@ pub(crate) fn mapdata_from_pinned_map(ifname: &str, map_name: &str) -> Option<Ma
     })
 }
 
-pub(crate) fn teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
+pub(crate) fn _teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
     let iter = std::fs::read_dir("/sys/fs/bpf/").context("Failed to iterate bpffs")?;
 
     for path in iter
@@ -97,7 +97,7 @@ pub(crate) fn teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-pub(crate) fn create_pinned_links_for_maps(
+pub(crate) fn _create_pinned_links_for_maps(
     bpf: &mut Bpf,
     ifname: &str,
 ) -> Result<(), anyhow::Error> {

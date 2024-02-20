@@ -1,4 +1,3 @@
-use crate::backends::Group;
 use crate::helpers::*;
 use anyhow::{anyhow, Context};
 use aya::{
@@ -9,7 +8,7 @@ use aya::{
     },
     Bpf,
 };
-use log::{info, warn};
+use log::info;
 use std::path::PathBuf;
 use zon_lb_common::ZonInfo;
 
@@ -48,28 +47,8 @@ impl Prog {
         Ok(())
     }
 
-    fn remove_maps(&self) -> Result<(), anyhow::Error> {
-        match Group::new(&self.ifname) {
-            Ok(group) => match group.remove_all() {
-                Ok(()) => log::info!("All groups removed from {}", self.ifname),
-                Err(e) => log::error!("Can't remove groups from {}, {}", self.ifname, e),
-            },
-            Err(e) => log::error!("Can't remove groups, {}", e),
-        }
-        match pinned_link_name(&self.ifname, "") {
-            None => {
-                warn!("Invalid name for interface: {}", &self.ifname);
-            }
-            Some(prefix) => {
-                teardown_maps(&prefix)?;
-            }
-        };
-        Ok(())
-    }
-
     pub fn teardown(&mut self) -> Result<(), anyhow::Error> {
-        self.unload()?;
-        self.remove_maps()
+        self.unload()
     }
 
     fn load_program(bpf: &mut Bpf) -> Result<&mut Xdp, anyhow::Error> {
@@ -102,7 +81,6 @@ impl Prog {
         program
             .attach_to_link(link.try_into()?)
             .context("Failed to attach new program to existing link")?;
-
         self.init_info(bpf)
     }
 
@@ -125,11 +103,6 @@ impl Prog {
         fdlink
             .pin(&self.link_path)
             .context("Failed to create pinned link for program")?;
-
-        // Last step is to pin used maps so the program can use them
-        // after this process exits
-        create_pinned_links_for_maps(bpf, &self.ifname)?;
-
         self.init_info(bpf)
     }
 }
