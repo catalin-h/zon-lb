@@ -27,18 +27,21 @@ static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
 
 /// Shared meta data between multiples groups and interfaces. Used only by userspace
 /// application but loaded by the first program.
+/// This map is pinned to bpffs as it should persist after both user space and xdp programs
+/// are not available.
 #[map]
-static ZLBX_GMETA: HashMap<u64, GroupInfo> =
-    HashMap::<u64, GroupInfo>::with_max_entries(MAX_GROUPS, 0);
+static ZLBX_GMETA: HashMap<u64, GroupInfo> = HashMap::<u64, GroupInfo>::pinned(MAX_GROUPS, 0);
+
+/// Shared map between both user space processes and the xdp programs attached to different
+/// network interfaces. This map is pinned to the default bpffs.
+#[map]
+static ZLB_BACKENDS: HashMap<BEKey, BE> = HashMap::<BEKey, BE>::pinned(MAX_BACKENDS, 0);
 
 #[map]
-static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::with_max_entries(MAX_GROUPS, 0);
+static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::pinned(MAX_GROUPS, 0);
 
 #[map]
-static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::with_max_entries(MAX_GROUPS, 0);
-
-#[map]
-static ZLBX_BACKENDS: HashMap<BEKey, BE> = HashMap::<BEKey, BE>::with_max_entries(MAX_BACKENDS, 0);
+static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROUPS, 0);
 
 #[inline(always)]
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
