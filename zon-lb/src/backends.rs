@@ -445,6 +445,24 @@ impl Group {
         }
         Ok(())
     }
+
+    pub fn _copy<K: aya::Pod + ToMapName + ToEndPoint>(
+        &self,
+        dst_map: &mut Map,
+    ) -> Result<(), anyhow::Error> {
+        let mut map: HashMap<_, K, BEGroup> = dst_map.try_into()?;
+
+        self.iterate_mut::<K, _>(|&ep, &beg| match map.insert(ep, beg, 0) {
+            Ok(()) => log::info!("[{}] {} copied to map", &self.ifname, ep.as_endpoint(),),
+            Err(e) => log::error!(
+                "[{}] Failed to copy {} to map, {}",
+                &self.ifname,
+                ep.as_endpoint(),
+                e
+            ),
+        })?;
+        Ok(())
+    }
 }
 
 pub struct Backend {
