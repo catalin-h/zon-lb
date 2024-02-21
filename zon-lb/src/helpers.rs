@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use aya::{maps::MapData, Bpf};
-use aya_obj::generated::{BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
+use aya_obj::generated::{bpf_link_type, BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
 use bitflags;
 use log::{info, warn};
 use std::path::{Path, PathBuf};
@@ -22,31 +22,24 @@ const F_LOCK = BPF_F_LOCK as u64;
 
 //
 // Pinned link naming scheme used by the loading user app
-//  program: zlb_<ifname>
-//  prog maps: zlb_<ifname>_<map-name>
-//  common maps: zlbx_<lowcase_name>
+//  program: <bpffs/<ifname>/zlb
+//  prog maps: <bpffs/<ifname>/zlb_<map-name>
+//  common maps: zlbx_<map-name>
 //
 pub(crate) fn pinned_link_name(ifname: &str, map_name: &str) -> Option<String> {
     if map_name.is_empty() {
-        Some(format!("zlb_{}", ifname))
-    } else if map_name.starts_with("ZLBX") {
-        Some(map_name.to_ascii_lowercase())
-    } else if !ifname.is_empty() && map_name.starts_with("ZLB") && map_name.len() >= 5 {
-        let mut name = map_name.to_ascii_lowercase();
-        if map_name.starts_with("ZLB_") {
-            name.insert(3, '_');
-        } else {
-            name.insert_str(3, "__");
-        }
-        name.insert_str(4, ifname);
-        Some(name)
+        Some(format!("{}/zlb", ifname))
+    } else if map_name.starts_with("ZLBX_") {
+        Some(map_name.to_string())
+    } else if map_name.starts_with("ZLB_") {
+        Some(format!("{}/{}", ifname, map_name))
     } else {
         None
     }
 }
 
 pub(crate) fn pinned_link_bpffs_path(ifname: &str, map_name: &str) -> Option<PathBuf> {
-    pinned_link_name(ifname, map_name).map(|pname| Path::new("/sys/fs/bpf").join(pname))
+    pinned_link_name(ifname, map_name).map(|rel_link| Path::new(crate::BPFFS).join(rel_link))
 }
 
 pub(crate) fn mapdata_from_pinned_map(ifname: &str, map_name: &str) -> Option<MapData> {

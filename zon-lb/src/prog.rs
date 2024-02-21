@@ -32,14 +32,14 @@ impl Prog {
             link_exists: zlblink_exists,
         })
     }
-    pub fn unload(&mut self) -> Result<(), anyhow::Error> {
+
+    fn unload_by_pinned_link(&mut self) -> Result<(), anyhow::Error> {
         if self.link_exists {
             let link = PinnedLink::from_pin(&self.link_path)
                 .context("Failed to load pinned link for zon-lb bpffs")?;
             link.unpin().context("Can't unpin program link")?;
-
             info!(
-                "Pinned link for program attached to {} removed: {}",
+                "[{}] Pinned link {} removed",
                 &self.ifname, &self.link_path_str
             );
             self.link_exists = false;
@@ -47,7 +47,25 @@ impl Prog {
         Ok(())
     }
 
+    pub fn unload(&mut self) -> Result<(), anyhow::Error> {
+        if let Err(e) = &self.unload_by_pinned_link() {
+            log::warn!("[{}] Failed to remove pinned, {}", &self.ifname, e);
+        }
+
+        if let Some(link_info) = get_xdp_link_info(&self.ifname) {
+            log::error!(
+                "[{}] The link id {} and program id {} are still attached",
+                &self.ifname,
+                link_info.id,
+                link_info.program_id
+            );
+        };
+
+        Ok(())
+    }
+
     pub fn teardown(&mut self) -> Result<(), anyhow::Error> {
+        // TODO: remove pinned maps
         self.unload()
     }
 
