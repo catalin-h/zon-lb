@@ -11,35 +11,35 @@ use aya_log_ebpf::info;
 use core::mem;
 use network_types::{
     eth::{EthHdr, EtherType},
-    icmp::IcmpHdr,
-    ip::{in6_addr, IpProto, Ipv4Hdr, Ipv6Hdr},
+    ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
-use zon_lb_common::{
-    BEGroup, BEKey, EPFlags, GroupInfo, ZonInfo, BE, EP4, EP6, MAX_BACKENDS, MAX_GROUPS,
-};
+use zon_lb_common::{BEGroup, BEKey, GroupInfo, ZonInfo, BE, EP4, EP6, MAX_BACKENDS, MAX_GROUPS};
 
-// Per interface maps start with ZLB.
-// Global common maps start just with ZLBX
+/// Keeps runtime config data.
 #[map]
 static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
 
-/// Shared meta data between multiples groups and interfaces. Used only by userspace
-/// application but loaded by the first program.
-/// This map is pinned to bpffs as it should persist after both user space and xdp programs
-/// are not available.
+/// Maintains the metadata about backend groups and interfaces. It is used only by userspace
+/// application but loaded by the first program - hence the X.
+/// This map is pinned to the default bpffs and it should persist after user space exists.
 #[map]
 static ZLBX_GMETA: HashMap<u64, GroupInfo> = HashMap::<u64, GroupInfo>::pinned(MAX_GROUPS, 0);
 
-/// Shared map between both user space processes and the xdp programs attached to different
-/// network interfaces. This map is pinned to the default bpffs.
+/// Maintains the backend endpoints for both IPv4 and IPv6 groups.
+/// Both user space processes and xdp programs access this map but only the application
+/// can update it. This map is pinned to the default bpffs.
 #[map]
 static ZLB_BACKENDS: HashMap<BEKey, BE> = HashMap::<BEKey, BE>::pinned(MAX_BACKENDS, 0);
 
+/// Contains the IPv4 load balancing endpoints or groups. The program will search each
+/// IPv4 ingress packet against this map and on match will forward to packet to an
+/// backend from the pool allocated to the group.
 #[map]
 static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::pinned(MAX_GROUPS, 0);
 
+/// Same as ZLB_LB4 but for IPv6 packets.
 #[map]
 static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROUPS, 0);
 
@@ -134,7 +134,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
 fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
-    let proto = unsafe { (*ipv6hdr).next_hdr };
+    let _proto = unsafe { (*ipv6hdr).next_hdr };
 
     info!(ctx, "received a ipv6 packet");
 
