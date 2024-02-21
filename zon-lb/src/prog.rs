@@ -34,33 +34,48 @@ impl Prog {
     }
 
     fn unload_by_pinned_link(&mut self) -> Result<(), anyhow::Error> {
-        if self.link_exists {
-            let link = PinnedLink::from_pin(&self.link_path)
-                .context("Failed to load pinned link for zon-lb bpffs")?;
-            link.unpin().context("Can't unpin program link")?;
-            info!(
-                "[{}] Pinned link {} removed",
-                &self.ifname, &self.link_path_str
-            );
-            self.link_exists = false;
+        if !self.link_exists {
+            return Ok(());
         }
+        let link = PinnedLink::from_pin(&self.link_path)
+            .context("Failed to load pinned link for zon-lb bpffs")?;
+
+        // NOTE: although the file is removed from fs the FDs for the link
+        // and program are not closed until the user app exists.
+        // This means that the link and program remain attached
+        // attached to the interface until we attach a new link
+        // and program.
+        link.unpin().context("Can't unpin program link")?;
+
+        let (_, zlblink_exists) = prog_bpffs(&self.ifname)?;
+        self.link_exists = zlblink_exists;
+
+        info!(
+            "[{}] Pinned link {} {}removed",
+            &self.ifname,
+            &self.link_path_str,
+            if zlblink_exists { "not " } else { "" }
+        );
+
         Ok(())
     }
 
     pub fn unload(&mut self) -> Result<(), anyhow::Error> {
-        if let Err(e) = &self.unload_by_pinned_link() {
-            log::warn!("[{}] Failed to remove pinned, {}", &self.ifname, e);
-        }
-
         if let Some(link_info) = get_xdp_link_info(&self.ifname) {
-            log::error!(
-                "[{}] The link id {} and program id {} are still attached",
+            log::info!(
+                "[{}] Found attached the link (id: {}) and program (id: {})",
                 &self.ifname,
                 link_info.id,
                 link_info.program_id
             );
         };
 
+        if let Err(e) = &self.unload_by_pinned_link() {
+            log::warn!("[{}] Failed to remove pinned, {}", &self.ifname, e);
+        }
+
+        // TODO: pin the program also and effectively unload() the program
+        // from kernel. This will detach the links also (TBD).
         Ok(())
     }
 
@@ -115,7 +130,11 @@ impl Prog {
             .attach(&self.ifname, flags)
             .context("Failed to attach program link to interface")?;
 
-        // Pin the program link to bpf file system (bpffs)
+        // Pin the program link to bpf file system (bpffs).
+        // Pinning the program its self is not helping since
+        // aya creates a bpf link to the interface for the program
+        // and it will get dropped after the user app exists
+        // effectively disconnecting the program from netdev.
         let xdplink = program.take_link(xdplinkid)?;
         let fdlink: FdLink = xdplink.try_into()?;
         fdlink
