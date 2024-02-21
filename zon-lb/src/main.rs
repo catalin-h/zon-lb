@@ -18,7 +18,6 @@ use log::{info, warn};
 use logging::init_log;
 use prog::*;
 use protocols::Protocol;
-use std::path::{Path, PathBuf};
 use tokio::signal;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -213,22 +212,8 @@ const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/rel
 pub(crate) const PROG_NAME: &str = "zon_lb";
 pub(crate) const BPFFS: &str = "/sys/fs/bpf/";
 
-fn make_if_bpffs(ifname: &str) -> Result<PathBuf, anyhow::Error> {
-    let path = Path::new(BPFFS).join(ifname);
-    let exists = path.try_exists()?;
-
-    if !exists {
-        std::fs::create_dir(&path)?;
-    }
-
-    Ok(path)
-}
-
-pub(crate) fn bpf_instance(ifname: &str) -> Result<aya::Bpf, anyhow::Error> {
-    // NOTE: no need to specify the pin location as the load method
-    // will use the default bpffs location: /sys/fs/bpf/
+pub(crate) fn bpf_instance() -> Result<aya::Bpf, anyhow::Error> {
     let mut bpf = BpfLoader::new()
-        .map_pin_path(make_if_bpffs(ifname)?)
         .load(ZONLB)
         .context("Failed to load the maps and program blob")?;
 
@@ -249,15 +234,15 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
     match &opt.action {
         ProgAction::Teardown => prg.teardown(),
         ProgAction::Unload => prg.unload(),
-        ProgAction::Replace => prg.replace(&mut bpf_instance(&opt.ifname)?),
+        ProgAction::Replace => prg.replace(&mut bpf_instance()?),
         ProgAction::Load(load_opt) => {
             info!("Try attach program to interface: {}", &opt.ifname);
-            prg.load(&mut bpf_instance(&opt.ifname)?, load_opt.xdp_flags())
+            prg.load(&mut bpf_instance()?, load_opt.xdp_flags())
         }
         ProgAction::Reload(load_opt) => {
             info!("Try reattach program to interface: {}", &opt.ifname);
             prg.teardown()?;
-            prg.load(&mut bpf_instance(&opt.ifname)?, load_opt.xdp_flags())
+            prg.load(&mut bpf_instance()?, load_opt.xdp_flags())
         }
     }
 }

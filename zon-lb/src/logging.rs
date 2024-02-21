@@ -18,7 +18,7 @@ pub fn init_log(ifname: &str) -> Result<(), anyhow::Error> {
 pub fn init_log(ifname: &str) -> Result<(), anyhow::Error> {
     use crate::Prog;
     info::get_program_info_by_ifname(ifname)?;
-    let mut bpf = crate::bpf_instance(ifname)?;
+    let mut bpf = crate::bpf_instance()?;
     let prg = Prog::new(ifname)?;
     log::info!("Replacing program to attach the logger");
     prg.replace(&mut bpf)

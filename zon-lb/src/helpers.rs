@@ -22,17 +22,15 @@ const F_LOCK = BPF_F_LOCK as u64;
 
 //
 // Pinned link naming scheme used by the loading user app
-//  program: <bpffs/<ifname>/zlb
-//  prog maps: <bpffs/<ifname>/zlb_<map-name>
-//  common maps: zlbx_<map-name>
+//  program: <bpffs>/zlb_<ifname>
+//  prog maps: <bpffs>/ZLB_<map-name>
+//  common maps: <bpffs>/ZLBX_<map-name>
 //
 pub(crate) fn pinned_link_name(ifname: &str, map_name: &str) -> Option<String> {
     if map_name.is_empty() {
-        Some(format!("{}/zlb", ifname))
-    } else if map_name.starts_with("ZLBX_") {
+        Some(format!("zlb_{}", ifname))
+    } else if map_name.starts_with("ZLB") {
         Some(map_name.to_string())
-    } else if map_name.starts_with("ZLB_") {
-        Some(format!("{}/{}", ifname, map_name))
     } else {
         None
     }
@@ -168,12 +166,17 @@ pub fn _increase_memlocked() -> Result<(), anyhow::Error> {
 }
 
 /// Return the pinned link path for the program attached to the `ifname` interface.
+
 pub fn prog_bpffs(ifname: &str) -> Result<(PathBuf, bool), anyhow::Error> {
+    prog_and_map_bpffs(ifname, "")
+}
+
+pub fn prog_and_map_bpffs(ifname: &str, map_name: &str) -> Result<(PathBuf, bool), anyhow::Error> {
     // Check if name exists
     ifindex(ifname)?;
 
     // Default location for bpffs
-    let zdpath = pinned_link_bpffs_path(ifname, "").unwrap();
+    let zdpath = pinned_link_bpffs_path(ifname, map_name).unwrap();
 
     let zlblink_exists = zdpath
         .try_exists()
