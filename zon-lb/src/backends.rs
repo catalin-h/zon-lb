@@ -28,6 +28,18 @@ impl ToMapName for EP6 {
     }
 }
 
+impl ToMapName for GroupInfo {
+    fn map_name() -> &'static str {
+        "ZLBX_GMETA"
+    }
+}
+
+impl ToMapName for BE {
+    fn map_name() -> &'static str {
+        "ZLB_BACKENDS"
+    }
+}
+
 /// Little endian
 #[derive(Copy, Clone)]
 pub struct EndPoint {
@@ -239,9 +251,9 @@ impl Group {
     }
 
     pub fn group_meta() -> Result<HashMap<MapData, u64, GroupInfo>, anyhow::Error> {
-        let map = mapdata_from_pinned_map("", "ZLBX_GMETA").context("Group meta")?;
+        let map = mapdata_from_pinned_map("", GroupInfo::map_name()).context("Group meta fetch")?;
         let map = Map::HashMap(map);
-        map.try_into().context("Groups meta")
+        map.try_into().context("Groups meta size change")
     }
 
     fn allocate_group(&self, ginfo: &GroupInfo) -> Result<u64, anyhow::Error> {
@@ -528,8 +540,7 @@ impl Backend {
     }
 
     pub fn backends() -> Result<HashMap<MapData, BEKey, BE>, anyhow::Error> {
-        let map =
-            mapdata_from_pinned_map("", "ZLBX_BACKENDS").context("Get pinned backends map")?;
+        let map = mapdata_from_pinned_map("", BE::map_name()).context("Get pinned backends map")?;
         let map = Map::HashMap(map);
         map.try_into().context("Diff data size for backends map")
     }
