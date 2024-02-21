@@ -56,6 +56,11 @@ pub(crate) fn mapdata_from_pinned_map(ifname: &str, map_name: &str) -> Option<Ma
     })
 }
 
+/// TODO: search and get maps by iterating over the loaded programs and the used maps
+pub(crate) fn _mapdata_by_name(_ifname: &str, _map_name: &str) -> Result<MapData, anyhow::Error> {
+    Ok(MapData::from_id(0)?)
+}
+
 pub(crate) fn _teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
     let iter = std::fs::read_dir("/sys/fs/bpf/").context("Failed to iterate bpffs")?;
 
@@ -186,4 +191,27 @@ pub fn prog_bpffs(ifname: &str) -> Result<(PathBuf, bool), anyhow::Error> {
 
 pub fn stou64(number: &str, base: u32) -> u64 {
     u64::from_str_radix(number, base).unwrap_or_default()
+}
+
+pub struct XdpLinkInfo {
+    pub id: u32,
+    pub program_id: u32,
+    pub ifindex: u32,
+}
+
+pub fn get_xdp_link_info(ifname: &str) -> Option<XdpLinkInfo> {
+    let ifindex = ifindex(ifname).ok()?;
+    for link in aya::programs::loaded_links().filter_map(|link| link.ok()) {
+        if link.type_ == bpf_link_type::BPF_LINK_TYPE_XDP as u32
+            && unsafe { link.__bindgen_anon_1.xdp.ifindex as u32 } == ifindex
+        {
+            return Some(XdpLinkInfo {
+                id: link.id,
+                program_id: link.prog_id,
+                ifindex,
+            });
+        }
+    }
+
+    None
 }
