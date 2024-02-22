@@ -80,10 +80,10 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, EthHdr::LEN)?;
-    //let src_addr = u32::from_be(unsafe { (*ipv4hdr).src_addr });
-    //let dst_addr = u32::from_be(unsafe { (*ipv4hdr).dst_addr });
+    let src_addr = u32::from_be(unsafe { (*ipv4hdr).src_addr });
+    let dst_addr = u32::from_be(unsafe { (*ipv4hdr).dst_addr });
     let proto = unsafe { (*ipv4hdr).proto };
-
+    let (if_index, rx_queue) = unsafe { ((*ctx.ctx).ingress_ifindex, (*ctx.ctx).rx_queue_index) };
     let (src_port, dst_port) = match proto {
         IpProto::Tcp => {
             let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
@@ -95,21 +95,23 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
         _ => (0, 0),
     };
-
     let mut ep4 = EP4 {
         address: unsafe { (*ipv4hdr).dst_addr }.to_le_bytes(),
         port: dst_port.to_le(),
         proto: (proto as u16).to_le(),
     };
 
-    unsafe {
-        info!(
-            ctx,
-            "Receive packet from {:i} to {:i}",
-            (*ipv4hdr).src_addr,
-            (*ipv4hdr).dst_addr
-        );
-    }
+    info!(
+        ctx,
+        "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
+        if_index,
+        rx_queue,
+        proto as u8,
+        src_addr,
+        src_port.to_be(),
+        dst_addr,
+        dst_port.to_be()
+    );
 
     let (group, ingress) = match unsafe { ZLB_LB4.get(&ep4) } {
         None => {
