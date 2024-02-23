@@ -96,9 +96,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         _ => (0, 0),
     };
     let mut ep4 = EP4 {
-        address: unsafe { (*ipv4hdr).dst_addr }.to_le_bytes(),
-        port: dst_port.to_le(),
-        proto: (proto as u16).to_le(),
+        address: unsafe { (*ipv4hdr).dst_addr },
+        port: dst_port,
+        proto: proto as u16,
     };
 
     info!(
@@ -115,7 +115,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     let (group, ingress) = match unsafe { ZLB_LB4.get(&ep4) } {
         None => {
-            ep4.address = unsafe { (*ipv4hdr).src_addr }.to_le_bytes();
+            ep4.address = unsafe { (*ipv4hdr).src_addr };
             ep4.port = src_port;
             match unsafe { ZLB_LB4.get(&ep4) } {
                 Some(group) => (group, 0),

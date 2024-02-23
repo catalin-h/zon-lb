@@ -117,7 +117,7 @@ unsafe impl aya::Pod for EP6 {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EP4 {
-    pub address: [u8; 4],
+    pub address: u32,
     pub port: u16,
     pub proto: u16,
 }
