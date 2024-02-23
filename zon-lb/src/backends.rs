@@ -51,9 +51,9 @@ pub struct EndPoint {
 impl From<&EP4> for EndPoint {
     fn from(value: &EP4) -> Self {
         Self {
-            ipaddr: IpAddr::from(value.address),
-            proto: Protocol::from(value.proto as u8),
-            port: value.port,
+            ipaddr: IpAddr::from(value.address.to_le_bytes()),
+            proto: Protocol::from(value.proto.to_le() as u8),
+            port: value.port.to_le(),
         }
     }
 }
@@ -62,8 +62,8 @@ impl From<&EP6> for EndPoint {
     fn from(value: &EP6) -> Self {
         Self {
             ipaddr: IpAddr::from(value.address),
-            proto: Protocol::from(value.proto as u8),
-            port: value.port,
+            proto: Protocol::from(value.proto.to_le() as u8),
+            port: value.port.to_le(),
         }
     }
 }
@@ -98,9 +98,9 @@ impl BackendInfo for BE {
 impl ToEndPoint for EP4 {
     fn as_endpoint(&self) -> EndPoint {
         EndPoint {
-            ipaddr: IpAddr::V4(Ipv4Addr::from(self.address)),
-            proto: Protocol::from(self.proto as u8),
-            port: self.port,
+            ipaddr: IpAddr::V4(Ipv4Addr::from(self.address.to_le())),
+            proto: Protocol::from(self.proto.to_le() as u8),
+            port: self.port.to_le(),
         }
     }
 }
@@ -182,14 +182,14 @@ impl EndPoint {
     fn ep_key(&self) -> EPX {
         match &self.ipaddr {
             IpAddr::V4(ip) => EPX::V4(EP4 {
-                address: ip.octets(),
-                port: self.port,
-                proto: self.proto as u16,
+                address: u32::from_le_bytes(ip.octets()),
+                port: u16::from_le(self.port),
+                proto: u16::from_le(self.proto as u16),
             }),
             IpAddr::V6(ip) => EPX::V6(EP6 {
                 address: ip.octets(),
-                port: self.port,
-                proto: self.proto as u16,
+                port: u16::from_le(self.port),
+                proto: u16::from_le(self.proto as u16),
             }),
         }
     }
