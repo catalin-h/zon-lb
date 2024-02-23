@@ -145,10 +145,20 @@ impl From<u32> for BEKey {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy)]
+pub union INET {
+    pub v4: u32,
+    pub v6: [u8; 16],
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for INET {}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct BE {
     /// Holds both an IPv4 and IPv6 address (big-endian)
-    pub address: [u8; 16],
+    pub address: INET,
     /// The backend listening port and it should be used
     /// only if PORT flag is set. The default value is 0
     // and it should be ignored regardless of the LB flag.

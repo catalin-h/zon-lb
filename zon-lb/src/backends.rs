@@ -10,7 +10,7 @@ use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
-use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX};
+use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX, INET};
 
 pub trait ToMapName {
     fn map_name() -> &'static str;
@@ -80,18 +80,13 @@ pub trait BackendInfo {
 
 impl BackendInfo for BE {
     fn ipv4(&self) -> IpAddr {
-        IpAddr::from([
-            self.address[0],
-            self.address[1],
-            self.address[2],
-            self.address[3],
-        ])
+        IpAddr::from(unsafe { self.address.v4.to_le_bytes() })
     }
     fn ipv6(&self) -> IpAddr {
-        IpAddr::from(self.address)
+        IpAddr::from(unsafe { self.address.v6 })
     }
     fn port(&self) -> u16 {
-        self.port
+        self.port.to_le()
     }
 }
 
@@ -128,16 +123,14 @@ impl ToEndPoint for BE {
     fn as_endpoint(&self) -> EndPoint {
         let ipaddr = if self.flags.contains(EPFlags::IPV4) {
             self.ipv4()
-        } else if self.flags.contains(EPFlags::IPV6) {
-            self.ipv6()
         } else {
-            IpAddr::from(self.address)
+            self.ipv6()
         };
 
         EndPoint {
             ipaddr,
-            proto: self.proto.into(),
-            port: self.port,
+            proto: self.proto.to_le().into(),
+            port: self.port.to_le(),
         }
     }
 }
@@ -211,21 +204,23 @@ impl EndPoint {
     }
 
     fn as_backend(&self, gid: u64) -> BE {
-        let (address, flags) = match &self.ipaddr {
-            IpAddr::V4(ip) => {
-                let mut v6: [u8; 16] = [0; 16];
-                v6[..4].clone_from_slice(&ip.octets()[..]);
-                (v6, EPFlags::IPV4)
-            }
-            IpAddr::V6(ip) => (ip.octets(), EPFlags::IPV6),
-        };
-
-        BE {
-            address,
-            port: self.port,
-            gid: gid as u16,
-            proto: self.proto as u8,
-            flags,
+        match &self.ipaddr {
+            IpAddr::V4(ip) => BE {
+                address: INET {
+                    v4: u32::from(*ip).to_be(),
+                },
+                port: self.port.to_be(),
+                proto: self.proto as u8,
+                flags: EPFlags::IPV4,
+                gid: gid as u16,
+            },
+            IpAddr::V6(ip) => BE {
+                address: INET { v6: ip.octets() },
+                port: self.port.to_be(),
+                proto: self.proto as u8,
+                flags: EPFlags::IPV6,
+                gid: gid as u16,
+            },
         }
     }
 }
