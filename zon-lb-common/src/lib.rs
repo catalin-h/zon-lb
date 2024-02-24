@@ -44,6 +44,8 @@ pub struct BEGroup {
     pub becount: u16,
     /// The flags instructs the xdp program to update the IP or/and Port
     pub flags: EPFlags,
+    /// Interface index
+    pub ifindex: u32,
 }
 
 impl BEGroup {
@@ -52,6 +54,7 @@ impl BEGroup {
             gid: id,
             becount: 0_u16,
             flags: EPFlags::default(),
+            ifindex: 0,
         }
     }
 }
@@ -102,7 +105,7 @@ impl EPX {
 }
 
 // TODO: add 32-bit hash for generic hashing for different ip protocols
-
+// TODO: add ifindex field to search per interface
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EP6 {

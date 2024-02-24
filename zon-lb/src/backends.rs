@@ -566,6 +566,7 @@ impl Backend {
             gid: self.gid,
             becount: index + 1,
             flags: gmap.info.flags,
+            ifindex: gmap.info.ifindex,
         };
 
         match &gmap.info.key {
