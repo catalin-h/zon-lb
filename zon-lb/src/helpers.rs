@@ -52,47 +52,6 @@ pub(crate) fn _mapdata_by_name(_ifname: &str, _map_name: &str) -> Result<MapData
     Ok(MapData::from_id(0)?)
 }
 
-pub(crate) fn _teardown_maps(prefix: &str) -> Result<(), anyhow::Error> {
-    let iter = std::fs::read_dir("/sys/fs/bpf/").context("Failed to iterate bpffs")?;
-
-    for path in iter
-        .into_iter()
-        .filter_map(|entry| entry.map_or(None, |p| Some(p.path())))
-        .filter_map(|path| if path.is_file() { Some(path) } else { None })
-        .filter_map(|path| {
-            if path
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default()
-                .starts_with(prefix)
-            {
-                Some(path)
-            } else {
-                None
-            }
-        })
-    {
-        match std::fs::remove_file(&path) {
-            Ok(_) => {
-                info!(
-                    "Pinned link removed: {}",
-                    &path.to_str().unwrap_or_default()
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to remove pinned link: {}, e: {}",
-                    &path.to_str().unwrap_or_default(),
-                    e.to_string()
-                );
-            }
-        };
-    }
-
-    Ok(())
-}
-
 pub(crate) fn _create_pinned_links_for_maps(
     bpf: &mut Bpf,
     ifname: &str,

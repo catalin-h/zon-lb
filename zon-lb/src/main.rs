@@ -229,8 +229,6 @@ pub(crate) fn bpf_instance() -> Result<aya::Bpf, anyhow::Error> {
 fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
     let mut prg = Prog::new(&opt.ifname)?;
 
-    info!("Using zon-lb bpffs: {}", prg.link_path_str);
-
     match &opt.action {
         ProgAction::Teardown => prg.teardown(),
         ProgAction::Unload => prg.unload(),
@@ -240,6 +238,7 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
             prg.load(&mut bpf_instance()?, load_opt.xdp_flags())
         }
         ProgAction::Reload(load_opt) => {
+            // TODO: save config and restore
             info!("Try reattach program to interface: {}", &opt.ifname);
             prg.teardown()?;
             prg.load(&mut bpf_instance()?, load_opt.xdp_flags())

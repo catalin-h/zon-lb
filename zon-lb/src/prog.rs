@@ -1,4 +1,4 @@
-use crate::helpers::*;
+use crate::{backends::teardown_all_maps, helpers::*};
 use anyhow::{anyhow, Context};
 use aya::{
     maps::Array,
@@ -80,7 +80,7 @@ impl Prog {
     }
 
     pub fn teardown(&mut self) -> Result<(), anyhow::Error> {
-        // TODO: remove pinned maps
+        teardown_all_maps()?;
         self.unload()
     }
 
@@ -140,6 +140,10 @@ impl Prog {
         fdlink
             .pin(&self.link_path)
             .context("Failed to create pinned link for program")?;
-        self.init_info(bpf)
+        self.init_info(bpf)?;
+
+        info!("Successfully load the program on interface {}", self.ifname);
+
+        Ok(())
     }
 }

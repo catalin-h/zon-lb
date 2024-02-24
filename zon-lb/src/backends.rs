@@ -6,6 +6,8 @@ use crate::protocols::Protocol;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
 use std::collections::HashMap as StdHashMap;
+use std::fs::remove_file;
+use std::path::PathBuf;
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -763,4 +765,28 @@ impl Backend {
 
         Ok(rem_eps)
     }
+}
+
+pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
+    for map_name in [
+        GroupInfo::map_name(),
+        EP4::map_name(),
+        EP6::map_name(),
+        BE::map_name(),
+    ] {
+        let path = PathBuf::from(crate::BPFFS).join(map_name);
+        match path.try_exists() {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(e) => {
+                log::error!("Can't check the file status for map {}, {}", map_name, e);
+                continue;
+            }
+        }
+        match remove_file(path) {
+            Ok(()) => log::info!("Map {} bpffs successfully deleted", map_name),
+            Err(e) => log::error!("Failed to delete map {} bpffs, {}", map_name, e),
+        }
+    }
+    Ok(())
 }
