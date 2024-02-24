@@ -210,15 +210,18 @@ impl ConfigWriter {
         for (key, ep) in &cfg.backend {
             let key = ConfigFile::from_backend_key(&key);
             let ep: EndPoint = ep.into();
-            if !self.mapping.contains_key(&key.gid) {
-                log::warn!(
-                    "Backend {} not loaded, no group id {} in config or group not loaded",
-                    ep,
-                    key.gid
-                );
-                continue;
-            }
-            let bemgr = crate::Backend::new(key.gid as u64);
+            let actual_gid = match self.mapping.get(&key.gid) {
+                Some(actual) => *actual,
+                None => {
+                    log::warn!(
+                        "Backend {} not loaded, no group id {} in config or group not loaded",
+                        ep,
+                        key.gid
+                    );
+                    continue;
+                }
+            };
+            let bemgr = crate::Backend::new(actual_gid as u64);
             match bemgr.add(&ep) {
                 Ok(group) => {
                     self.bcount += 1;
@@ -262,7 +265,6 @@ impl ConfigWriter {
                 }
             };
             let ep = ep.into();
-            log::info!("Adding backend group {} on {}", ep, group.ifname);
             let actual_gid = match group.add(&ep) {
                 Ok(id) => id,
                 Err(e) => {
@@ -275,6 +277,13 @@ impl ConfigWriter {
                     continue;
                 }
             };
+            log::info!(
+                "Backend group {} added for {} => id: {} (config:{})",
+                ep,
+                group.ifname,
+                actual_gid,
+                gid
+            );
             self.mapping.insert(gid, actual_gid as u16);
             self.gcount += 1;
         }
