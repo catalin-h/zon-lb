@@ -5,13 +5,10 @@ use crate::info::InfoTable;
 use crate::protocols::Protocol;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
-use std::collections::HashMap as StdHashMap;
+use std::collections::{BTreeSet, HashMap as StdHashMap};
 use std::fs::remove_file;
 use std::path::PathBuf;
-use std::{
-    fmt,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-};
+use std::{fmt, net::IpAddr};
 use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX, INET};
 
 pub trait ToMapName {
@@ -95,7 +92,7 @@ impl BackendInfo for BE {
 impl ToEndPoint for EP4 {
     fn as_endpoint(&self) -> EndPoint {
         EndPoint {
-            ipaddr: IpAddr::V4(Ipv4Addr::from(self.address.to_le())),
+            ipaddr: IpAddr::from(self.address.to_le_bytes()),
             proto: Protocol::from(self.proto.to_le() as u8),
             port: self.port.to_le(),
         }
@@ -105,9 +102,9 @@ impl ToEndPoint for EP4 {
 impl ToEndPoint for EP6 {
     fn as_endpoint(&self) -> EndPoint {
         EndPoint {
-            ipaddr: IpAddr::V6(Ipv6Addr::from(self.address)),
-            proto: Protocol::from(self.proto as u8),
-            port: self.port,
+            ipaddr: IpAddr::from(self.address),
+            proto: Protocol::from(self.proto.to_le() as u8),
+            port: self.port.to_le(),
         }
     }
 }
@@ -131,8 +128,8 @@ impl ToEndPoint for BE {
 
         EndPoint {
             ipaddr,
-            proto: self.proto.to_le().into(),
-            port: self.port.to_le(),
+            proto: self.proto.swap_bytes().into(),
+            port: self.port.swap_bytes(),
         }
     }
 }
@@ -140,7 +137,7 @@ impl ToEndPoint for BE {
 impl Default for EndPoint {
     fn default() -> Self {
         Self {
-            ipaddr: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            ipaddr: IpAddr::from([0; 4]),
             proto: Protocol::None,
             port: 0,
         }
@@ -229,12 +226,14 @@ impl EndPoint {
 
 pub struct Group {
     pub ifname: String,
+    pub ifindex: u32,
 }
 
 impl Group {
     pub fn new(ifname: &str) -> Result<Self, anyhow::Error> {
         Ok(Self {
             ifname: ifname.to_string(),
+            ifindex: ifindex(ifname)?,
         })
     }
 
@@ -317,6 +316,7 @@ impl Group {
         let mut beg = BEGroup::new(gid);
 
         beg.flags = ginfo.flags;
+        beg.ifindex = self.ifindex;
 
         match &ginfo.key {
             EPX::V4(ep4) => self.insert_group(ep4, &beg, MUFlags::NOEXIST),
@@ -362,7 +362,6 @@ impl Group {
 
     pub fn remove(&self, gid: u64) -> Result<Vec<EndPoint>, anyhow::Error> {
         let mut rem_eps = vec![];
-        let gmap = Self::group_meta()?;
 
         match Backend::new(gid).clear() {
             Ok(bens) => log::info!(
@@ -379,19 +378,13 @@ impl Group {
             ),
         };
 
-        if let Ok(ginfo) = gmap.get(&gid, 0) {
-            rem_eps.push(ginfo.key.as_endpoint());
-        } else {
-            let mut search = |ep: &EndPoint, g: &BEGroup| {
-                if g.gid == gid {
-                    rem_eps.push(*ep);
-                }
-            };
-            self.iterate_mut::<EP4, _>(|e, g| search(&e.as_endpoint(), g))
-                .context("IPv4 group")?;
-            self.iterate_mut::<EP6, _>(|e, g| search(&e.as_endpoint(), g))
-                .context("IPv6 group")?;
-        }
+        let mut search = |ep: &EndPoint, g: &BEGroup| {
+            if g.gid == gid {
+                rem_eps.push(*ep);
+            }
+        };
+        self.iterate_mut::<EP4, _>(|e, g| search(&e.as_endpoint(), g))?;
+        self.iterate_mut::<EP6, _>(|e, g| search(&e.as_endpoint(), g))?;
 
         if rem_eps.len() == 0 {
             return Err(anyhow!("Can't find group with id {}", gid));
@@ -433,19 +426,15 @@ impl Group {
     }
 
     pub fn remove_all(&self) -> Result<(), anyhow::Error> {
-        let ifindex = ifindex(&self.ifname)?;
-        let meta = Group::group_meta()?;
-        let gids = meta
-            .iter()
-            .filter_map(|p| p.ok())
-            .filter_map(|(gid, ginfo)| {
-                if ifindex == ginfo.ifindex {
-                    Some(gid)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<u64>>();
+        let mut gids = BTreeSet::new();
+        let mut search = |g: &BEGroup| {
+            if g.ifindex == self.ifindex {
+                gids.insert(g.gid);
+            }
+        };
+        self.iterate_mut::<EP4, _>(|_, g| search(g))?;
+        self.iterate_mut::<EP6, _>(|_, g| search(g))?;
+        log::info!("Removing groups {:?} from interface {}", gids, &self.ifname);
         for gid in gids {
             match self.remove(gid) {
                 Ok(_) => log::info!("Group {} removed from {}", gid, self.ifname),
