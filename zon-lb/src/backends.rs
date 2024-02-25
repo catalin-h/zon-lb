@@ -343,17 +343,18 @@ impl Group {
 
     pub fn list(&self) -> Result<(), anyhow::Error> {
         let mut table = InfoTable::new(vec!["gid", "endpoint", "netdev", "flags", "be_count"]);
-        let map = Self::group_meta()?;
-
-        for (gid, ginfo) in map.iter().filter_map(|pair| pair.ok()) {
+        let mut search = |ep: EndPoint, g: &BEGroup| {
             table.push_row(vec![
-                gid.to_string(),
-                ginfo.key.as_endpoint().to_string(),
-                if_index_to_name(ginfo.ifindex).unwrap_or(ginfo.ifindex.to_string()),
-                format!("{:x}", ginfo.flags),
-                format!("{}", ginfo.becount),
-            ]);
-        }
+                g.gid.to_string(),
+                ep.to_string(),
+                if_index_to_name(g.ifindex).unwrap_or(g.ifindex.to_string()),
+                format!("{:x}", g.flags),
+                format!("{}", g.becount),
+            ])
+        };
+        self.iterate_mut::<EP4, _>(|ep, g| search(ep.as_endpoint(), g))?;
+        self.iterate_mut::<EP6, _>(|ep, g| search(ep.as_endpoint(), g))?;
+
         table.sort_by_key(0, Some(&|s: &String| stou64(&s, 10)));
         table.print("Backend groups");
 
