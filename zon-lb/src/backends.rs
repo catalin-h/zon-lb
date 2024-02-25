@@ -210,23 +210,17 @@ impl EndPoint {
     }
 
     fn as_backend(&self, gid: u64) -> BE {
-        match &self.ipaddr {
-            IpAddr::V4(ip) => BE {
-                address: INET {
-                    v4: u32::from(*ip).to_be(),
-                },
-                port: self.port.to_be(),
-                proto: self.proto as u8,
-                flags: EPFlags::IPV4,
-                gid: gid as u16,
-            },
-            IpAddr::V6(ip) => BE {
-                address: INET { v6: ip.octets() },
-                port: self.port.to_be(),
-                proto: self.proto as u8,
-                flags: EPFlags::IPV6,
-                gid: gid as u16,
-            },
+        let (address, flags) = match &self.ipaddr {
+            IpAddr::V4(ip) => (INET::from(u32::from(*ip).to_be()), EPFlags::IPV4),
+            IpAddr::V6(ip) => (INET::from(ip.octets()), EPFlags::IPV6),
+        };
+
+        BE {
+            address,
+            port: self.port.to_be(),
+            proto: self.proto as u8,
+            flags,
+            gid: gid as u16,
         }
     }
 }

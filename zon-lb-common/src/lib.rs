@@ -154,6 +154,18 @@ pub union INET {
     pub v6: [u8; 16],
 }
 
+impl From<u32> for INET {
+    fn from(value: u32) -> Self {
+        Self { v4: value }
+    }
+}
+
+impl From<[u8; 16]> for INET {
+    fn from(value: [u8; 16]) -> Self {
+        Self { v6: value }
+    }
+}
+
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for INET {}
 
@@ -175,6 +187,7 @@ pub struct BE {
     pub flags: EPFlags,
     /// The protocol from LB.
     pub proto: u8,
+    // TODO: add precomputed inet csum
 }
 
 #[cfg(feature = "user")]
