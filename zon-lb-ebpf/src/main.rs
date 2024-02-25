@@ -101,6 +101,24 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         proto: proto as u16,
     };
 
+    // Temp
+    unsafe {
+        let e = &ep4 as *const _ as *const u8;
+        let a: &[u8] = core::slice::from_raw_parts(e, 8);
+        info!(
+            ctx,
+            "raw ep4: 0x{:x},0x{:x},0x{:x},0x{:x},0x{:x},0x{:x},0x{:x},0x{:x}",
+            a[0],
+            a[1],
+            a[2],
+            a[3],
+            a[4],
+            a[5],
+            a[6],
+            a[7],
+        );
+    }
+
     info!(
         ctx,
         "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
