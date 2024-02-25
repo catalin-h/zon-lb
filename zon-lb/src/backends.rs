@@ -94,8 +94,9 @@ impl ToEndPoint for EP4 {
     fn as_endpoint(&self) -> EndPoint {
         EndPoint {
             ipaddr: IpAddr::from(self.address.to_le_bytes()),
-            proto: Protocol::from(self.proto.to_le() as u8),
-            port: self.port.to_le(),
+            // protocol is a single byte and the value is not byte-swapped
+            proto: Protocol::from(self.proto as u8),
+            port: u16::from_be(self.port),
         }
     }
 }
@@ -104,8 +105,9 @@ impl ToEndPoint for EP6 {
     fn as_endpoint(&self) -> EndPoint {
         EndPoint {
             ipaddr: IpAddr::from(self.address),
-            proto: Protocol::from(self.proto.to_le() as u8),
-            port: self.port.to_le(),
+            // protocol is a single byte and the value is not byte-swapped
+            proto: Protocol::from(self.proto as u8),
+            port: u16::from_be(self.port),
         }
     }
 }
@@ -172,17 +174,21 @@ impl EndPoint {
         })
     }
 
+    /// Convert to EP4/6 using network endianess (big-endian).
+    /// Note that the endpoint stores fields in little endian format.
     fn ep_key(&self) -> EPX {
+        let port = self.port.to_be();
+        let proto = self.proto as u16;
         match &self.ipaddr {
             IpAddr::V4(ip) => EPX::V4(EP4 {
                 address: u32::from_le_bytes(ip.octets()),
-                port: u16::from_le(self.port),
-                proto: u16::from_le(self.proto as u16),
+                port,
+                proto,
             }),
             IpAddr::V6(ip) => EPX::V6(EP6 {
                 address: ip.octets(),
-                port: u16::from_le(self.port),
-                proto: u16::from_le(self.proto as u16),
+                port,
+                proto,
             }),
         }
     }
@@ -199,7 +205,7 @@ impl EndPoint {
             becount: 0,
             flags,
             ifindex,
-            key: self.ep_key(),
+            key,
         })
     }
 
