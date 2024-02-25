@@ -5,6 +5,7 @@ use crate::info::InfoTable;
 use crate::protocols::Protocol;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
+use log::{error, info, warn};
 use std::collections::{BTreeSet, HashMap as StdHashMap};
 use std::fs::remove_file;
 use std::path::PathBuf;
@@ -360,68 +361,46 @@ impl Group {
         Ok(())
     }
 
-    pub fn remove(&self, gid: u64) -> Result<Vec<EndPoint>, anyhow::Error> {
-        let mut rem_eps = vec![];
+    pub fn remove(&self, gid: u64) -> Result<(), anyhow::Error> {
+        self.remove_all_by_id::<EP4>(gid)?;
+        self.remove_all_by_id::<EP6>(gid)?;
 
         match Backend::new(gid).clear() {
-            Ok(bens) => log::info!(
-                "{} backends removed from group {} on {}",
-                bens.len(),
-                gid,
-                self.ifname
-            ),
-            Err(e) => log::error!(
-                "Failed to remove backends from group {} on {}, {}",
-                gid,
-                self.ifname,
-                e
-            ),
+            Ok(v) => info!("[{}/{}] Removed backends: {}", self.ifname, gid, v.len()),
+            Err(e) => error!("[{}/{}] Error on freeing backends,{}", self.ifname, gid, e),
         };
-
-        let mut search = |ep: &EndPoint, g: &BEGroup| {
-            if g.gid == gid {
-                rem_eps.push(*ep);
-            }
-        };
-        self.iterate_mut::<EP4, _>(|e, g| search(&e.as_endpoint(), g))?;
-        self.iterate_mut::<EP6, _>(|e, g| search(&e.as_endpoint(), g))?;
-
-        if rem_eps.len() == 0 {
-            return Err(anyhow!("Can't find group with id {}", gid));
-        }
-
-        for ep in &rem_eps {
-            if let Err(e) = self.remove_group(ep) {
-                log::warn!("[{}] failed to remove group for {}, {}", self.ifname, ep, e);
-            }
-        }
 
         if let Err(e) = self.free_group(gid) {
-            log::warn!(
-                "[{}] failed to remove group for {}, {}",
-                self.ifname,
-                gid,
-                e
-            );
+            error!("[{}/{}] Error on info freeing,{}", self.ifname, gid, e);
         }
 
-        Ok(rem_eps)
+        Ok(())
     }
 
-    fn remove_group(&self, ep: &EndPoint) -> Result<(), anyhow::Error> {
-        match ep.ep_key() {
-            EPX::V4(ep4) => self.remove_group_from_map(&ep4),
-            EPX::V6(ep6) => self.remove_group_from_map(&ep6),
-        }
-    }
-
-    fn remove_group_from_map<K>(&self, ep: &K) -> Result<(), anyhow::Error>
+    fn remove_all_by_id<K>(&self, gid: u64) -> Result<(), anyhow::Error>
     where
-        K: aya::Pod + ToMapName,
+        K: aya::Pod + ToMapName + ToEndPoint,
     {
         let map = self.group_mapdata(K::map_name())?;
         let mut map: HashMap<_, K, BEGroup> = map.try_into()?;
-        map.remove(ep)?;
+        let mut eps = vec![];
+
+        for (ep, _) in map
+            .iter()
+            .filter_map(|item| item.ok())
+            .filter(|(_, g)| g.gid == gid)
+        {
+            eps.push(ep);
+        }
+
+        for ep in eps {
+            let endp = ep.as_endpoint();
+            match map.remove(&ep) {
+                Ok(()) => info!("[{}/{}] Group {} was removed", self.ifname, gid, endp),
+                Err(e) => warn!("[{}/{}] Group {} not removed,{}", self.ifname, gid, endp, e),
+            }
+        }
+
         Ok(())
     }
 
@@ -434,13 +413,20 @@ impl Group {
         };
         self.iterate_mut::<EP4, _>(|_, g| search(g))?;
         self.iterate_mut::<EP6, _>(|_, g| search(g))?;
-        log::info!("Removing groups {:?} from interface {}", gids, &self.ifname);
-        for gid in gids {
-            match self.remove(gid) {
-                Ok(_) => log::info!("Group {} removed from {}", gid, self.ifname),
-                Err(e) => log::error!("Group {} not removed from {}, {}", gid, self.ifname, e),
+
+        info!("[{}] Removing groups {:?}", &self.ifname, gids);
+
+        let mut i = 0;
+        let n = gids.len();
+        for gid in &gids {
+            match self.remove(*gid) {
+                Ok(()) => i += 1,
+                Err(e) => error!("Group {} not removed from {}, {}", gid, self.ifname, e),
             }
         }
+
+        info!("[{}] Group remove summary: {}/{}", self.ifname, i, n);
+
         Ok(())
     }
 

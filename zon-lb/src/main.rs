@@ -269,12 +269,7 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
             info!("[{}] group {} added => {}", &opt.ifname, ep, gid);
         }
         GroupAction::List => group.list()?,
-        GroupAction::Remove { gid } => {
-            let eps = group.remove(*gid as u64)?;
-            for ep in eps {
-                info!("[{}] group {} deleted => {}", &opt.ifname, ep, gid);
-            }
-        }
+        GroupAction::Remove { gid } => group.remove(*gid as u64)?,
     }
 
     Ok(())
