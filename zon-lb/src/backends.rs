@@ -131,8 +131,8 @@ impl ToEndPoint for BE {
 
         EndPoint {
             ipaddr,
-            proto: self.proto.swap_bytes().into(),
-            port: self.port.swap_bytes(),
+            proto: self.proto.into(),
+            port: u16::from_be(self.port),
         }
     }
 }
