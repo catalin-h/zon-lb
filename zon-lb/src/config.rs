@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     fs::OpenOptions,
     io::{Read, Write},
     net::IpAddr,
@@ -34,28 +34,28 @@ impl Into<EndPoint> for &EP {
 #[derive(Serialize, Deserialize)]
 struct NetIf {
     #[serde(flatten)]
-    groups: HashMap<String, EP>,
+    groups: BTreeMap<String, EP>,
 }
 
 impl NetIf {
     fn new() -> Self {
         Self {
-            groups: HashMap::new(),
+            groups: BTreeMap::new(),
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
 struct Config {
-    netif: HashMap<String, NetIf>,
-    backend: HashMap<String, EP>,
+    netif: BTreeMap<String, NetIf>,
+    backend: BTreeMap<String, EP>,
 }
 
 impl Config {
     pub fn new() -> Self {
         Self {
-            netif: HashMap::new(),
-            backend: HashMap::new(),
+            netif: BTreeMap::new(),
+            backend: BTreeMap::new(),
         }
     }
 
@@ -181,7 +181,7 @@ impl ConfigFile {
 }
 
 struct ConfigWriter {
-    mapping: HashMap<u16, u16>,
+    mapping: BTreeMap<u16, u16>,
     gcount: usize,
     bcount: usize,
 }
@@ -189,7 +189,7 @@ struct ConfigWriter {
 impl ConfigWriter {
     fn new() -> Self {
         Self {
-            mapping: HashMap::new(),
+            mapping: BTreeMap::new(),
             gcount: 0,
             bcount: 0,
         }
