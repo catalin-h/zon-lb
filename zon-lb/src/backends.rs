@@ -341,9 +341,18 @@ impl Group {
         Ok(())
     }
 
+    pub fn iterate_all<F>(&self, mut apply: F) -> Result<(), anyhow::Error>
+    where
+        F: FnMut(EndPoint, &BEGroup),
+    {
+        self.iterate_mut::<EP4, _>(|ep, g| apply(ep.as_endpoint(), g))?;
+        self.iterate_mut::<EP6, _>(|ep, g| apply(ep.as_endpoint(), g))?;
+        Ok(())
+    }
+
     pub fn list(&self) -> Result<(), anyhow::Error> {
         let mut table = InfoTable::new(vec!["gid", "endpoint", "netdev", "flags", "be_count"]);
-        let mut search = |ep: EndPoint, g: &BEGroup| {
+        let search = |ep: EndPoint, g: &BEGroup| {
             table.push_row(vec![
                 g.gid.to_string(),
                 ep.to_string(),
@@ -352,8 +361,8 @@ impl Group {
                 format!("{}", g.becount),
             ])
         };
-        self.iterate_mut::<EP4, _>(|ep, g| search(ep.as_endpoint(), g))?;
-        self.iterate_mut::<EP6, _>(|ep, g| search(ep.as_endpoint(), g))?;
+
+        self.iterate_all(search)?;
 
         table.sort_by_key(0, Some(&|s: &String| stou64(&s, 10)));
         table.print("Backend groups");
@@ -407,13 +416,11 @@ impl Group {
 
     pub fn remove_all(&self) -> Result<(), anyhow::Error> {
         let mut gids = BTreeSet::new();
-        let mut search = |g: &BEGroup| {
+        self.iterate_all(|_, g| {
             if g.ifindex == self.ifindex {
                 gids.insert(g.gid);
             }
-        };
-        self.iterate_mut::<EP4, _>(|_, g| search(g))?;
-        self.iterate_mut::<EP6, _>(|_, g| search(g))?;
+        })?;
 
         info!("[{}] Removing groups {:?}", &self.ifname, gids);
 
