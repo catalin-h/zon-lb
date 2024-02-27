@@ -163,18 +163,17 @@ impl ConfigFile {
             cfg.backend.entry(Self::to_backend_key(&key)).or_insert(ep);
         }
 
-        for (gid, ginfo) in Group::group_meta()?.iter().filter_map(|pair| pair.ok()) {
-            let ifname = ginfo.ifindex.to_string();
-            let ifname = helpers::if_index_to_name(ginfo.ifindex).unwrap_or(ifname);
+        Group::iterate_all(|ep, group| {
+            let ifname = group.ifindex.to_string();
+            let ifname = helpers::if_index_to_name(group.ifindex).unwrap_or(ifname);
             let netif = cfg.netif.entry(ifname).or_insert(NetIf::new());
-            let ep = ginfo.key.as_endpoint();
             let ep = EP {
                 ip: ep.ipaddr,
                 proto: ep.proto as u8,
                 port: ep.port,
             };
-            netif.groups.entry(gid.to_string()).or_insert(ep);
-        }
+            netif.groups.entry(group.gid.to_string()).or_insert(ep);
+        })?;
 
         Ok(cfg)
     }
