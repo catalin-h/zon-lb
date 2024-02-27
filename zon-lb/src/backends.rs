@@ -1,5 +1,6 @@
 use crate::helpers::{
-    if_index_to_name, ifindex, mapdata_from_pinned_map, stou64, BpfMapUpdateFlags as MUFlags,
+    if_index_to_name, if_name_or_default, ifindex, mapdata_from_pinned_map, stou64,
+    BpfMapUpdateFlags as MUFlags,
 };
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
@@ -586,35 +587,26 @@ impl Backend {
     fn list_all() -> Result<(), anyhow::Error> {
         let mut table = InfoTable::new(vec!["gid:id", "backend", "", "if / lb_endpoint"]);
         let backends = Self::backends()?;
-        let gmap = Group::group_meta()?;
         let mut cache: StdHashMap<u64, String> = StdHashMap::new();
-        let mut fetch = |gid: &u64| {
-            if let Some(ginfo) = cache.get(gid) {
-                return ginfo.clone();
+
+        Group::iterate_all(|ep, group| {
+            if group.becount > 0 {
+                let out = format!("{} / {}", if_name_or_default(group.ifindex), ep);
+                cache.insert(group.gid, out);
             }
-            let value = match gmap.get(gid, 0) {
-                Ok(ginfo) => {
-                    let ifname = if_index_to_name(ginfo.ifindex)
-                        .unwrap_or_else(|| format!("if#{}", ginfo.ifindex.to_string()));
-                    let out = format!("{} / {}", ifname, ginfo.key.as_endpoint());
-                    out
-                }
-                Err(_) => "n/a".to_string(),
-            };
-            cache.insert(*gid, value.clone());
-            value
-        };
+        })?;
 
         for (key, be) in backends.iter().filter_map(|x| x.ok()) {
             let gid = key.gid as u64;
-            let ep_str = fetch(&gid);
+            let ep_str = cache.get(&gid).map_or("n/a", |v| v.as_str());
             table.push_row(vec![
                 format!("{}:{}", key.gid, key.index),
                 be.as_endpoint().to_string(),
                 "<->".to_string(),
-                ep_str,
+                ep_str.to_string(),
             ]);
         }
+
         let extract_key = |ids: &String| -> u64 {
             match ids.split_once(':') {
                 Some((gid, id)) => stou64(&gid, 10).pow(16) + stou64(&id, 10),

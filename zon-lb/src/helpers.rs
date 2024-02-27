@@ -96,6 +96,19 @@ pub(crate) fn if_index_to_name(index: u32) -> Option<String> {
         Some(str.to_string())
     }
 }
+
+pub(crate) fn if_name_or_default(index: u32) -> String {
+    let mut name = [0_i8; libc::IF_NAMESIZE];
+    let iname = unsafe { libc::if_indextoname(index, name.as_mut_ptr()) };
+
+    if iname.is_null() {
+        format!("if#{}", index)
+    } else {
+        let str = unsafe { std::ffi::CStr::from_ptr(iname) };
+        let str = str.to_string_lossy();
+        str.to_string()
+    }
+}
 pub fn ifindex(ifname: &str) -> Result<u32, anyhow::Error> {
     let c_interface = std::ffi::CString::new(ifname)?;
     let if_index = unsafe { libc::if_nametoindex(c_interface.as_ptr()) };
