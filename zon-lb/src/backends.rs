@@ -238,13 +238,15 @@ impl Group {
         })
     }
 
-    fn group_mapdata(&self, gmap: &str) -> Result<Map, anyhow::Error> {
-        let map = mapdata_from_pinned_map(&self.ifname, gmap).ok_or(anyhow!(
-            "Failed to get group map: {} on interface: {}",
-            gmap,
-            &self.ifname
-        ))?;
-        Ok(Map::HashMap(map))
+    fn group_mapdata<K>() -> Result<HashMap<MapData, K, BEGroup>, anyhow::Error>
+    where
+        K: aya::Pod + ToMapName,
+    {
+        let map = mapdata_from_pinned_map("", K::map_name())
+            .ok_or(anyhow!("Failed to find map: {} in bpffs", K::map_name()))?;
+        let map = Map::HashMap(map);
+        let map: HashMap<_, K, BEGroup> = map.try_into()?;
+        Ok(map)
     }
 
     pub fn group_meta() -> Result<HashMap<MapData, u64, GroupInfo>, anyhow::Error> {
@@ -281,15 +283,13 @@ impl Group {
         beg: &BEGroup,
         flags: MUFlags,
     ) -> Result<(), anyhow::Error> {
-        let map = self.group_mapdata(K::map_name())?;
-        let mut gmap: HashMap<_, K, BEGroup> = map.try_into()?;
+        let mut gmap = Self::group_mapdata::<K>()?;
         gmap.insert(ep, beg, flags.bits())?;
         Ok(())
     }
 
     fn get<K: aya::Pod + ToMapName>(&self, ep: &K) -> Result<BEGroup, anyhow::Error> {
-        let map = self.group_mapdata(K::map_name())?;
-        let gmap: HashMap<_, K, BEGroup> = map.try_into()?;
+        let gmap = Self::group_mapdata::<K>()?;
         gmap.get(ep, 0).context("get backend group")
     }
 
@@ -332,8 +332,7 @@ impl Group {
         K: aya::Pod + ToEndPoint + ToMapName,
         F: FnMut(&K, &BEGroup),
     {
-        let map = self.group_mapdata(K::map_name())?;
-        let gmap = HashMap::<_, K, BEGroup>::try_from(&map)?;
+        let gmap = Self::group_mapdata::<K>()?;
 
         for (ep, g) in gmap.iter().filter_map(|res| res.ok()) {
             apply(&ep, &g);
@@ -391,8 +390,7 @@ impl Group {
     where
         K: aya::Pod + ToMapName + ToEndPoint,
     {
-        let map = self.group_mapdata(K::map_name())?;
-        let mut map: HashMap<_, K, BEGroup> = map.try_into()?;
+        let mut map = Self::group_mapdata::<K>()?;
         let mut eps = vec![];
 
         for (ep, _) in map
