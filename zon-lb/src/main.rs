@@ -268,7 +268,7 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
             let gid = group.add(&ep)?;
             info!("[{}] group {} added => {}", &opt.ifname, ep, gid);
         }
-        GroupAction::List => group.list()?,
+        GroupAction::List => backends::Group::list()?,
         GroupAction::Remove { gid } => group.remove(*gid as u64)?,
     }
 

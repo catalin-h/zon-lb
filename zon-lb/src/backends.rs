@@ -327,7 +327,7 @@ impl Group {
         Ok(beg.gid)
     }
 
-    fn iterate_mut<K, F>(&self, mut apply: F) -> Result<(), anyhow::Error>
+    fn iterate_mut<K, F>(mut apply: F) -> Result<(), anyhow::Error>
     where
         K: aya::Pod + ToEndPoint + ToMapName,
         F: FnMut(&K, &BEGroup),
@@ -340,16 +340,16 @@ impl Group {
         Ok(())
     }
 
-    pub fn iterate_all<F>(&self, mut apply: F) -> Result<(), anyhow::Error>
+    pub fn iterate_all<F>(mut apply: F) -> Result<(), anyhow::Error>
     where
         F: FnMut(EndPoint, &BEGroup),
     {
-        self.iterate_mut::<EP4, _>(|ep, g| apply(ep.as_endpoint(), g))?;
-        self.iterate_mut::<EP6, _>(|ep, g| apply(ep.as_endpoint(), g))?;
+        Self::iterate_mut::<EP4, _>(|ep, g| apply(ep.as_endpoint(), g))?;
+        Self::iterate_mut::<EP6, _>(|ep, g| apply(ep.as_endpoint(), g))?;
         Ok(())
     }
 
-    pub fn list(&self) -> Result<(), anyhow::Error> {
+    pub fn list() -> Result<(), anyhow::Error> {
         let mut table = InfoTable::new(vec!["gid", "endpoint", "netdev", "flags", "be_count"]);
         let search = |ep: EndPoint, g: &BEGroup| {
             table.push_row(vec![
@@ -361,7 +361,7 @@ impl Group {
             ])
         };
 
-        self.iterate_all(search)?;
+        Self::iterate_all(search)?;
 
         table.sort_by_key(0, Some(&|s: &String| stou64(&s, 10)));
         table.print("Backend groups");
@@ -414,7 +414,7 @@ impl Group {
 
     pub fn remove_all(&self) -> Result<(), anyhow::Error> {
         let mut gids = BTreeSet::new();
-        self.iterate_all(|_, g| {
+        Self::iterate_all(|_, g| {
             if g.ifindex == self.ifindex {
                 gids.insert(g.gid);
             }
@@ -442,7 +442,7 @@ impl Group {
     ) -> Result<(), anyhow::Error> {
         let mut map: HashMap<_, K, BEGroup> = dst_map.try_into()?;
 
-        self.iterate_mut::<K, _>(|&ep, &beg| match map.insert(ep, beg, 0) {
+        Self::iterate_mut::<K, _>(|&ep, &beg| match map.insert(ep, beg, 0) {
             Ok(()) => log::info!("[{}] {} copied to map", &self.ifname, ep.as_endpoint(),),
             Err(e) => log::error!(
                 "[{}] Failed to copy {} to map, {}",
