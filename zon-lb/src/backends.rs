@@ -196,18 +196,9 @@ impl EndPoint {
 
     fn as_group_info(&self, ifname: &str) -> Result<GroupInfo, anyhow::Error> {
         let key = self.ep_key();
-        let flags = match key {
-            EPX::V4(_) => EPFlags::IPV4,
-            EPX::V6(_) => EPFlags::IPV6,
-        };
         let ifindex = ifindex(ifname)?;
 
-        Ok(GroupInfo {
-            becount: 0,
-            flags,
-            ifindex,
-            key,
-        })
+        Ok(GroupInfo { ifindex, key })
     }
 
     fn as_backend(&self, gid: u64) -> BE {
@@ -317,7 +308,10 @@ impl Group {
         let gid = self.allocate_group(&ginfo)?;
         let mut beg = BEGroup::new(gid);
 
-        beg.flags = ginfo.flags;
+        beg.flags = match ginfo.key {
+            EPX::V4(_) => EPFlags::IPV4,
+            EPX::V6(_) => EPFlags::IPV6,
+        };
         beg.ifindex = self.ifindex;
 
         match &ginfo.key {
@@ -463,35 +457,39 @@ pub struct Backend {
 struct GroupMap {
     group: Group,
     info: GroupInfo,
-    meta: HashMap<MapData, u64, GroupInfo>,
 }
 
 impl GroupMap {
     fn new(gid: u64) -> Result<GroupMap, anyhow::Error> {
         let meta = Group::group_meta()?;
         let info = meta.get(&gid, 0).context("No group in metadata")?;
+        // TODO: need ifname?
         let ifname = if_index_to_name(info.ifindex).ok_or(anyhow!("Can't get netdev name"))?;
         let group = Group::new(&ifname)?;
-        Ok(Self { group, meta, info })
+        Ok(Self { group, info })
     }
 
     fn check_compat(&self, ep: &EndPoint) -> Result<(), anyhow::Error> {
+        let (flags, epx) = match self.info.key {
+            EPX::V4(ep4) => (EPFlags::IPV4, ep4.as_endpoint()),
+            EPX::V6(ep6) => (EPFlags::IPV6, ep6.as_endpoint()),
+        };
         match ep.ipaddr {
             IpAddr::V4(_) => {
-                if !self.info.flags.contains(EPFlags::IPV4) {
+                if !flags.contains(EPFlags::IPV4) {
                     return Err(anyhow!(
                         "Incompatible IPv4 backend {} with target IPv6 group {}",
                         ep,
-                        self.info.key.as_endpoint()
+                        epx
                     ));
                 }
             }
             IpAddr::V6(_) => {
-                if !self.info.flags.contains(EPFlags::IPV6) {
+                if !flags.contains(EPFlags::IPV6) {
                     return Err(anyhow!(
                         "Incompatible IPv6 backend {} with target IPv4 group {}",
                         ep,
-                        self.info.key.as_endpoint()
+                        epx,
                     ));
                 }
             }
@@ -526,32 +524,24 @@ impl Backend {
 
     pub fn add(&self, ep: &EndPoint) -> Result<Group, anyhow::Error> {
         let mut backends = Self::backends()?;
-        let mut gmap = GroupMap::new(self.gid)?;
-        let index = gmap.info.becount as u16;
-        let iflags = MUFlags::EXIST;
+        let gmap = GroupMap::new(self.gid)?;
 
         gmap.check_compat(ep)?;
 
+        let mut beg = gmap.begroup()?;
+        let index = beg.becount;
+        let iflags = MUFlags::EXIST;
+
         let be = ep.as_backend(self.gid);
         let key = BEKey {
-            gid: self.gid as u16,
+            gid: beg.gid as u16,
             index,
         };
         backends
             .insert(key, be, MUFlags::ANY.bits())
             .context("Insert backend")?;
 
-        gmap.info.becount += 1;
-        gmap.meta
-            .insert(self.gid, gmap.info, iflags.bits())
-            .context("Update group meta")?;
-
-        let beg = BEGroup {
-            gid: self.gid,
-            becount: index + 1,
-            flags: gmap.info.flags,
-            ifindex: gmap.info.ifindex,
-        };
+        beg.becount += 1;
 
         match &gmap.info.key {
             EPX::V4(ep4) => gmap
@@ -567,11 +557,11 @@ impl Backend {
         Ok(gmap.group)
     }
 
-    fn build_backend_list(gid: u16, ginfo: &GroupInfo) -> Result<InfoTable, anyhow::Error> {
+    fn build_backend_list(gid: u16, becount: u16) -> Result<InfoTable, anyhow::Error> {
         let mut table = InfoTable::new(vec!["id", "endpoint"]);
         let backends = Self::backends()?;
 
-        for index in 0..ginfo.becount as u16 {
+        for index in 0..becount {
             let key = BEKey { gid, index };
             match backends.get(&key, 0) {
                 Ok(be) => {
@@ -624,22 +614,17 @@ impl Backend {
         }
 
         let mut table = InfoTable::new(vec!["gid", "endpoint", "netdev", "flags", "be_count"]);
-        let to_row = |gid: u16, ginfo: &GroupInfo| {
-            vec![
-                gid.to_string(),
-                ginfo.key.as_endpoint().to_string(),
-                if_index_to_name(ginfo.ifindex).unwrap_or(ginfo.ifindex.to_string()),
-                format!("{:x}", ginfo.flags),
-                format!("{}", ginfo.becount),
-            ]
-        };
+        let gmap = GroupMap::new(gid)?;
+        let beg = gmap.begroup()?;
+        let bt = Self::build_backend_list(gid as u16, beg.becount)?;
 
-        let gmap = Group::group_meta()?;
-        let ginfo = gmap
-            .get(&gid, 0)
-            .context("Failed to retrieve group for id")?;
-        let bt = Self::build_backend_list(gid as u16, &ginfo)?;
-        table.push_row(to_row(gid as u16, &ginfo));
+        table.push_row(vec![
+            gid.to_string(),
+            gmap.info.key.as_endpoint().to_string(),
+            if_name_or_default(beg.ifindex),
+            format!("{:x}", beg.flags),
+            beg.becount.to_string(),
+        ]);
         table.print("Backend group info:");
         bt.print("Backends list:");
 
@@ -670,11 +655,11 @@ impl Backend {
     }
 
     fn remove_from_group(&self, index: u16) -> Result<u16, anyhow::Error> {
-        let mut gmap = GroupMap::new(self.gid)?;
+        let gmap = GroupMap::new(self.gid)?;
         let mut begroup = gmap.begroup()?;
         let mut rem_index = index;
         let iflags = MUFlags::EXIST;
-        let mut count = begroup.becount.min(gmap.info.becount as u16);
+        let mut count = begroup.becount;
 
         if count > 0 && index < count {
             self.replace(count - 1, index)?;
@@ -690,14 +675,6 @@ impl Backend {
             };
             if let Err(_) = res {
                 log::warn!("Can't update group {}", gmap.info.key.as_endpoint());
-            }
-        }
-
-        let count: u64 = count.into();
-        if count != gmap.info.becount {
-            gmap.info.becount = count;
-            if let Err(_) = gmap.meta.insert(self.gid, gmap.info, iflags.bits()) {
-                log::warn!("Can't update group meta for group {}", self.gid);
             }
         }
 

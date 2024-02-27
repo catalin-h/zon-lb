@@ -64,14 +64,10 @@ unsafe impl aya::Pod for BEGroup {}
 
 /// Holds the backends metadata required by user space application to manage
 /// the groups and backends. The HashMap contaning this data is shared for
-/// multiple groups on multiple interfaces and should start with ZLBX_*.
+/// all  groups.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GroupInfo {
-    /// The current backends count in this group
-    pub becount: u64,
-    /// The flags instructs the xdp program to update the IP or/and Port
-    pub flags: EPFlags,
     /// Interface index
     pub ifindex: u32,
     /// Group endpoint details
