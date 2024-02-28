@@ -5,6 +5,7 @@ use bitflags;
 pub const VERSION: u32 = 0x0000001;
 pub const MAX_GROUPS: u32 = 64;
 pub const MAX_BACKENDS: u32 = 1024;
+pub const MAX_CONNTRACKS: u32 = 1 << 10;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -188,3 +189,29 @@ pub struct BE {
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for BE {}
+
+/// Source part of the connection tracking map key.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SRCNATKey {
+    /// Original packet port
+    src_port: u16,
+    /// reserved
+    reserved: u16,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for SRCNATKey {}
+
+/// IPV4 connection tracking map key.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NAT4Key {
+    /// IPv4 backend endpoint details
+    ep4: EP4,
+    /// Source details part of the key
+    source: SRCNATKey,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for NAT4Key {}

@@ -4,7 +4,7 @@
 use aya_bpf::{
     bindings::xdp_action,
     macros::{map, xdp},
-    maps::{Array, HashMap},
+    maps::{Array, HashMap, LruPerCpuHashMap},
     programs::XdpContext,
 };
 use aya_log_ebpf::info;
@@ -15,7 +15,10 @@ use network_types::{
     tcp::TcpHdr,
     udp::UdpHdr,
 };
-use zon_lb_common::{BEGroup, BEKey, GroupInfo, ZonInfo, BE, EP4, EP6, MAX_BACKENDS, MAX_GROUPS};
+use zon_lb_common::{
+    BEGroup, BEKey, GroupInfo, NAT4Key, ZonInfo, BE, EP4, EP6, INET, MAX_BACKENDS, MAX_CONNTRACKS,
+    MAX_GROUPS,
+};
 
 /// Keeps runtime config data.
 #[map]
@@ -42,6 +45,15 @@ static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::pinned(MAX_GROU
 /// Same as ZLB_LB4 but for IPv6 packets.
 #[map]
 static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROUPS, 0);
+
+/// Used for IPV4 connection tracking and NAT between backend and source endpoint.
+/// This map will be updated upon forwarding the packet to backend and searched
+/// upon returning the backend reply.
+#[map]
+static ZLB_CONNTRACK4: LruPerCpuHashMap<NAT4Key, INET> =
+    LruPerCpuHashMap::<NAT4Key, INET>::pinned(MAX_CONNTRACKS, 0);
+
+// TODO: add ipv6 connection tracking
 
 #[inline(always)]
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
@@ -95,6 +107,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
         _ => (0, 0),
     };
+
+    // TODO: add prefilter based on port and proto for both ingress and egress
+
     let mut ep4 = EP4 {
         address: unsafe { (*ipv4hdr).dst_addr },
         port: dst_port,
@@ -147,6 +162,13 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     if group.becount == 0 {
         return Ok(xdp_action::XDP_PASS);
+    }
+
+    if ingress == 0 {
+        unsafe {
+            let h = ipv4hdr.cast_mut();
+            (*h).src_addr = ep4.address;
+        }
     }
 
     Ok(xdp_action::XDP_PASS)
