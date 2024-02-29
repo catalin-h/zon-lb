@@ -190,28 +190,25 @@ pub struct BE {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for BE {}
 
-/// Source part of the connection tracking map key.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SRCNATKey {
-    /// Original packet port
-    src_port: u16,
-    /// reserved
-    reserved: u16,
-}
-
-#[cfg(feature = "user")]
-unsafe impl aya::Pod for SRCNATKey {}
-
 /// IPV4 connection tracking map key.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NAT4Key {
-    /// IPv4 backend endpoint details
-    ep4: EP4,
-    /// Source details part of the key
-    source: SRCNATKey,
+    /// The backend will respond with this address
+    pub ip_be_src: u32,
+    /// The backend will respond to this address
+    pub ip_lb_dst: u32,
+    /// The backend will respond with this port
+    pub port_be_src: u16,
+    /// The backend will respond to this port
+    pub port_lb_dst: u16,
+    /// The used IP protocol
+    pub proto: u8,
+    /// reserved (align)
+    pub reserved: [u8; 3],
 }
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for NAT4Key {}
+
+// TODO: add hasher function

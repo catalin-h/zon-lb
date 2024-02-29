@@ -50,6 +50,7 @@ static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROU
 /// This map will be updated upon forwarding the packet to backend and searched
 /// upon returning the backend reply.
 /// TBD: pin this map so the NAT table isn't lost when the program is reattached.
+/// TODO: add timestamp in order to delete after some time
 #[map]
 static mut ZLB_CONNTRACK4: LruPerCpuHashMap<NAT4Key, INET> =
     LruPerCpuHashMap::<NAT4Key, INET>::pinned(MAX_CONNTRACKS, 0);
@@ -111,7 +112,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // TODO: add prefilter based on port and proto for both ingress and egress
 
-    let mut ep4 = EP4 {
+    let ep4 = EP4 {
         address: unsafe { (*ipv4hdr).dst_addr },
         port: dst_port,
         proto: proto as u16,
@@ -147,30 +148,69 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         dst_port.to_be()
     );
 
-    let (group, ingress) = match unsafe { ZLB_LB4.get(&ep4) } {
+    let group = match unsafe { ZLB_LB4.get(&ep4) } {
         None => {
-            ep4.address = unsafe { (*ipv4hdr).src_addr };
-            ep4.port = src_port;
-            match unsafe { ZLB_LB4.get(&ep4) } {
-                Some(group) => (group, 0),
+            let nat4 = NAT4Key {
+                ip_be_src: src_addr,
+                ip_lb_dst: dst_addr,
+                port_be_src: src_port,
+                port_lb_dst: dst_port,
+                proto: proto as u8,
+                ..Default::default()
+            };
+            match unsafe { ZLB_CONNTRACK4.get(&nat4) } {
+                Some(ip_src) => unsafe {
+                    info!(ctx, "[egress] match nat, ip src: {:i}", ip_src.v4);
+
+                    (*ipv4hdr.cast_mut()).dst_addr = ip_src.v4;
+                    (*ipv4hdr.cast_mut()).src_addr = nat4.ip_lb_dst;
+                    match proto {
+                        IpProto::Tcp => {
+                            let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                            (*tcphdr.cast_mut()).source = nat4.port_lb_dst;
+                            // the destination port remains the same
+                            // TODO: update tcp and ip csums
+                            // TBD: monitor RST flag to remove the conntrack entry
+                        }
+                        IpProto::Udp => {
+                            let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                            (*udphdr.cast_mut()).source = nat4.port_lb_dst;
+                            // TODO: update udp and ip csums
+                            // TBD: always delete entry ?
+                        }
+                        _ => {
+                            // TODO: update ip csum
+                            // TODO: always delete contrack entry
+                        }
+                    };
+                    return Ok(xdp_action::XDP_PASS);
+                },
                 None => return Ok(xdp_action::XDP_PASS),
             }
         }
-        Some(group) => (group, 1),
+        Some(group) => group,
     };
 
-    info!(ctx, "Group {} match, ingress {}", group.gid, ingress);
+    info!(ctx, "[ingress] Group {} match", group.gid);
 
     if group.becount == 0 {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    if ingress == 0 {
-        unsafe {
-            let h = ipv4hdr.cast_mut();
-            (*h).src_addr = ep4.address;
-        }
-    }
+    // TBD: always update contrack entry if exists or use TCP/UDP
+
+    let mut _nat4 = NAT4Key {
+        ip_be_src: src_addr,
+        ip_lb_dst: dst_addr,
+        port_be_src: src_port,
+        port_lb_dst: dst_port,
+        proto: proto as u8,
+        ..Default::default()
+    };
+
+    // TODO: build hash and choose a backend index and fetch it
+    // TODO: build the conntrack key and create/update entry
+    // TODO: update packet with backend as dest and lb as source
 
     Ok(xdp_action::XDP_PASS)
 }

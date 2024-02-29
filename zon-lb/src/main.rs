@@ -190,6 +190,8 @@ enum Command {
     Debug(DebugOpt),
     /// Config persistence
     Config(ConfigOpt),
+    /// Connection tracking actions: view, remove unused
+    Conntrack,
 }
 
 #[derive(Debug, Parser)]
@@ -334,6 +336,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Backend(opt) => handle_backends(opt),
         Command::Config(opt) => handle_config(opt),
         Command::Debug(opt) => handle_debug(opt).await,
+        Command::Conntrack => Ok(()),
     };
 
     if let Err(e) = res {
