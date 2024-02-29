@@ -49,9 +49,10 @@ static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROU
 /// Used for IPV4 connection tracking and NAT between backend and source endpoint.
 /// This map will be updated upon forwarding the packet to backend and searched
 /// upon returning the backend reply.
+/// TBD: pin this map so the NAT table isn't lost when the program is reattached.
 #[map]
 static mut ZLB_CONNTRACK4: LruPerCpuHashMap<NAT4Key, INET> =
-    LruPerCpuHashMap::<NAT4Key, INET>::with_max_entries(MAX_CONNTRACKS, 0);
+    LruPerCpuHashMap::<NAT4Key, INET>::pinned(MAX_CONNTRACKS, 0);
 
 // TODO: add ipv6 connection tracking
 
