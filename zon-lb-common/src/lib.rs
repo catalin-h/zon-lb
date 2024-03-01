@@ -144,22 +144,28 @@ impl From<u32> for BEKey {
     }
 }
 
+// TODO: aya bpf translator does not know about unions and the verifier
+// will throw an error for using invalid stack access as the union is
+// 16 bytes but we use only 4
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub union INET {
+pub struct INET {
     pub v4: u32,
     pub v6: [u8; 16],
 }
 
 impl From<u32> for INET {
     fn from(value: u32) -> Self {
-        Self { v4: value }
+        Self {
+            v4: value,
+            v6: [0; 16],
+        }
     }
 }
 
 impl From<[u8; 16]> for INET {
     fn from(value: [u8; 16]) -> Self {
-        Self { v6: value }
+        Self { v6: value, v4: 0 }
     }
 }
 

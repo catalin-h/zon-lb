@@ -7,7 +7,7 @@ use aya_bpf::{
     maps::{Array, HashMap, LruPerCpuHashMap},
     programs::XdpContext,
 };
-use aya_log_ebpf::info;
+use aya_log_ebpf::{error, info};
 use core::mem;
 use network_types::{
     eth::{EthHdr, EtherType},
@@ -54,6 +54,7 @@ static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROU
 #[map]
 static mut ZLB_CONNTRACK4: LruPerCpuHashMap<NAT4Key, INET> =
     LruPerCpuHashMap::<NAT4Key, INET>::pinned(MAX_CONNTRACKS, 0);
+// TODO: check flag BPF_F_NO_COMMON_LRU
 
 // TODO: add ipv6 connection tracking
 
@@ -148,58 +149,53 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         dst_port.to_be()
     );
 
-    let group = match unsafe { ZLB_LB4.get(&ep4) } {
-        None => {
-            let nat4 = NAT4Key {
-                ip_be_src: src_addr,
-                ip_lb_dst: dst_addr,
-                port_be_src: src_port,
-                port_lb_dst: dst_port,
-                proto: proto as u8,
-                ..Default::default()
-            };
-            match unsafe { ZLB_CONNTRACK4.get(&nat4) } {
-                Some(ip_src) => unsafe {
-                    info!(ctx, "[egress] match nat, ip src: {:i}", ip_src.v4);
+    if let Some(group) = unsafe { ZLB_LB4.get(&ep4) } {
+        info!(ctx, "[in] gid: {} match", group.gid);
 
-                    (*ipv4hdr.cast_mut()).dst_addr = ip_src.v4;
-                    (*ipv4hdr.cast_mut()).src_addr = nat4.ip_lb_dst;
-                    match proto {
-                        IpProto::Tcp => {
-                            let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-                            (*tcphdr.cast_mut()).source = nat4.port_lb_dst;
-                            // the destination port remains the same
-                            // TODO: update tcp and ip csums
-                            // TBD: monitor RST flag to remove the conntrack entry
-                        }
-                        IpProto::Udp => {
-                            let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-                            (*udphdr.cast_mut()).source = nat4.port_lb_dst;
-                            // TODO: update udp and ip csums
-                            // TBD: always delete entry ?
-                        }
-                        _ => {
-                            // TODO: update ip csum
-                            // TODO: always delete contrack entry
-                        }
-                    };
-                    return Ok(xdp_action::XDP_PASS);
-                },
-                None => return Ok(xdp_action::XDP_PASS),
-            }
+        if group.becount == 0 {
+            info!(ctx, "[in] gid: {}, no backends", group.gid);
+            return Ok(xdp_action::XDP_PASS);
         }
-        Some(group) => group,
-    };
 
-    info!(ctx, "[ingress] Group {} match", group.gid);
+        let key = BEKey {
+            gid: group.gid,
+            index: ((((src_addr >> 16) ^ src_addr) as u16) ^ src_port) % group.becount,
+        };
 
-    if group.becount == 0 {
+        let be = match unsafe { ZLB_BACKENDS.get(&key) } {
+            Some(be) => be,
+            None => {
+                info!(ctx, "[in] gid: {}, no BE at: {}", group.gid, key.index);
+                return Ok(xdp_action::XDP_PASS);
+            }
+        };
+
+        let nat4 = NAT4Key {
+            ip_be_src: be.address.v4,
+            ip_lb_dst: dst_addr,
+            port_be_src: be.port,
+            port_lb_dst: dst_port,
+            proto: proto as u8,
+            ..Default::default()
+        };
+
+        let ip_src = INET {
+            v4: src_addr,
+            v6: [0; 16],
+        };
+
+        // TBD: always update contrack entry if exists ?
+        match unsafe { ZLB_CONNTRACK4.insert(&nat4, &ip_src, 0) } {
+            Ok(()) => info!(ctx, "[ctrk] {:i} added", src_addr),
+            Err(ret) => error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr, ret),
+        };
+
+        // TODO: update packet with backend as dest and lb as source
+
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // TBD: always update contrack entry if exists or use TCP/UDP
-
-    let mut _nat4 = NAT4Key {
+    let nat4 = NAT4Key {
         ip_be_src: src_addr,
         ip_lb_dst: dst_addr,
         port_be_src: src_port,
@@ -208,9 +204,37 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         ..Default::default()
     };
 
-    // TODO: build hash and choose a backend index and fetch it
-    // TODO: build the conntrack key and create/update entry
-    // TODO: update packet with backend as dest and lb as source
+    let ip_src = match unsafe { ZLB_CONNTRACK4.get(&nat4) } {
+        Some(src) => src,
+        None => return Ok(xdp_action::XDP_PASS),
+    };
+
+    unsafe {
+        info!(ctx, "[egress] match nat, ip src: {:i}", ip_src.v4);
+
+        (*ipv4hdr.cast_mut()).dst_addr = ip_src.v4;
+        (*ipv4hdr.cast_mut()).src_addr = nat4.ip_lb_dst;
+    };
+
+    match proto {
+        IpProto::Tcp => unsafe {
+            let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            (*tcphdr.cast_mut()).source = nat4.port_lb_dst;
+            // the destination port remains the same
+            // TODO: update tcp and ip csums
+            // TBD: monitor RST flag to remove the conntrack entry
+        },
+        IpProto::Udp => unsafe {
+            let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            (*udphdr.cast_mut()).source = nat4.port_lb_dst;
+            // TODO: update udp and ip csums
+            // TBD: always delete entry ?
+        },
+        _ => {
+            // TODO: update ip csum
+            // TODO: always delete contrack entry
+        }
+    };
 
     Ok(xdp_action::XDP_PASS)
 }
