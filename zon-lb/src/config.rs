@@ -220,7 +220,7 @@ impl ConfigWriter {
                     continue;
                 }
             };
-            let bemgr = crate::Backend::new(actual_gid as u64);
+            let bemgr = crate::Backend::new(actual_gid);
             match bemgr.add(&ep) {
                 Ok(group) => {
                     self.bcount += 1;

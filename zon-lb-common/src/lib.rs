@@ -40,7 +40,7 @@ pub struct EPFlags: u32 {
 #[derive(Clone, Copy)]
 pub struct BEGroup {
     /// The backend group id
-    pub gid: u64,
+    pub gid: u16,
     /// The current backends count in this group
     pub becount: u16,
     /// The flags instructs the xdp program to update the IP or/and Port
@@ -50,7 +50,7 @@ pub struct BEGroup {
 }
 
 impl BEGroup {
-    pub fn new(id: u64) -> Self {
+    pub fn new(id: u16) -> Self {
         Self {
             gid: id,
             becount: 0_u16,

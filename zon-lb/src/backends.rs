@@ -201,7 +201,7 @@ impl EndPoint {
         Ok(GroupInfo { ifindex, key })
     }
 
-    fn as_backend(&self, gid: u64) -> BE {
+    fn as_backend(&self, gid: u16) -> BE {
         let (address, flags) = match &self.ipaddr {
             IpAddr::V4(ip) => (INET::from(u32::from(*ip).to_be()), EPFlags::IPV4),
             IpAddr::V6(ip) => (INET::from(ip.octets()), EPFlags::IPV6),
@@ -247,13 +247,13 @@ impl Group {
         map.try_into().context("Groups meta size change")
     }
 
-    fn allocate_group(&self, ginfo: &GroupInfo) -> Result<u64, anyhow::Error> {
+    fn allocate_group(&self, ginfo: &GroupInfo) -> Result<u16, anyhow::Error> {
         let mut map = Self::group_meta()?;
         let max_id = map.keys().filter_map(|x| x.ok()).max().unwrap_or_default();
         let mut id = max_id + 1;
         while id != max_id {
             if let Ok(_) = map.insert(id, ginfo, MUFlags::NOEXIST.bits()) {
-                return Ok(id);
+                return Ok(id as u16);
             }
             id = (id + 1) % (u16::MAX as u64 + 1);
         }
@@ -263,9 +263,9 @@ impl Group {
         ))
     }
 
-    fn free_group(&self, gid: u64) -> Result<(), anyhow::Error> {
+    fn free_group(&self, gid: u16) -> Result<(), anyhow::Error> {
         let mut map = Self::group_meta()?;
-        map.remove(&gid).context("Remove group meta")?;
+        map.remove(&(gid as u64)).context("Remove group meta")?;
         Ok(())
     }
 
@@ -292,7 +292,7 @@ impl Group {
         }
     }
 
-    pub fn add(&self, ep: &EndPoint) -> Result<u64, anyhow::Error> {
+    pub fn add(&self, ep: &EndPoint) -> Result<u16, anyhow::Error> {
         match self.get_by_ep(ep) {
             Ok(beg) => {
                 return Err(anyhow!(
@@ -365,7 +365,7 @@ impl Group {
         Ok(())
     }
 
-    pub fn remove(&self, gid: u64) -> Result<(), anyhow::Error> {
+    pub fn remove(&self, gid: u16) -> Result<(), anyhow::Error> {
         self.remove_all_by_id::<EP4>(gid)?;
         self.remove_all_by_id::<EP6>(gid)?;
 
@@ -381,7 +381,7 @@ impl Group {
         Ok(())
     }
 
-    fn remove_all_by_id<K>(&self, gid: u64) -> Result<(), anyhow::Error>
+    fn remove_all_by_id<K>(&self, gid: u16) -> Result<(), anyhow::Error>
     where
         K: aya::Pod + ToMapName + ToEndPoint,
     {
@@ -451,7 +451,7 @@ impl Group {
 }
 
 pub struct Backend {
-    pub gid: u64,
+    pub gid: u16,
 }
 
 struct GroupMap {
@@ -460,9 +460,9 @@ struct GroupMap {
 }
 
 impl GroupMap {
-    fn new(gid: u64) -> Result<GroupMap, anyhow::Error> {
+    fn new(gid: u16) -> Result<GroupMap, anyhow::Error> {
         let meta = Group::group_meta()?;
-        let info = meta.get(&gid, 0).context("No group in metadata")?;
+        let info = meta.get(&(gid as u64), 0).context("No group in metadata")?;
         // TODO: need ifname?
         let ifname = if_index_to_name(info.ifindex).ok_or(anyhow!("Can't get netdev name"))?;
         let group = Group::new(&ifname)?;
@@ -512,7 +512,7 @@ impl GroupMap {
 }
 
 impl Backend {
-    pub fn new(gid: u64) -> Self {
+    pub fn new(gid: u16) -> Self {
         Self { gid }
     }
 
@@ -577,7 +577,7 @@ impl Backend {
     fn list_all() -> Result<(), anyhow::Error> {
         let mut table = InfoTable::new(vec!["gid:id", "backend", "", "if / lb_endpoint"]);
         let backends = Self::backends()?;
-        let mut cache: StdHashMap<u64, String> = StdHashMap::new();
+        let mut cache: StdHashMap<u16, String> = StdHashMap::new();
 
         Group::iterate_all(|ep, group| {
             if group.becount > 0 {
@@ -587,8 +587,7 @@ impl Backend {
         })?;
 
         for (key, be) in backends.iter().filter_map(|x| x.ok()) {
-            let gid = key.gid as u64;
-            let ep_str = cache.get(&gid).map_or("n/a", |v| v.as_str());
+            let ep_str = cache.get(&key.gid).map_or("n/a", |v| v.as_str());
             table.push_row(vec![
                 format!("{}:{}", key.gid, key.index),
                 be.as_endpoint().to_string(),
@@ -608,7 +607,7 @@ impl Backend {
         Ok(())
     }
 
-    pub fn list(gid: u64) -> Result<(), anyhow::Error> {
+    pub fn list(gid: u16) -> Result<(), anyhow::Error> {
         if gid == 0 {
             return Self::list_all();
         }
@@ -705,7 +704,7 @@ impl Backend {
         for (key, _) in backends
             .iter()
             .filter_map(|x| x.ok())
-            .filter(|(k, _)| self.gid == k.gid as u64)
+            .filter(|(k, _)| self.gid == k.gid)
         {
             match self.remove(key.index) {
                 Ok(be) => rem_eps.push(be),

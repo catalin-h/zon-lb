@@ -145,7 +145,7 @@ enum BackendAction {
 struct BackendOpt {
     /// Target backend group id.
     #[clap(default_value_t = 0)]
-    gid: u64,
+    gid: u16,
     /// Backend actions
     #[clap(subcommand)]
     action: Option<BackendAction>,
@@ -271,7 +271,7 @@ fn handle_group(opt: &GroupOpt) -> Result<(), anyhow::Error> {
             info!("[{}] group {} added => {}", &opt.ifname, ep, gid);
         }
         GroupAction::List => backends::Group::list()?,
-        GroupAction::Remove { gid } => group.remove(*gid as u64)?,
+        GroupAction::Remove { gid } => group.remove(*gid)?,
     }
 
     Ok(())
