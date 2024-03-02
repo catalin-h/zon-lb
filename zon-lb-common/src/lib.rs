@@ -208,10 +208,10 @@ pub struct NAT4Key {
     pub port_be_src: u16,
     /// The backend will respond to this port
     pub port_lb_dst: u16,
-    /// The used IP protocol
-    pub proto: u8,
-    /// reserved (align)
-    pub reserved: [u8; 3],
+    /// The used IP protocol. The field is 8-bits wide
+    /// but we need to be 32-bit for performance reasons
+    /// (fewer instructions)
+    pub proto: u32,
 }
 
 #[cfg(feature = "user")]

@@ -178,8 +178,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             ip_lb_dst: dst_addr,
             port_be_src: be.port,
             port_lb_dst: src_port, // use the source port of the endpoint
-            proto: proto as u8,
-            ..Default::default()
+            proto: proto as u32,
         };
 
         // NOTE: Always use 64-bits values for faster data transfer and
@@ -203,8 +202,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         ip_lb_dst: dst_addr,
         port_be_src: src_port,
         port_lb_dst: dst_port,
-        proto: proto as u8,
-        ..Default::default()
+        proto: proto as u32,
     };
 
     let ip_src = match unsafe { ZLB_CONNTRACK4.get(&nat4) } {
