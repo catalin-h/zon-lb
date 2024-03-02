@@ -52,8 +52,8 @@ static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROU
 /// TBD: pin this map so the NAT table isn't lost when the program is reattached.
 /// TODO: add timestamp in order to delete after some time
 #[map]
-static mut ZLB_CONNTRACK4: LruPerCpuHashMap<NAT4Key, INET> =
-    LruPerCpuHashMap::<NAT4Key, INET>::pinned(MAX_CONNTRACKS, 0);
+static mut ZLB_CONNTRACK4: LruPerCpuHashMap<NAT4Key, u32> =
+    LruPerCpuHashMap::<NAT4Key, u32>::pinned(MAX_CONNTRACKS, 0);
 // TODO: check flag BPF_F_NO_COMMON_LRU
 
 // TODO: add ipv6 connection tracking
@@ -179,13 +179,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             ..Default::default()
         };
 
-        let ip_src = INET {
-            v4: src_addr,
-            v6: [0; 16],
-        };
-
         // TBD: always update contrack entry if exists ?
-        match unsafe { ZLB_CONNTRACK4.insert(&nat4, &ip_src, 0) } {
+        // TBD: use lock or atomic update ?
+        match unsafe { ZLB_CONNTRACK4.insert(&nat4, &src_addr, 0) } {
             Ok(()) => info!(ctx, "[ctrk] {:i} added", src_addr),
             Err(ret) => error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr, ret),
         };
@@ -205,14 +201,14 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     };
 
     let ip_src = match unsafe { ZLB_CONNTRACK4.get(&nat4) } {
-        Some(src) => src,
+        Some(src) => *src,
         None => return Ok(xdp_action::XDP_PASS),
     };
 
     unsafe {
-        info!(ctx, "[egress] match nat, ip src: {:i}", ip_src.v4);
+        info!(ctx, "[egress] match nat, ip src: {:i}", ip_src);
 
-        (*ipv4hdr.cast_mut()).dst_addr = ip_src.v4;
+        (*ipv4hdr.cast_mut()).dst_addr = ip_src;
         (*ipv4hdr.cast_mut()).src_addr = nat4.ip_lb_dst;
     };
 

@@ -144,9 +144,9 @@ impl From<u32> for BEKey {
     }
 }
 
-// TODO: aya bpf translator does not know about unions and the verifier
+// The aya bpf translator does not know about unions and the verifier
 // will throw an error for using invalid stack access as the union is
-// 16 bytes but we use only 4
+// 16 bytes but we use only 4 for the IPv4 address.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct INET {
