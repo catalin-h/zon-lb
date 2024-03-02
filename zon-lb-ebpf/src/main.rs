@@ -16,7 +16,7 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    BEGroup, BEKey, GroupInfo, NAT4Key, ZonInfo, BE, EP4, EP6, INET, MAX_BACKENDS, MAX_CONNTRACKS,
+    BEGroup, BEKey, GroupInfo, NAT4Key, ZonInfo, BE, EP4, EP6, MAX_BACKENDS, MAX_CONNTRACKS,
     MAX_GROUPS,
 };
 
@@ -170,17 +170,24 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             }
         };
 
+        // NOTE: the LB will use the source port since there can be multiple
+        // connection to the same backend and it needs to track all of them.
+
         let nat4 = NAT4Key {
             ip_be_src: be.address.v4,
             ip_lb_dst: dst_addr,
             port_be_src: be.port,
-            port_lb_dst: dst_port,
+            port_lb_dst: src_port, // use the source port of the endpoint
             proto: proto as u8,
             ..Default::default()
         };
 
+        // NOTE: Always use 64-bits values for faster data transfer and
+        // fewer instructions during initialization
+
         // TBD: always update contrack entry if exists ?
         // TBD: use lock or atomic update ?
+        // TBD: use BPF_F_LOCK ?
         match unsafe { ZLB_CONNTRACK4.insert(&nat4, &src_addr, 0) } {
             Ok(()) => info!(ctx, "[ctrk] {:i} added", src_addr),
             Err(ret) => error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr, ret),
