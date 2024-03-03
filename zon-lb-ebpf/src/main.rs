@@ -4,7 +4,7 @@
 use aya_bpf::{
     bindings::xdp_action,
     macros::{map, xdp},
-    maps::{Array, HashMap, LruPerCpuHashMap},
+    maps::{Array, HashMap, LruHashMap},
     programs::XdpContext,
 };
 use aya_log_ebpf::{error, info};
@@ -46,14 +46,14 @@ static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::pinned(MAX_GROU
 #[map]
 static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROUPS, 0);
 
+type LHM4 = LruHashMap<NAT4Key, u32>;
 /// Used for IPV4 connection tracking and NAT between backend and source endpoint.
 /// This map will be updated upon forwarding the packet to backend and searched
 /// upon returning the backend reply.
 /// TBD: pin this map so the NAT table isn't lost when the program is reattached.
 /// TODO: add timestamp in order to delete after some time
 #[map]
-static mut ZLB_CONNTRACK4: LruPerCpuHashMap<NAT4Key, u32> =
-    LruPerCpuHashMap::<NAT4Key, u32>::pinned(MAX_CONNTRACKS, 0);
+static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, 0);
 // TODO: check flag BPF_F_NO_COMMON_LRU
 
 // TODO: add ipv6 connection tracking
@@ -170,6 +170,13 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             }
         };
 
+        info!(
+            ctx,
+            "[ctrk] fw be: {:i}:{}",
+            be.address.v4.to_be(),
+            be.port.to_be()
+        );
+
         // NOTE: the LB will use the source port since there can be multiple
         // connection to the same backend and it needs to track all of them.
 
@@ -211,7 +218,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     };
 
     unsafe {
-        info!(ctx, "[egress] match nat, ip src: {:i}", ip_src);
+        info!(ctx, "[out] match nat, ip src: {:i}", ip_src);
 
         (*ipv4hdr.cast_mut()).dst_addr = ip_src;
         (*ipv4hdr.cast_mut()).src_addr = nat4.ip_lb_dst;

@@ -5,7 +5,7 @@ use bitflags;
 pub const VERSION: u32 = 0x0000001;
 pub const MAX_GROUPS: u32 = 64;
 pub const MAX_BACKENDS: u32 = 1024;
-pub const MAX_CONNTRACKS: u32 = 1 << 10;
+pub const MAX_CONNTRACKS: u32 = 10; // tmp dev, actual = 1 << 15;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
