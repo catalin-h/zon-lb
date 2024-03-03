@@ -1,5 +1,6 @@
 mod backends;
 mod config;
+mod conntrack;
 mod helpers;
 mod info;
 mod logging;
@@ -13,12 +14,17 @@ use aya_log::BpfLogger;
 use backends::{Backend, EndPoint, ToEndPoint};
 use clap::{Parser, ValueEnum};
 use config::ConfigFile;
+use conntrack::conntrack_list;
 use info::*;
 use log::{info, warn};
 use logging::init_log;
 use prog::*;
 use protocols::Protocol;
 use tokio::signal;
+
+pub(crate) trait ToMapName {
+    fn map_name() -> &'static str;
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum ProgAttachMode {
@@ -177,6 +183,22 @@ struct DebugOpt {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum ConnTrackAction {
+    /// List all NAT entries for target group(s)
+    List,
+}
+
+#[derive(clap::Args, Debug)]
+struct ConnTrackOpt {
+    /// Filter conntrack entries by id
+    #[clap(default_value_t = 0)]
+    gid: u32,
+    /// Conntrack actions
+    #[clap(subcommand)]
+    action: Option<ConnTrackAction>,
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum Command {
     /// Shows information about loaded programs and the used maps
     Info,
@@ -191,7 +213,7 @@ enum Command {
     /// Config persistence
     Config(ConfigOpt),
     /// Connection tracking actions: view, remove unused
-    Conntrack,
+    Conntrack(ConnTrackOpt),
 }
 
 #[derive(Debug, Parser)]
@@ -315,6 +337,13 @@ fn handle_config(opt: &ConfigOpt) -> Result<(), anyhow::Error> {
     }
 }
 
+fn handle_conntrack(opt: &ConnTrackOpt) -> Result<(), anyhow::Error> {
+    let action = opt.action.as_ref().unwrap_or(&ConnTrackAction::List);
+    match action {
+        ConnTrackAction::List => conntrack_list(opt.gid),
+    }
+}
+
 async fn handle_debug(opt: &DebugOpt) -> Result<(), anyhow::Error> {
     init_log(&opt.ifname)?;
     info!("Waiting for Ctrl-C...");
@@ -336,7 +365,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Backend(opt) => handle_backends(opt),
         Command::Config(opt) => handle_config(opt),
         Command::Debug(opt) => handle_debug(opt).await,
-        Command::Conntrack => Ok(()),
+        Command::Conntrack(opt) => handle_conntrack(opt),
     };
 
     if let Err(e) = res {

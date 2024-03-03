@@ -3,6 +3,7 @@ use aya::{maps::MapData, Bpf};
 use aya_obj::generated::{bpf_link_type, BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
 use bitflags;
 use log::{info, warn};
+use std::fs::remove_file;
 use std::path::{Path, PathBuf};
 
 bitflags::bitflags! {
@@ -182,4 +183,23 @@ pub fn get_xdp_link_info(ifname: &str) -> Option<XdpLinkInfo> {
     }
 
     None
+}
+
+pub fn teardown_maps(map_list: &[&str]) -> Result<(), anyhow::Error> {
+    for map_name in map_list {
+        let path = PathBuf::from(crate::BPFFS).join(map_name);
+        match path.try_exists() {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(e) => {
+                log::error!("Can't check the file status for map {}, {}", map_name, e);
+                continue;
+            }
+        }
+        match remove_file(path) {
+            Ok(()) => log::info!("Map {} bpffs successfully deleted", map_name),
+            Err(e) => log::error!("Failed to delete map {} bpffs, {}", map_name, e),
+        }
+    }
+    Ok(())
 }

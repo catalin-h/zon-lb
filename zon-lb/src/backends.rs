@@ -1,21 +1,16 @@
 use crate::helpers::{
-    if_index_to_name, if_name_or_default, ifindex, mapdata_from_pinned_map, stou64,
+    if_index_to_name, if_name_or_default, ifindex, mapdata_from_pinned_map, stou64, teardown_maps,
     BpfMapUpdateFlags as MUFlags,
 };
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
+use crate::ToMapName;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
 use log::{error, info, warn};
 use std::collections::{BTreeSet, HashMap as StdHashMap};
-use std::fs::remove_file;
-use std::path::PathBuf;
 use std::{fmt, net::IpAddr};
 use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX, INET};
-
-pub trait ToMapName {
-    fn map_name() -> &'static str;
-}
 
 impl ToMapName for EP4 {
     fn map_name() -> &'static str {
@@ -81,10 +76,10 @@ pub trait BackendInfo {
 
 impl BackendInfo for BE {
     fn ipv4(&self) -> IpAddr {
-        IpAddr::from(unsafe { self.address.v4.to_le_bytes() })
+        IpAddr::from(self.address.v4.to_le_bytes())
     }
     fn ipv6(&self) -> IpAddr {
-        IpAddr::from(unsafe { self.address.v6 })
+        IpAddr::from(self.address.v6)
     }
     fn port(&self) -> u16 {
         self.port.to_le()
@@ -717,25 +712,10 @@ impl Backend {
 }
 
 pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
-    for map_name in [
+    teardown_maps(&[
         GroupInfo::map_name(),
         EP4::map_name(),
         EP6::map_name(),
         BE::map_name(),
-    ] {
-        let path = PathBuf::from(crate::BPFFS).join(map_name);
-        match path.try_exists() {
-            Ok(false) => continue,
-            Ok(true) => {}
-            Err(e) => {
-                log::error!("Can't check the file status for map {}, {}", map_name, e);
-                continue;
-            }
-        }
-        match remove_file(path) {
-            Ok(()) => log::info!("Map {} bpffs successfully deleted", map_name),
-            Err(e) => log::error!("Failed to delete map {} bpffs, {}", map_name, e),
-        }
-    }
-    Ok(())
+    ])
 }

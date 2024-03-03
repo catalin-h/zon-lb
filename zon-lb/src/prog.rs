@@ -1,4 +1,4 @@
-use crate::{backends::teardown_all_maps, helpers::*};
+use crate::{backends, conntrack, helpers::*};
 use anyhow::{anyhow, Context};
 use aya::{
     maps::Array,
@@ -80,7 +80,8 @@ impl Prog {
     }
 
     pub fn teardown(&mut self) -> Result<(), anyhow::Error> {
-        teardown_all_maps()?;
+        backends::teardown_all_maps()?;
+        conntrack::teardown_all_maps()?;
         self.unload()
     }
 
