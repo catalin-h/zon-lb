@@ -186,6 +186,8 @@ struct DebugOpt {
 enum ConnTrackAction {
     /// List all NAT entries for target group(s)
     List,
+    /// Remove all conntrack entries
+    Remove,
 }
 
 #[derive(clap::Args, Debug)]
@@ -341,6 +343,7 @@ fn handle_conntrack(opt: &ConnTrackOpt) -> Result<(), anyhow::Error> {
     let action = opt.action.as_ref().unwrap_or(&ConnTrackAction::List);
     match action {
         ConnTrackAction::List => conntrack_list(opt.gid),
+        ConnTrackAction::Remove => conntrack::remove_all(),
     }
 }
 
