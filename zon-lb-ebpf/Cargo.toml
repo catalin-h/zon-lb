@@ -8,6 +8,7 @@ aya-bpf = { git = "https://github.com/aya-rs/aya" }
 aya-log-ebpf = { git = "https://github.com/aya-rs/aya" }
 zon-lb-common = { path = "../zon-lb-common" }
 network-types = "^0.0.5"
+ebpf_rshelpers = { path = "../../ebpf_rshelpers" }
 
 [[bin]]
 name = "zon-lb"
