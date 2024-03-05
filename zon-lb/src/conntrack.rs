@@ -34,12 +34,12 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
     let mut tab = InfoTable::new(vec!["proto", "src", "lb", "backend"]);
     for (key, ip_src) in ctm.iter().filter_map(|f| f.ok()) {
         let src = EndPoint {
-            ipaddr: IpAddr::from(ip_src.to_be_bytes()),
+            ipaddr: IpAddr::from(ip_src.to_le_bytes()),
             port: u16::from_be(key.port_lb_dst),
             proto: Protocol::None,
         };
         let lb = EndPoint {
-            ipaddr: IpAddr::from(key.ip_lb_dst.to_be_bytes()),
+            ipaddr: IpAddr::from(key.ip_lb_dst.to_le_bytes()),
             port: u16::from_be(key.port_lb_dst),
             proto: Protocol::None,
         };
