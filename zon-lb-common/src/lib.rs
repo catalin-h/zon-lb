@@ -217,4 +217,18 @@ pub struct NAT4Key {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for NAT4Key {}
 
+/// IPV4 connection tracking map value.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NAT4Value {
+    /// The source address
+    pub ip_src: u32,
+    /// The saved lb port
+    pub port_lb: u16,
+    pub _reserved: u16,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for NAT4Value {}
+
 // TODO: add hasher function

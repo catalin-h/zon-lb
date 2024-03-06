@@ -9,7 +9,7 @@ use aya_bpf::{
 };
 use aya_log_ebpf::{error, info};
 use core::mem;
-use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u32};
+use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u16, csum_update_u32};
 use network_types::{
     eth::{EthHdr, EtherType},
     ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
@@ -17,8 +17,8 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    BEGroup, BEKey, GroupInfo, NAT4Key, ZonInfo, BE, EP4, EP6, MAX_BACKENDS, MAX_CONNTRACKS,
-    MAX_GROUPS,
+    BEGroup, BEKey, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4, EP6, MAX_BACKENDS,
+    MAX_CONNTRACKS, MAX_GROUPS,
 };
 
 /// Keeps runtime config data.
@@ -47,7 +47,7 @@ static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::pinned(MAX_GROU
 #[map]
 static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROUPS, 0);
 
-type LHM4 = LruHashMap<NAT4Key, u32>;
+type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 /// Used for IPV4 connection tracking and NAT between backend and source endpoint.
 /// This map will be updated upon forwarding the packet to backend and searched
 /// upon returning the backend reply.
@@ -139,15 +139,20 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         proto: proto as u32,
     };
 
-    if let Some(&ip_src) = unsafe { ZLB_CONNTRACK4.get(&nat4) } {
-        info!(ctx, "[out] match nat, ip src: {:i}", ip_src.to_be());
+    if let Some(&nat) = unsafe { ZLB_CONNTRACK4.get(&nat4) } {
+        info!(
+            ctx,
+            "[out] nat, src: {:i}, lb_port: {}",
+            nat.ip_src.to_be(),
+            nat.port_lb.to_be()
+        );
 
         // Unlikely
-        if ip_src == src_addr && src_port == dst_port {
+        if nat.ip_src == src_addr && src_port == dst_port {
             error!(
                 ctx,
                 "[out] drop same src {:i}:{}",
-                ip_src.to_be(),
+                nat.ip_src.to_be(),
                 src_port.to_be()
             );
             return Ok(xdp_action::XDP_DROP);
@@ -155,22 +160,28 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
         let mut csum = unsafe { !(*ipv4hdr).check as u32 };
         unsafe {
-            (*ipv4hdr.cast_mut()).dst_addr = ip_src;
+            (*ipv4hdr.cast_mut()).dst_addr = nat.ip_src;
             (*ipv4hdr.cast_mut()).src_addr = dst_addr;
-
-            csum = csum_update_u32(src_addr, dst_addr, csum);
-            csum = csum_update_u32(dst_addr, ip_src, csum);
         };
+        csum = csum_update_u32(src_addr, dst_addr, csum);
+        csum = csum_update_u32(dst_addr, nat.ip_src, csum);
 
         match proto {
-            IpProto::Tcp => unsafe {
-                let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-                // the destination port remains the same
-                (*tcphdr.cast_mut()).source = dst_port;
+            IpProto::Tcp => {
+                let tcp = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
 
-                // TODO: update tcp and ip csums
+                // NOTE: the destination port remains the same
+
+                unsafe {
+                    (*tcp.cast_mut()).source = nat.port_lb;
+                };
+
+                csum = csum_update_u16(src_port, nat.port_lb, csum);
+
+                // TODO: fix tcp csum
+
                 // TBD: monitor RST flag to remove the conntrack entry
-            },
+            }
             IpProto::Udp => unsafe {
                 let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
                 // the destination port remains the same
@@ -189,7 +200,13 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             (*ipv4hdr.cast_mut()).check = !csum_fold_32_to_16(csum);
         }
 
-        info!(ctx, "[out] fw to {:i}:{}", ip_src.to_be(), dst_port);
+        info!(
+            ctx,
+            "[out] fw to {:i}:{}",
+            nat.ip_src.to_be(),
+            dst_port.to_be()
+        );
+
         return Ok(xdp_action::XDP_PASS);
     } else {
         info!(ctx, "No conntrack entry");
@@ -263,12 +280,17 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // NOTE: the LB will use the source port since there can be multiple
     // connection to the same backend and it needs to track all of them.
 
-    let nat4 = NAT4Key {
+    let nat4key = NAT4Key {
         ip_be_src: be.address.v4,
         ip_lb_dst: dst_addr,
         port_be_src: be.port,
         port_lb_dst: src_port, // use the source port of the endpoint
         proto: proto as u32,
+    };
+    let nat4value = NAT4Value {
+        ip_src: src_addr,
+        port_lb: dst_port,
+        _reserved: 0,
     };
 
     // NOTE: Always use 64-bits values for faster data transfer and
@@ -277,13 +299,15 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // TBD: always update contrack entry if exists ?
     // TBD: use lock or atomic update ?
     // TBD: use BPF_F_LOCK ?
-    match unsafe { ZLB_CONNTRACK4.insert(&nat4, &src_addr, 0) } {
+    match unsafe { ZLB_CONNTRACK4.insert(&nat4key, &nat4value, 0) } {
         Ok(()) => info!(ctx, "[ctrk] {:i} added", src_addr.to_be()),
         Err(ret) => error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr.to_be(), ret),
     };
 
     let mut csum = unsafe { !(*ipv4hdr).check } as u32;
+
     info!(ctx, "initial csum: 0x{:x}", csum);
+
     unsafe {
         (*ipv4hdr.cast_mut()).src_addr = dst_addr;
         (*ipv4hdr.cast_mut()).dst_addr = be.address.v4;
@@ -293,15 +317,17 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     }
 
     match proto {
-        IpProto::Tcp => unsafe {
+        IpProto::Tcp => {
             let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-            // the source port remains the same
-            // (*tcphdr.cast_mut()).source = src_port;
-            (*tcphdr.cast_mut()).dest = be.port;
 
-            // TODO: update tcp and ip csums
+            // NOTE: the source port remains the same
+            unsafe {
+                (*tcphdr.cast_mut()).dest = be.port;
+            }
+            csum = csum_update_u16(dst_port, be.port, csum);
+
             // TBD: monitor RST flag to remove the conntrack entry
-        },
+        }
         IpProto::Udp => unsafe {
             let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
             // the source port remains the same
