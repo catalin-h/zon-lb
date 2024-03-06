@@ -9,7 +9,7 @@ use anyhow::anyhow;
 use aya::maps::{HashMap, Map, MapData};
 use log::info;
 use std::net::IpAddr;
-use zon_lb_common::NAT4Key;
+use zon_lb_common::{NAT4Key, NAT4Value};
 
 impl ToMapName for NAT4Key {
     fn map_name() -> &'static str {
@@ -30,17 +30,17 @@ where
 }
 
 pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
-    let ctm = conntrack_mapdata::<NAT4Key, u32>()?;
+    let ctm = conntrack_mapdata::<NAT4Key, NAT4Value>()?;
     let mut tab = InfoTable::new(vec!["proto", "src", "lb", "backend"]);
-    for (key, ip_src) in ctm.iter().filter_map(|f| f.ok()) {
+    for (key, value) in ctm.iter().filter_map(|f| f.ok()) {
         let src = EndPoint {
-            ipaddr: IpAddr::from(ip_src.to_le_bytes()),
+            ipaddr: IpAddr::from(value.ip_src.to_le_bytes()),
             port: u16::from_be(key.port_lb_dst),
             proto: Protocol::None,
         };
         let lb = EndPoint {
             ipaddr: IpAddr::from(key.ip_lb_dst.to_le_bytes()),
-            port: u16::from_be(key.port_lb_dst),
+            port: u16::from_be(value.port_lb),
             proto: Protocol::None,
         };
         let be = EndPoint {
@@ -65,7 +65,7 @@ pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
 }
 
 pub fn remove_all() -> Result<(), anyhow::Error> {
-    let mut ctm = conntrack_mapdata::<NAT4Key, u32>()?;
+    let mut ctm = conntrack_mapdata::<NAT4Key, NAT4Value>()?;
     let mut error_no = 0;
     let mut count = 0;
     loop {
