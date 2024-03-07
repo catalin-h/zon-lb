@@ -173,12 +173,24 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
         match proto {
             IpProto::Tcp => {
-                let tcp = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?.cast_mut();
 
                 // NOTE: the destination port remains the same
 
                 unsafe {
-                    (*tcp.cast_mut()).source = nat.port_lb;
+                    (*tcphdr).source = nat.port_lb;
+
+                    // NOTE: Update the csum from TCP header. This csum
+                    // is computed from the TCP pseudo header (e.g. addresses
+                    // from IP header) + TCP header (checksum is 0) + the
+                    // text (payload data).
+
+                    let tcs = !(*tcphdr).check as u32;
+                    // The source ip is part of the TCP pseudo header
+                    let tcs = csum_update_u32(src_addr, nat.ip_src, tcs);
+                    // The destination port is part of the TCP header
+                    let tcs = csum_update_u16(src_port, nat.port_lb, tcs);
+                    (*tcphdr).check = !csum_fold_32_to_16(tcs);
                 };
 
                 csum = csum_update_u16(src_port, nat.port_lb, csum);
@@ -325,11 +337,24 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     match proto {
         IpProto::Tcp => {
-            let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?.cast_mut();
 
             // NOTE: the source port remains the same
+
             unsafe {
-                (*tcphdr.cast_mut()).dest = be.port;
+                (*tcphdr).dest = be.port;
+
+                // NOTE: Update the csum from TCP header. This csum
+                // is computed from the TCP pseudo header (e.g. addresses
+                // from IP header) + TCP header (checksum is 0) + the
+                // text (payload data).
+
+                let tcs = !(*tcphdr).check as u32;
+                // The source ip is part of the TCP pseudo header
+                let tcs = csum_update_u32(src_addr, be.address.v4, tcs);
+                // The destination port is part of the TCP header
+                let tcs = csum_update_u16(dst_port, be.port, tcs);
+                (*tcphdr).check = !csum_fold_32_to_16(tcs);
             }
             csum = csum_update_u16(dst_port, be.port, csum);
 
