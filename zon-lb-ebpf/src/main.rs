@@ -163,8 +163,13 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             (*ipv4hdr.cast_mut()).dst_addr = nat.ip_src;
             (*ipv4hdr.cast_mut()).src_addr = dst_addr;
         };
-        csum = csum_update_u32(src_addr, dst_addr, csum);
-        csum = csum_update_u32(dst_addr, nat.ip_src, csum);
+
+        // NOTE: optimization: since the destination IP (LB)
+        // 'remains' in the csum we can recompute it as if
+        // only the source IP changes:
+        //csum = csum_update_u32(src_addr, dst_addr, csum);
+        //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
+        csum = csum_update_u32(src_addr, nat.ip_src, csum);
 
         match proto {
             IpProto::Tcp => {
@@ -311,10 +316,12 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     unsafe {
         (*ipv4hdr.cast_mut()).src_addr = dst_addr;
         (*ipv4hdr.cast_mut()).dst_addr = be.address.v4;
-
-        csum = csum_update_u32(dst_addr, be.address.v4, csum);
-        csum = csum_update_u32(src_addr, dst_addr, csum);
     }
+    // NOTE: optimization: compute the IP csum as if only
+    // the source address changes.
+    //csum = csum_update_u32(dst_addr, be.address.v4, csum);
+    //csum = csum_update_u32(src_addr, dst_addr, csum);
+    csum = csum_update_u32(src_addr, be.address.v4, csum);
 
     match proto {
         IpProto::Tcp => {
