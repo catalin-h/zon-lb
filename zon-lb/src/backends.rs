@@ -523,6 +523,9 @@ impl Backend {
 
         gmap.check_compat(ep)?;
 
+        // TODO: enforce constraints:
+        // TODO: run bfs to check for cycles
+
         let mut beg = gmap.begroup()?;
         let index = beg.becount;
         let iflags = MUFlags::EXIST;
@@ -696,12 +699,12 @@ impl Backend {
         let backends = Self::backends()?;
         let mut rem_eps = Vec::new();
 
-        for (key, _) in backends
+        for (_, _) in backends
             .iter()
             .filter_map(|x| x.ok())
             .filter(|(k, _)| self.gid == k.gid)
         {
-            match self.remove(key.index) {
+            match self.remove(0) {
                 Ok(be) => rem_eps.push(be),
                 Err(_) => {}
             }
