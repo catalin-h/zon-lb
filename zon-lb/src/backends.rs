@@ -680,16 +680,19 @@ impl Backend {
 
     pub fn remove(&self, index: u16) -> Result<BE, anyhow::Error> {
         let mut backends = Self::backends()?;
-        let rem_index = self.remove_from_group(index).unwrap_or(index);
+        let key = BEKey {
+            gid: self.gid as u16,
+            index,
+        };
+        let be = backends.get(&key, 0).context(format!(
+            "Remove: can't find backend: {} : {}",
+            self.gid, index
+        ))?;
+        let rem_index = self.remove_from_group(index)?;
         let key = BEKey {
             gid: self.gid as u16,
             index: rem_index,
         };
-
-        let be = backends.get(&key, 0).context(format!(
-            "Remove: can't find backend: {} : {}",
-            key.gid, key.index
-        ))?;
         backends.remove(&key).context("Failed to remove backend")?;
 
         Ok(be)
