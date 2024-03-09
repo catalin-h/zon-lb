@@ -197,15 +197,27 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 // TBD: monitor RST flag to remove the conntrack entry
             },
             IpProto::Udp => unsafe {
-                let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-                // the destination port remains the same
-                (*udphdr.cast_mut()).source = dst_port;
+                let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?.cast_mut();
 
-                // TODO: update udp and ip csums
+                // NOTE: the destination port remains the same
+
+                (*udphdr).source = nat.port_lb;
+
+                // NOTE: Update the csum from header. This csum
+                // is computed from the pseudo header (e.g. addresses
+                // from IP header) + header (checksum is 0) + the
+                // text (payload data).
+
+                let ucs = !(*udphdr).check as u32;
+                // The source ip is part of the pseudo header
+                let ucs = csum_update_u32(src_addr, nat.ip_src, ucs);
+                // The destination port is part of the header
+                let ucs = csum_update_u16(src_port, nat.port_lb, ucs);
+                (*udphdr).check = !csum_fold_32_to_16(ucs);
+
                 // TBD: always delete entry ?
             },
             _ => {
-                // TODO: update ip csum
                 // TODO: always delete contrack entry
             }
         };
@@ -352,12 +364,24 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // TBD: monitor RST flag to remove the conntrack entry
         },
         IpProto::Udp => unsafe {
-            let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-            // the source port remains the same
-            // (*tcphdr.cast_mut()).source = src_port;
-            (*udphdr.cast_mut()).dest = be.port;
+            let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?.cast_mut();
 
-            // TODO: update udp and ip csums
+            // NOTE: the source port remains the same
+
+            (*udphdr).dest = be.port;
+
+            // NOTE: Update the csum from UDP header. This csum
+            // is computed from the UDPP pseudo header (e.g. addresses
+            // from IP header) + UDPP header (checksum is 0) + the
+            // text (payload data).
+
+            let mut ucs = !(*udphdr).check as u32;
+            // The source ip is part of the pseudo header
+            ucs = csum_update_u32(src_addr, be.address.v4, ucs);
+            // The destination port is part of the header
+            ucs = csum_update_u16(dst_port, be.port, ucs);
+            (*udphdr).check = !csum_fold_32_to_16(ucs);
+
             // TBD: always delete entry ?
         },
         _ => {
