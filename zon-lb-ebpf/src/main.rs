@@ -163,15 +163,15 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         // only the source IP changes:
         unsafe {
             let mut csum = !(*ipv4hdr).check as u32;
-
-            (*ipv4hdr.cast_mut()).dst_addr = nat.ip_src;
-            (*ipv4hdr.cast_mut()).src_addr = dst_addr;
+            let hdr = ipv4hdr.cast_mut();
+            (*hdr).dst_addr = nat.ip_src;
+            (*hdr).src_addr = dst_addr;
 
             //csum = csum_update_u32(src_addr, dst_addr, csum);
             //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
             csum = csum_update_u32(src_addr, nat.ip_src, csum);
 
-            (*ipv4hdr.cast_mut()).check = !csum_fold_32_to_16(csum);
+            (*hdr).check = !csum_fold_32_to_16(csum);
         }
 
         match proto {
@@ -330,15 +330,15 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // the source address changes.
     unsafe {
         let mut csum = !(*ipv4hdr).check as u32;
-
-        (*ipv4hdr.cast_mut()).src_addr = dst_addr;
-        (*ipv4hdr.cast_mut()).dst_addr = be.address.v4;
+        let hdr = ipv4hdr.cast_mut();
+        (*hdr).src_addr = dst_addr;
+        (*hdr).dst_addr = be.address.v4;
 
         //csum = csum_update_u32(dst_addr, be.address.v4, csum);
         //csum = csum_update_u32(src_addr, dst_addr, csum);
         csum = csum_update_u32(src_addr, be.address.v4, csum);
 
-        (*ipv4hdr.cast_mut()).check = !csum_fold_32_to_16(csum);
+        (*hdr).check = !csum_fold_32_to_16(csum);
     }
 
     match proto {
