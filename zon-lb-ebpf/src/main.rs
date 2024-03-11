@@ -229,7 +229,15 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             dst_port.to_be()
         );
 
+        //let ret = unsafe { bpf_redirect(6, 0) };
+        //info!(ctx, "[out] redirect to oif:{}, ret:{}", 6, ret);
+        //return Ok(ret as xdp_action::Type);
+        // TODO: check if bpf_redirect_peer() is usable for veth
+        // TODO: check if we can use XDP_TX to re-enqueue packet
+        // to the same interface when doint PORT nat only.
         return Ok(xdp_action::XDP_PASS);
+
+        //return Ok(xdp_action::XDP_TX);
     } else {
         info!(ctx, "No conntrack entry");
     }
@@ -328,6 +336,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // NOTE: optimization: compute the IP csum as if only
     // the source address changes.
+
+    // TODO: verify if src == dest and avoid address change
     unsafe {
         let mut csum = !(*ipv4hdr).check as u32;
         let hdr = ipv4hdr.cast_mut();
@@ -390,7 +400,15 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     };
 
+    // TODO: check if bpf_redirect_peer() is usable for veth
+    // TODO: check if we can use XDP_TX to re-enqueue packet
+    // to the same interface when doint PORT nat only.
     Ok(xdp_action::XDP_PASS)
+
+    //let ret = unsafe { bpf_redirect(6, 0) };
+    //info!(ctx, "[in] redirect to local, ret:{}", ret);
+    //return Ok(ret as xdp_action::Type);
+    //return Ok(xdp_action::XDP_TX);
 }
 
 fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {

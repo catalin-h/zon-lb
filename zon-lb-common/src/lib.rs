@@ -225,6 +225,7 @@ pub struct NAT4Value {
     pub ip_src: u32,
     /// The saved lb port
     pub port_lb: u16,
+    /// Align to 32-bit to avoid bpf verifier error
     pub _reserved: u16,
 }
 
