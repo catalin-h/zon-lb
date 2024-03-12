@@ -160,19 +160,25 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
         // NOTE: optimization: since the destination IP (LB)
         // 'remains' in the csum we can recompute it as if
-        // only the source IP changes:
+        // only the source IP changes.
         unsafe {
-            let mut csum = !(*ipv4hdr).check as u32;
             let hdr = ipv4hdr.cast_mut();
             (*hdr).dst_addr = nat.ip_src;
             (*hdr).src_addr = dst_addr;
 
-            //csum = csum_update_u32(src_addr, dst_addr, csum);
-            //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
-            csum = csum_update_u32(src_addr, nat.ip_src, csum);
-
-            (*hdr).check = !csum_fold_32_to_16(csum);
+            // NOTE: optimization: skip csum computation if the addresses
+            // don't actually change.
+            if src_addr != nat.ip_src {
+                let csum = !(*ipv4hdr).check as u32;
+                //csum = csum_update_u32(src_addr, dst_addr, csum);
+                //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
+                let csum = csum_update_u32(src_addr, nat.ip_src, csum);
+                (*hdr).check = !csum_fold_32_to_16(csum);
+            }
         }
+
+        // TODO: compute the tcp/udp checksum is needed,
+        // for e.g. when forwarding the packet to local interface
 
         match proto {
             IpProto::Tcp => unsafe {
@@ -187,11 +193,14 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 // from IP header) + TCP header (checksum is 0) + the
                 // text (payload data).
 
-                let tcs = !(*tcphdr).check as u32;
+                let mut tcs = !(*tcphdr).check as u32;
+
                 // The source ip is part of the TCP pseudo header
-                let tcs = csum_update_u32(src_addr, nat.ip_src, tcs);
+                if src_addr != nat.ip_src {
+                    tcs = csum_update_u32(src_addr, nat.ip_src, tcs);
+                }
                 // The destination port is part of the TCP header
-                let tcs = csum_update_u16(src_port, nat.port_lb, tcs);
+                tcs = csum_update_u16(src_port, nat.port_lb, tcs);
                 (*tcphdr).check = !csum_fold_32_to_16(tcs);
 
                 // TBD: monitor RST flag to remove the conntrack entry
@@ -208,11 +217,14 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 // from IP header) + header (checksum is 0) + the
                 // text (payload data).
 
-                let ucs = !(*udphdr).check as u32;
+                let mut ucs = !(*udphdr).check as u32;
+
                 // The source ip is part of the pseudo header
-                let ucs = csum_update_u32(src_addr, nat.ip_src, ucs);
+                if src_addr != nat.ip_src {
+                    ucs = csum_update_u32(src_addr, nat.ip_src, ucs);
+                }
                 // The destination port is part of the header
-                let ucs = csum_update_u16(src_port, nat.port_lb, ucs);
+                ucs = csum_update_u16(src_port, nat.port_lb, ucs);
                 (*udphdr).check = !csum_fold_32_to_16(ucs);
 
                 // TBD: always delete entry ?
@@ -339,16 +351,17 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // TODO: verify if src == dest and avoid address change
     unsafe {
-        let mut csum = !(*ipv4hdr).check as u32;
         let hdr = ipv4hdr.cast_mut();
         (*hdr).src_addr = dst_addr;
         (*hdr).dst_addr = be.address.v4;
 
-        //csum = csum_update_u32(dst_addr, be.address.v4, csum);
-        //csum = csum_update_u32(src_addr, dst_addr, csum);
-        csum = csum_update_u32(src_addr, be.address.v4, csum);
-
-        (*hdr).check = !csum_fold_32_to_16(csum);
+        if src_addr != be.address.v4 {
+            let csum = !(*ipv4hdr).check as u32;
+            //csum = csum_update_u32(dst_addr, be.address.v4, csum);
+            //csum = csum_update_u32(src_addr, dst_addr, csum);
+            let csum = csum_update_u32(src_addr, be.address.v4, csum);
+            (*hdr).check = !csum_fold_32_to_16(csum);
+        }
     }
 
     match proto {
@@ -365,8 +378,11 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // text (payload data).
 
             let mut tcs = !(*tcphdr).check as u32;
+
             // The source ip is part of the TCP pseudo header
-            tcs = csum_update_u32(src_addr, be.address.v4, tcs);
+            if src_addr != be.address.v4 {
+                tcs = csum_update_u32(src_addr, be.address.v4, tcs);
+            }
             // The destination port is part of the TCP header
             tcs = csum_update_u16(dst_port, be.port, tcs);
             (*tcphdr).check = !csum_fold_32_to_16(tcs);
@@ -386,8 +402,11 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // text (payload data).
 
             let mut ucs = !(*udphdr).check as u32;
+
             // The source ip is part of the pseudo header
-            ucs = csum_update_u32(src_addr, be.address.v4, ucs);
+            if src_addr != be.address.v4 {
+                ucs = csum_update_u32(src_addr, be.address.v4, ucs);
+            }
             // The destination port is part of the header
             ucs = csum_update_u16(dst_port, be.port, ucs);
             (*udphdr).check = !csum_fold_32_to_16(ucs);
@@ -399,6 +418,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // TODO: always delete contrack entry
         }
     };
+
+    // TODO: compute the tcp/udp checksum is needed,
+    // for e.g. when forwarding the packet to local interface
 
     // TODO: check if bpf_redirect_peer() is usable for veth
     // TODO: check if we can use XDP_TX to re-enqueue packet
