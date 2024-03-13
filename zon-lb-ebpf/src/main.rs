@@ -95,18 +95,25 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
+    // TODO: support vlan tags
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, EthHdr::LEN)?;
     let src_addr = unsafe { (*ipv4hdr).src_addr };
     let dst_addr = unsafe { (*ipv4hdr).dst_addr };
     let proto = unsafe { (*ipv4hdr).proto };
     let (if_index, rx_queue) = unsafe { ((*ctx.ctx).ingress_ifindex, (*ctx.ctx).rx_queue_index) };
+
+    // NOTE: compute the l4 header start based on ipv4hdr.IHL
+    let l4hdr_offset = (unsafe { (*ipv4hdr).ihl() as usize } << 2);
+    info!(ctx, "ipv4 hdr size {}", l4hdr_offset);
+    let l4hdr_offset = l4hdr_offset + EthHdr::LEN;
+
     let (src_port, dst_port) = match proto {
         IpProto::Tcp => {
-            let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?;
             unsafe { ((*tcphdr).source, (*tcphdr).dest) }
         }
         IpProto::Udp => {
-            let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?;
             unsafe { ((*udphdr).source, (*udphdr).dest) }
         }
         _ => (0, 0),
@@ -182,8 +189,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
         match proto {
             IpProto::Tcp => unsafe {
-                let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?.cast_mut();
-
+                let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?.cast_mut();
                 // NOTE: the destination port remains the same
 
                 (*tcphdr).source = nat.port_lb;
@@ -206,7 +212,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 // TBD: monitor RST flag to remove the conntrack entry
             },
             IpProto::Udp => unsafe {
-                let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?.cast_mut();
+                let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?.cast_mut();
 
                 // NOTE: the destination port remains the same
 
@@ -366,7 +372,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     match proto {
         IpProto::Tcp => unsafe {
-            let tcphdr = ptr_at::<TcpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?.cast_mut();
+            let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?.cast_mut();
 
             // NOTE: the source port remains the same
 
@@ -390,7 +396,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // TBD: monitor RST flag to remove the conntrack entry
         },
         IpProto::Udp => unsafe {
-            let udphdr = ptr_at::<UdpHdr>(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?.cast_mut();
+            let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?.cast_mut();
 
             // NOTE: the source port remains the same
 
