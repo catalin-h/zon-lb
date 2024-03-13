@@ -100,6 +100,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let src_addr = unsafe { (*ipv4hdr).src_addr };
     let dst_addr = unsafe { (*ipv4hdr).dst_addr };
     let proto = unsafe { (*ipv4hdr).proto };
+    let check = !unsafe { (*ipv4hdr).check } as u32;
     let (if_index, rx_queue) = unsafe { ((*ctx.ctx).ingress_ifindex, (*ctx.ctx).rx_queue_index) };
 
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
@@ -176,10 +177,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // NOTE: optimization: skip csum computation if the addresses
             // don't actually change.
             if src_addr != nat.ip_src {
-                let csum = !(*ipv4hdr).check as u32;
                 //csum = csum_update_u32(src_addr, dst_addr, csum);
                 //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
-                let csum = csum_update_u32(src_addr, nat.ip_src, csum);
+                let csum = csum_update_u32(src_addr, nat.ip_src, check);
                 (*hdr).check = !csum_fold_32_to_16(csum);
             }
         }
@@ -362,10 +362,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         (*hdr).dst_addr = be.address.v4;
 
         if src_addr != be.address.v4 {
-            let csum = !(*ipv4hdr).check as u32;
             //csum = csum_update_u32(dst_addr, be.address.v4, csum);
             //csum = csum_update_u32(src_addr, dst_addr, csum);
-            let csum = csum_update_u32(src_addr, be.address.v4, csum);
+            let csum = csum_update_u32(src_addr, be.address.v4, check);
             (*hdr).check = !csum_fold_32_to_16(csum);
         }
     }
