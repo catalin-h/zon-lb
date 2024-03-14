@@ -184,8 +184,12 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             }
         }
 
-        // TODO: compute the tcp/udp checksum is needed,
-        // for e.g. when forwarding the packet to local interface
+        // NOTE: in order to compute the L4 csum must use bpf_loop
+        // as the verifier doesn't allow loops. Without loop support
+        // can't iterate over the entire packet as the number of iterations
+        // are limited; e.g. for _ 0..100 {..}
+        // Recomputing the L4 csum seems to be necessary only if the packet
+        // is forwarded between local interfaces.
 
         match proto {
             IpProto::Tcp => unsafe {
