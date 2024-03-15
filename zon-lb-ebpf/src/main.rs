@@ -17,7 +17,7 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    BEGroup, BEKey, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4, EP6, MAX_BACKENDS,
+    BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4, EP6, MAX_BACKENDS,
     MAX_CONNTRACKS, MAX_GROUPS,
 };
 
@@ -428,18 +428,14 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     };
 
-    // TODO: compute the tcp/udp checksum is needed,
-    // for e.g. when forwarding the packet to local interface
-
     // TODO: check if bpf_redirect_peer() is usable for veth
-    // TODO: check if we can use XDP_TX to re-enqueue packet
-    // to the same interface when doint PORT nat only.
-    Ok(xdp_action::XDP_PASS)
 
-    //let ret = unsafe { bpf_redirect(6, 0) };
-    //info!(ctx, "[in] redirect to local, ret:{}", ret);
-    //return Ok(ret as xdp_action::Type);
-    //return Ok(xdp_action::XDP_TX);
+    // Send back the packet to the same interface
+    if be.flags.contains(EPFlags::XDP_TX) {
+        return Ok(xdp_action::XDP_TX);
+    }
+
+    Ok(xdp_action::XDP_PASS)
 }
 
 fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {

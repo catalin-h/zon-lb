@@ -28,9 +28,11 @@ bitflags::bitflags! {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EPFlags: u32 {
     const ENABLE = 1;
+    // TODO: Use only IPV4
     const IPV4 = 2;
     const IPV6 = 4;
-    const PORT = 8;
+    /// Forward the packet to the same interface it came.
+    const XDP_TX = 8;
 }
 }
 
