@@ -33,6 +33,8 @@ pub struct EPFlags: u32 {
     const IPV6 = 4;
     /// Forward the packet to the same interface it came.
     const XDP_TX = 8;
+    /// Disable connection tracking and NAT for the backend connection.
+    const NO_CONNTRACK = 1 << 8;
 }
 }
 

@@ -329,37 +329,38 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // it in the conntrack. This works because the be is picked based on a computed hash.
     if dst_port == 0 && be.address.v4 == src_addr {}
 
-    // NOTE: the LB will use the source port since there can be multiple
-    // connection to the same backend and it needs to track all of them.
+    // NOTE: Don't insert entry if no connection tracking is enabled for this backend.
+    // For e.g. if the backend can reply directly to the source endpoint.
+    if !be.flags.contains(EPFlags::NO_CONNTRACK) {
+        // NOTE: the LB will use the source port since there can be multiple
+        // connection to the same backend and it needs to track all of them.
+        let nat4key = NAT4Key {
+            ip_be_src: be.address.v4,
+            ip_lb_dst: dst_addr,
+            port_be_src: be.port,
+            port_lb_dst: src_port, // use the source port of the endpoint
+            proto: proto as u32,
+        };
+        let nat4value = NAT4Value {
+            ip_src: src_addr,
+            port_lb: dst_port,
+            _reserved: 0,
+        };
 
-    let nat4key = NAT4Key {
-        ip_be_src: be.address.v4,
-        ip_lb_dst: dst_addr,
-        port_be_src: be.port,
-        port_lb_dst: src_port, // use the source port of the endpoint
-        proto: proto as u32,
-    };
-    let nat4value = NAT4Value {
-        ip_src: src_addr,
-        port_lb: dst_port,
-        _reserved: 0,
-    };
+        // NOTE: Always use 64-bits values for faster data transfer and
+        // fewer instructions during initialization
 
-    // NOTE: Always use 64-bits values for faster data transfer and
-    // fewer instructions during initialization
-
-    // TBD: always update contrack entry if exists ?
-    // TBD: use lock or atomic update ?
-    // TBD: use BPF_F_LOCK ?
-    match unsafe { ZLB_CONNTRACK4.insert(&nat4key, &nat4value, 0) } {
-        Ok(()) => info!(ctx, "[ctrk] {:i} added", src_addr.to_be()),
-        Err(ret) => error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr.to_be(), ret),
-    };
+        // TBD: always update contrack entry if exists ?
+        // TBD: use lock or atomic update ?
+        // TBD: use BPF_F_LOCK ?
+        match unsafe { ZLB_CONNTRACK4.insert(&nat4key, &nat4value, 0) } {
+            Ok(()) => info!(ctx, "[ctrk] {:i} added", src_addr.to_be()),
+            Err(ret) => error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr.to_be(), ret),
+        };
+    }
 
     // NOTE: optimization: compute the IP csum as if only
     // the source address changes.
-
-    // TODO: verify if src == dest and avoid address change
     unsafe {
         let hdr = ipv4hdr.cast_mut();
         (*hdr).src_addr = dst_addr;
