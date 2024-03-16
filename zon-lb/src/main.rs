@@ -20,7 +20,9 @@ use log::{info, warn};
 use logging::init_log;
 use prog::*;
 use protocols::Protocol;
+use std::collections::BTreeMap;
 use tokio::signal;
+use zon_lb_common::EPFlags;
 
 pub(crate) trait ToMapName {
     fn map_name() -> &'static str;
@@ -83,11 +85,29 @@ struct PortOpt {
     port: u16,
 }
 
+#[derive(Clone)]
+pub struct EpOptions(BTreeMap<String, String>);
+
+impl EpOptions {
+    pub fn from_flags(flags: EPFlags) -> Self {
+        Self(BTreeMap::new())
+    }
+
+    pub fn from_args(args: Vec<String>) -> Self {
+        Self(BTreeMap::new())
+    }
+}
+
 #[derive(clap::Subcommand, Debug)]
 #[command(flatten_help = false, disable_help_flag = true)]
 enum ProtocolInfo {
-    /// Add TCP flow and port number
-    Tcp(PortOpt),
+    /// Add TCP flow, port number and options
+    Tcp {
+        /// The port number
+        port: u16,
+        /// Per context options, for e.g. packet forwarding option.
+        options: Vec<String>,
+    },
     /// Add UDP flow and port number
     Udp(PortOpt),
     /// A service with a known ip protocol and port number,
@@ -273,11 +293,11 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
 }
 
 fn handler_add_ep(opt: &AddEpOpt) -> Result<EndPoint, anyhow::Error> {
-    let (proto, port) = match &opt.protocol_info {
-        ProtocolInfo::Tcp(port_opt) => (Protocol::Tcp, Some(port_opt.port)),
-        ProtocolInfo::Udp(port_opt) => (Protocol::Udp, Some(port_opt.port)),
-        ProtocolInfo::Service { service } => (service.protocol(), Some(service.port())),
-        ProtocolInfo::Proto { protocol } => (*protocol, None),
+    let (proto, port, options) = match &opt.protocol_info {
+        ProtocolInfo::Tcp { port, options } => (Protocol::Tcp, Some(*port), options.clone()),
+        ProtocolInfo::Udp(port_opt) => (Protocol::Udp, Some(port_opt.port), vec![]),
+        ProtocolInfo::Service { service } => (service.protocol(), Some(service.port()), vec![]),
+        ProtocolInfo::Proto { protocol } => (*protocol, None, vec![]),
     };
 
     let ep = EndPoint::new(&opt.ip_address, proto, port)?;
