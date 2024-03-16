@@ -27,12 +27,15 @@ impl ZonInfo {
 bitflags::bitflags! {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EPFlags: u32 {
-    const ENABLE = 1;
+    const DISABLE = 1;
     // TODO: Use only IPV4
     const IPV4 = 2;
     const IPV6 = 4;
     /// Forward the packet to the same interface it came.
     const XDP_TX = 8;
+    /// TBD: redirect the packet to another interface.
+    /// This flag affects both ingress and egress flows.
+    const XDP_REDIRECT = 1 << 4;
     /// Disable connection tracking and NAT for the backend connection.
     const NO_CONNTRACK = 1 << 8;
 }
