@@ -86,15 +86,49 @@ struct PortOpt {
 }
 
 #[derive(Clone)]
-pub struct EpOptions(BTreeMap<String, String>);
+pub struct EpOptions {
+    pub props: BTreeMap<String, String>,
+    pub flags: EPFlags,
+}
 
 impl EpOptions {
-    pub fn from_flags(flags: EPFlags) -> Self {
-        Self(BTreeMap::new())
+    pub fn to_options(&self) -> String {
+        unimplemented!()
     }
 
     pub fn from_args(args: Vec<String>) -> Self {
-        Self(BTreeMap::new())
+        let mut props = BTreeMap::new();
+        let mut flags = EPFlags::empty();
+
+        for arg in args {
+            let kv = arg.split_once('=');
+            let (key, value) = match kv {
+                None => {
+                    match arg.as_str() {
+                        "disable" => flags.insert(EPFlags::DISABLE),
+                        "tx" => flags.insert(EPFlags::XDP_TX),
+                        "no_nat" | "no_conntrack" | "no_ct" => flags.insert(EPFlags::NO_CONNTRACK),
+                        "redirect" => flags.insert(EPFlags::XDP_REDIRECT),
+                        _ => log::error!("Unknown flag '{}' ", arg),
+                    }
+                    continue;
+                }
+                Some(kv) => kv,
+            };
+            match key {
+                "redirect" => match helpers::ifindex(value) {
+                    Ok(_) => {
+                        flags.insert(EPFlags::XDP_REDIRECT);
+                        props.insert(key.to_string(), value.to_string());
+                    }
+                    Err(_) => {
+                        log::error!("No '{}' interface, see option '{}'", value, arg)
+                    }
+                },
+                _ => log::error!("Unknown key '{}' in option '{}'", key, arg),
+            };
+        }
+        Self { props, flags }
     }
 }
 
@@ -293,7 +327,7 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
 }
 
 fn handler_add_ep(opt: &AddEpOpt) -> Result<EndPoint, anyhow::Error> {
-    let (proto, port, options) = match &opt.protocol_info {
+    let (proto, port, _options) = match &opt.protocol_info {
         ProtocolInfo::Tcp { port, options } => (Protocol::Tcp, Some(*port), options.clone()),
         ProtocolInfo::Udp(port_opt) => (Protocol::Udp, Some(port_opt.port), vec![]),
         ProtocolInfo::Service { service } => (service.protocol(), Some(service.port()), vec![]),
