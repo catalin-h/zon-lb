@@ -91,9 +91,25 @@ pub struct EpOptions {
     pub flags: EPFlags,
 }
 
+impl Default for EpOptions {
+    fn default() -> Self {
+        Self {
+            props: BTreeMap::default(),
+            flags: EPFlags::default(),
+        }
+    }
+}
+
 impl EpOptions {
     pub fn to_options(&self) -> String {
         unimplemented!()
+    }
+
+    pub fn new(flags: EPFlags) -> Self {
+        Self {
+            props: BTreeMap::new(),
+            flags,
+        }
     }
 
     pub fn from_args(args: Vec<String>) -> Self {
@@ -327,14 +343,14 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
 }
 
 fn handler_add_ep(opt: &AddEpOpt) -> Result<EndPoint, anyhow::Error> {
-    let (proto, port, _options) = match &opt.protocol_info {
+    let (proto, port, options) = match &opt.protocol_info {
         ProtocolInfo::Tcp { port, options } => (Protocol::Tcp, Some(*port), options.clone()),
         ProtocolInfo::Udp(port_opt) => (Protocol::Udp, Some(port_opt.port), vec![]),
         ProtocolInfo::Service { service } => (service.protocol(), Some(service.port()), vec![]),
         ProtocolInfo::Proto { protocol } => (*protocol, None, vec![]),
     };
-
-    let ep = EndPoint::new(&opt.ip_address, proto, port)?;
+    let options = EpOptions::from_args(options);
+    let ep = EndPoint::new(&opt.ip_address, proto, port, Some(options))?;
 
     Ok(ep)
 }

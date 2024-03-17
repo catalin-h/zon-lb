@@ -2,6 +2,7 @@ use crate::{
     backends::{Backend as BCKND, EndPoint, Group, ToEndPoint},
     helpers,
     protocols::Protocol,
+    EpOptions,
 };
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,7 @@ impl Into<EndPoint> for &EP {
             ipaddr: self.ip,
             proto: Protocol::from(self.proto),
             port: self.port,
+            options: EpOptions::default(),
         }
     }
 }

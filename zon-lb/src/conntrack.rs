@@ -37,16 +37,19 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
             ipaddr: IpAddr::from(value.ip_src.to_le_bytes()),
             port: u16::from_be(key.port_lb_dst),
             proto: Protocol::None,
+            ..Default::default()
         };
         let lb = EndPoint {
             ipaddr: IpAddr::from(key.ip_lb_dst.to_le_bytes()),
             port: u16::from_be(value.port_lb),
             proto: Protocol::None,
+            ..Default::default()
         };
         let be = EndPoint {
             ipaddr: IpAddr::from(key.ip_be_src.to_le_bytes()),
             port: u16::from_be(key.port_be_src),
             proto: Protocol::None,
+            ..Default::default()
         };
         tab.push_row(vec![
             format!("{:?}", Protocol::from(key.proto as u8)),

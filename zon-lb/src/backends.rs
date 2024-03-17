@@ -4,11 +4,11 @@ use crate::helpers::{
 };
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
-use crate::ToMapName;
+use crate::{EpOptions, ToMapName};
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
 use log::{error, info, warn};
-use std::collections::{BTreeSet, HashMap as StdHashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap as StdHashMap};
 use std::{fmt, net::IpAddr};
 use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX, INET};
 
@@ -37,11 +37,12 @@ impl ToMapName for BE {
 }
 
 /// Little endian
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct EndPoint {
     pub ipaddr: IpAddr,
     pub proto: Protocol,
     pub port: u16,
+    pub options: EpOptions,
 }
 
 impl From<&EP4> for EndPoint {
@@ -50,6 +51,7 @@ impl From<&EP4> for EndPoint {
             ipaddr: IpAddr::from(value.address.to_le_bytes()),
             proto: Protocol::from(value.proto.to_le() as u8),
             port: value.port.to_le(),
+            ..Default::default()
         }
     }
 }
@@ -60,6 +62,7 @@ impl From<&EP6> for EndPoint {
             ipaddr: IpAddr::from(value.address),
             proto: Protocol::from(value.proto.to_le() as u8),
             port: value.port.to_le(),
+            ..Default::default()
         }
     }
 }
@@ -93,6 +96,7 @@ impl ToEndPoint for EP4 {
             // protocol is a single byte and the value is not byte-swapped
             proto: Protocol::from(self.proto as u8),
             port: u16::from_be(self.port),
+            ..Default::default()
         }
     }
 }
@@ -104,6 +108,7 @@ impl ToEndPoint for EP6 {
             // protocol is a single byte and the value is not byte-swapped
             proto: Protocol::from(self.proto as u8),
             port: u16::from_be(self.port),
+            ..Default::default()
         }
     }
 }
@@ -129,6 +134,10 @@ impl ToEndPoint for BE {
             ipaddr,
             proto: self.proto.into(),
             port: u16::from_be(self.port),
+            options: EpOptions {
+                flags: self.flags,
+                props: BTreeMap::from([]),
+            },
         }
     }
 }
@@ -139,6 +148,7 @@ impl Default for EndPoint {
             ipaddr: IpAddr::from([0; 4]),
             proto: Protocol::None,
             port: 0,
+            options: EpOptions::default(),
         }
     }
 }
@@ -162,11 +172,13 @@ impl EndPoint {
         ip_address: &str,
         proto: Protocol,
         port: Option<u16>,
+        options: Option<EpOptions>,
     ) -> Result<Self, anyhow::Error> {
         Ok(Self {
             ipaddr: ip_address.parse().map_err(|e| e)?,
             proto: proto.clone(),
             port: port.unwrap_or_default(),
+            options: options.unwrap_or_default(),
         })
     }
 
