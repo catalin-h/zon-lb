@@ -213,7 +213,7 @@ impl EndPoint {
             IpAddr::V4(ip) => (INET::from(u32::from(*ip).to_be()), EPFlags::IPV4),
             IpAddr::V6(ip) => (INET::from(ip.octets()), EPFlags::IPV6),
         };
-
+        let flags = flags | self.options.flags;
         BE {
             address,
             port: self.port.to_be(),
@@ -318,7 +318,7 @@ impl Group {
         beg.flags = match ginfo.key {
             EPX::V4(_) => EPFlags::IPV4,
             EPX::V6(_) => EPFlags::IPV6,
-        };
+        } | ep.options.flags;
         beg.ifindex = self.ifindex;
 
         match &ginfo.key {
