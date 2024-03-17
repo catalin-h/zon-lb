@@ -358,8 +358,8 @@ impl Group {
                 g.gid.to_string(),
                 ep.to_string(),
                 if_index_to_name(g.ifindex).unwrap_or(g.ifindex.to_string()),
-                format!("{:x}", g.flags),
-                format!("{}", g.becount),
+                EpOptions::new(g.flags).to_string(),
+                g.becount.to_string(),
             ])
         };
 
@@ -568,14 +568,19 @@ impl Backend {
     }
 
     fn build_backend_list(gid: u16, becount: u16) -> Result<InfoTable, anyhow::Error> {
-        let mut table = InfoTable::new(vec!["id", "endpoint"]);
+        let mut table = InfoTable::new(vec!["id", "endpoint", "options"]);
         let backends = Self::backends()?;
 
         for index in 0..becount {
             let key = BEKey { gid, index };
             match backends.get(&key, 0) {
                 Ok(be) => {
-                    table.push_row(vec![index.to_string(), be.as_endpoint().to_string()]);
+                    let ep = be.as_endpoint();
+                    table.push_row(vec![
+                        index.to_string(),
+                        ep.to_string(),
+                        ep.options.to_string(),
+                    ]);
                 }
                 _ => {}
             }
@@ -585,7 +590,8 @@ impl Backend {
     }
 
     fn list_all() -> Result<(), anyhow::Error> {
-        let mut table = InfoTable::new(vec!["gid:id", "backend", "", "if / lb_endpoint"]);
+        let mut table =
+            InfoTable::new(vec!["gid:id", "if / lb_endpoint", "", "backend", "options"]);
         let backends = Self::backends()?;
         let mut cache: StdHashMap<u16, String> = StdHashMap::new();
 
@@ -598,11 +604,13 @@ impl Backend {
 
         for (key, be) in backends.iter().filter_map(|x| x.ok()) {
             let ep_str = cache.get(&key.gid).map_or("n/a", |v| v.as_str());
+            let bep = be.as_endpoint();
             table.push_row(vec![
                 format!("{}:{}", key.gid, key.index),
-                be.as_endpoint().to_string(),
-                "<->".to_string(),
                 ep_str.to_string(),
+                "<->".to_string(),
+                bep.to_string(),
+                bep.options.to_string(),
             ]);
         }
 
@@ -631,7 +639,7 @@ impl Backend {
             gid.to_string(),
             gmap.info.key.as_endpoint().to_string(),
             if_name_or_default(beg.ifindex),
-            format!("{:x}", beg.flags),
+            EpOptions::new(beg.flags).to_string(),
             beg.becount.to_string(),
         ]);
         table.print("Backend group info:");

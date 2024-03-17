@@ -15,6 +15,7 @@ use backends::{Backend, EndPoint, ToEndPoint};
 use clap::{Parser, ValueEnum};
 use config::ConfigFile;
 use conntrack::conntrack_list;
+use core::fmt;
 use info::*;
 use log::{info, warn};
 use logging::init_log;
@@ -85,6 +86,13 @@ struct PortOpt {
     port: u16,
 }
 
+mod options {
+    pub const DISABLE: &str = "disable";
+    pub const REDIRECT: &str = "redirect";
+    pub const TX: &str = "tx";
+    pub const NO_NAT: &str = "no_nat";
+}
+
 #[derive(Clone)]
 pub struct EpOptions {
     pub props: BTreeMap<String, String>,
@@ -100,9 +108,32 @@ impl Default for EpOptions {
     }
 }
 
+impl fmt::Display for EpOptions {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for opt in self.to_options() {
+            write!(f, "{} ", opt)?
+        }
+        Ok(())
+    }
+}
+
 impl EpOptions {
-    pub fn to_options(&self) -> String {
-        unimplemented!()
+    pub fn to_options(&self) -> Vec<String> {
+        let mut opt = vec![];
+        for flag in self.flags {
+            let name = match flag {
+                EPFlags::DISABLE => options::DISABLE,
+                EPFlags::XDP_TX => options::TX,
+                EPFlags::XDP_REDIRECT => options::REDIRECT,
+                EPFlags::NO_CONNTRACK => options::NO_NAT,
+                _ => continue,
+            };
+            opt.push(name.to_string());
+        }
+        for (k, v) in &self.props {
+            opt.push(format!("{}={}", k, v));
+        }
+        opt
     }
 
     pub fn new(flags: EPFlags) -> Self {
@@ -121,10 +152,12 @@ impl EpOptions {
             let (key, value) = match kv {
                 None => {
                     match arg.as_str() {
-                        "disable" => flags.insert(EPFlags::DISABLE),
-                        "tx" => flags.insert(EPFlags::XDP_TX),
-                        "no_nat" | "no_conntrack" | "no_ct" => flags.insert(EPFlags::NO_CONNTRACK),
-                        "redirect" => flags.insert(EPFlags::XDP_REDIRECT),
+                        options::DISABLE => flags.insert(EPFlags::DISABLE),
+                        options::TX => flags.insert(EPFlags::XDP_TX),
+                        options::NO_NAT | "no_conntrack" | "no_ct" => {
+                            flags.insert(EPFlags::NO_CONNTRACK)
+                        }
+                        options::REDIRECT => flags.insert(EPFlags::XDP_REDIRECT),
                         _ => log::error!("Unknown flag '{}' ", arg),
                     }
                     continue;

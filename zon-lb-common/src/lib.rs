@@ -25,7 +25,7 @@ impl ZonInfo {
 }
 
 bitflags::bitflags! {
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EPFlags: u32 {
     const DISABLE = 1;
     // TODO: Use only IPV4
