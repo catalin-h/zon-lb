@@ -18,8 +18,11 @@ use zon_lb_common::BEKey;
 #[derive(Serialize, Deserialize)]
 struct EP {
     ip: IpAddr,
+    #[serde(default)]
     proto: u8,
+    #[serde(default)]
     port: u16,
+    #[serde(default)]
     options: Vec<String>,
 }
 
