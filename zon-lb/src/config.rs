@@ -20,6 +20,7 @@ struct EP {
     ip: IpAddr,
     proto: u8,
     port: u16,
+    options: Vec<String>,
 }
 
 impl Into<EndPoint> for &EP {
@@ -28,7 +29,7 @@ impl Into<EndPoint> for &EP {
             ipaddr: self.ip,
             proto: Protocol::from(self.proto),
             port: self.port,
-            options: EpOptions::default(),
+            options: EpOptions::from_option_args(&self.options),
         }
     }
 }
@@ -161,6 +162,7 @@ impl ConfigFile {
                 ip: ep.ipaddr,
                 proto: ep.proto as u8,
                 port: ep.port,
+                options: ep.options.to_options(),
             };
             cfg.backend.entry(Self::to_backend_key(&key)).or_insert(ep);
         }
@@ -173,6 +175,7 @@ impl ConfigFile {
                 ip: ep.ipaddr,
                 proto: ep.proto as u8,
                 port: ep.port,
+                options: ep.options.to_options(),
             };
             netif.groups.entry(group.gid.to_string()).or_insert(ep);
         })?;

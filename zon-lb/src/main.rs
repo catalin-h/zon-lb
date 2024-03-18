@@ -143,7 +143,7 @@ impl EpOptions {
         }
     }
 
-    pub fn from_args(args: Vec<String>) -> Self {
+    pub fn from_option_args(args: &Vec<String>) -> Self {
         let mut props = BTreeMap::new();
         let mut flags = EPFlags::empty();
 
@@ -382,7 +382,7 @@ fn handler_add_ep(opt: &AddEpOpt) -> Result<EndPoint, anyhow::Error> {
         ProtocolInfo::Service { service } => (service.protocol(), Some(service.port()), vec![]),
         ProtocolInfo::Proto { protocol } => (*protocol, None, vec![]),
     };
-    let options = EpOptions::from_args(options);
+    let options = EpOptions::from_option_args(&options);
     let ep = EndPoint::new(&opt.ip_address, proto, port, Some(options))?;
 
     Ok(ep)
