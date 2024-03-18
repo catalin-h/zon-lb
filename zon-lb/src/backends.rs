@@ -9,6 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
 use log::{error, info, warn};
 use std::collections::{BTreeMap, BTreeSet, HashMap as StdHashMap};
+use std::ops::Shl;
 use std::{fmt, net::IpAddr};
 use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX, INET};
 
@@ -616,7 +617,7 @@ impl Backend {
 
         let extract_key = |ids: &String| -> u64 {
             match ids.split_once(':') {
-                Some((gid, id)) => stou64(&gid, 10).pow(16) + stou64(&id, 10),
+                Some((gid, id)) => stou64(&gid, 10).shl(16) + stou64(&id, 10),
                 None => 0_u64,
             }
         };
