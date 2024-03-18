@@ -192,11 +192,24 @@ enum ProtocolInfo {
         options: Vec<String>,
     },
     /// Add UDP flow and port number
-    Udp(PortOpt),
+    Udp {
+        /// The port number
+        port: u16,
+        /// Per context options, for e.g. packet forwarding option.
+        options: Vec<String>,
+    },
     /// A service with a known ip protocol and port number,
-    Service { service: services::Service },
+    Service {
+        service: services::Service,
+        /// Per context options, for e.g. packet forwarding option.
+        options: Vec<String>,
+    },
     /// Other IP protocols besides TCP and UDP. For eg. ICMP
-    Proto { protocol: Protocol },
+    Proto {
+        protocol: Protocol,
+        /// Per context options, for e.g. packet forwarding option.
+        options: Vec<String>,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -378,9 +391,11 @@ fn handle_prog(opt: &ProgOpt) -> Result<(), anyhow::Error> {
 fn handler_add_ep(opt: &AddEpOpt) -> Result<EndPoint, anyhow::Error> {
     let (proto, port, options) = match &opt.protocol_info {
         ProtocolInfo::Tcp { port, options } => (Protocol::Tcp, Some(*port), options.clone()),
-        ProtocolInfo::Udp(port_opt) => (Protocol::Udp, Some(port_opt.port), vec![]),
-        ProtocolInfo::Service { service } => (service.protocol(), Some(service.port()), vec![]),
-        ProtocolInfo::Proto { protocol } => (*protocol, None, vec![]),
+        ProtocolInfo::Udp { port, options } => (Protocol::Udp, Some(*port), options.clone()),
+        ProtocolInfo::Service { service, options } => {
+            (service.protocol(), Some(service.port()), options.clone())
+        }
+        ProtocolInfo::Proto { protocol, options } => (*protocol, None, options.clone()),
     };
     let options = EpOptions::from_option_args(&options);
     let ep = EndPoint::new(&opt.ip_address, proto, port, Some(options))?;
