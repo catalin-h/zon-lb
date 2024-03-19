@@ -256,7 +256,8 @@ enum BackendAction {
     },
     /// Clear all backends from group
     Clear,
-    // TODO: Clear stray backends
+    /// Clear stray backends without groups
+    ClearStray,
 }
 
 #[derive(clap::Args, Debug)]
@@ -437,6 +438,11 @@ fn handle_backends(opt: &BackendOpt) -> Result<(), anyhow::Error> {
             let backend = Backend::new(opt.gid);
             let bes = backend.clear()?;
             for be in bes {
+                info!("backend {} removed for group {}", be.as_endpoint(), be.gid);
+            }
+        }
+        BackendAction::ClearStray => {
+            for be in Backend::clear_stray()? {
                 info!("backend {} removed for group {}", be.as_endpoint(), be.gid);
             }
         }

@@ -133,7 +133,7 @@ pub struct EP4 {
 unsafe impl aya::Pod for EP4 {}
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, PartialOrd, Ord)]
 pub struct BEKey {
     pub gid: u16,
     pub index: u16,

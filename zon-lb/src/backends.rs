@@ -736,6 +736,38 @@ impl Backend {
 
         Ok(rem_eps)
     }
+
+    pub fn clear_stray() -> Result<Vec<BE>, anyhow::Error> {
+        let mut group_ids = BTreeSet::new();
+        Group::iterate_all(|_, beg| {
+            group_ids.insert(beg.gid);
+        })?;
+        let mut backends = Self::backends()?;
+        let mut rb = BTreeMap::<BEKey, BE>::new();
+        for (key, be) in backends
+            .iter()
+            .filter_map(|x| x.ok())
+            .filter(|(k, _)| !group_ids.contains(&k.gid))
+        {
+            rb.insert(key, be);
+        }
+
+        let mut rem_eps = Vec::<BE>::new();
+        for (key, be) in rb {
+            match backends.remove(&key) {
+                Ok(()) => rem_eps.push(be),
+                Err(e) => error!(
+                    "can't delete {}:{} => {}, {}",
+                    key.gid,
+                    key.index,
+                    be.as_endpoint(),
+                    e
+                ),
+            }
+        }
+
+        Ok(rem_eps)
+    }
 }
 
 pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
