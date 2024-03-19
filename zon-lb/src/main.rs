@@ -80,12 +80,6 @@ struct ProgOpt {
     action: ProgAction,
 }
 
-#[derive(clap::Args, Clone, Debug)]
-struct PortOpt {
-    /// Port number
-    port: u16,
-}
-
 mod options {
     pub const DISABLE: &str = "disable";
     pub const REDIRECT: &str = "redirect";
@@ -235,6 +229,7 @@ enum GroupAction {
         gid: u16,
     },
     // TODO: add disable/enable group
+    // TODO: remove groups with missing ifnames
 }
 
 #[derive(clap::Args, Debug)]
@@ -261,6 +256,7 @@ enum BackendAction {
     },
     /// Clear all backends from group
     Clear,
+    // TODO: Clear stray backends
 }
 
 #[derive(clap::Args, Debug)]
