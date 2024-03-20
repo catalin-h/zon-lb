@@ -739,15 +739,19 @@ impl Backend {
 
     pub fn clear_stray() -> Result<Vec<BE>, anyhow::Error> {
         let mut group_ids = BTreeSet::new();
+        let mut group_no_be = BTreeSet::new();
         Group::iterate_all(|_, beg| {
             group_ids.insert(beg.gid);
+            if beg.becount == 0 {
+                group_no_be.insert(beg.gid);
+            }
         })?;
         let mut backends = Self::backends()?;
         let mut rb = BTreeMap::<BEKey, BE>::new();
         for (key, be) in backends
             .iter()
             .filter_map(|x| x.ok())
-            .filter(|(k, _)| !group_ids.contains(&k.gid))
+            .filter(|(k, _)| !group_ids.contains(&k.gid) || group_no_be.contains(&k.gid))
         {
             rb.insert(key, be);
         }
