@@ -374,13 +374,13 @@ impl Group {
     }
 
     pub fn remove(&self, gid: u16) -> Result<(), anyhow::Error> {
-        self.remove_all_by_id::<EP4>(gid)?;
-        self.remove_all_by_id::<EP6>(gid)?;
-
         match Backend::new(gid).clear() {
             Ok(v) => info!("[{}/{}] Removed backends: {}", self.ifname, gid, v.len()),
             Err(e) => error!("[{}/{}] Error on freeing backends,{}", self.ifname, gid, e),
         };
+
+        self.remove_all_by_id::<EP4>(gid)?;
+        self.remove_all_by_id::<EP6>(gid)?;
 
         if let Err(e) = self.free_group(gid) {
             error!("[{}/{}] Error on info freeing,{}", self.ifname, gid, e);
