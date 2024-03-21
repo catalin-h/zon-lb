@@ -615,6 +615,11 @@ impl Backend {
             ]);
         }
 
+        if table.is_empty() {
+            println!("No backends");
+            return Ok(());
+        }
+
         let extract_key = |ids: &String| -> u64 {
             match ids.split_once(':') {
                 Some((gid, id)) => stou64(&gid, 10).shl(16) + stou64(&id, 10),
@@ -623,6 +628,7 @@ impl Backend {
         };
         table.sort_by_key(0, Some(extract_key));
         table.print("Backends list:");
+
         Ok(())
     }
 
@@ -643,8 +649,13 @@ impl Backend {
             EpOptions::new(beg.flags).to_string(),
             beg.becount.to_string(),
         ]);
+
         table.print("Backend group info:");
-        bt.print("Backends list:");
+        if !bt.is_empty() {
+            bt.print("Backends list:");
+        } else {
+            println!("No backends");
+        }
 
         Ok(())
     }

@@ -69,6 +69,10 @@ impl InfoTable {
             None => self.table.sort_by(|a, b| a[index].cmp(&b[index])),
         };
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.table.is_empty()
+    }
 }
 
 // TODO: add struct to set/get ZLB_INFO data
