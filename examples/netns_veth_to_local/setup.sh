@@ -34,5 +34,10 @@ ip netns exec $NS ping $IP0 -c1 -s0
 ip -s address show dev $IF0
 ip -s -netns $NS address show dev $IF1
 
+# By default veth does not compute the TCP checksum and the connect
+# request might be droped. To exclude this just disable offloads on TX.
+# ethtool -K $IF0 tx off
+# ip netns exec $NS ethtool -K $IF1 tx off
+
 printf "done!\n"
 
