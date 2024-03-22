@@ -39,5 +39,10 @@ ip -s -netns $NS address show dev $IF1
 # ethtool -K $IF0 tx off
 # ip netns exec $NS ethtool -K $IF1 tx off
 
+# Accept packets with local source addresses. In combination with
+# suitable routing, this can be used to direct packets between two
+# local interfaces over the wire and have them accepted properly.
+sysctl -w net.ipv4.conf.$IF0.accept_local=1
+
 printf "done!\n"
 
