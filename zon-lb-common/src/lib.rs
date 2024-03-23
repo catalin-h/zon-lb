@@ -230,10 +230,9 @@ unsafe impl aya::Pod for NAT4Key {}
 pub struct NAT4Value {
     /// The source address
     pub ip_src: u32,
-    /// The saved lb port
-    pub port_lb: u16,
-    /// Align to 32-bit to avoid bpf verifier error
-    pub _reserved: u16,
+    /// The saved lb port. Use a 32-bit value in order to
+    /// align to 32-bit and avoid bpf verifier error.
+    pub port_lb: u32,
 }
 
 #[cfg(feature = "user")]

@@ -41,7 +41,7 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
         };
         let lb = EndPoint {
             ipaddr: IpAddr::from(key.ip_lb_dst.to_le_bytes()),
-            port: u16::from_be(value.port_lb),
+            port: u16::from_be(value.port_lb as u16),
             proto: Protocol::None,
             ..Default::default()
         };

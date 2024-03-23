@@ -152,7 +152,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             ctx,
             "[out] nat, src: {:i}, lb_port: {}",
             nat.ip_src.to_be(),
-            nat.port_lb.to_be()
+            (nat.port_lb as u16).to_be()
         );
 
         // Unlikely
@@ -196,7 +196,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?.cast_mut();
                 // NOTE: the destination port remains the same
 
-                (*tcphdr).source = nat.port_lb;
+                (*tcphdr).source = nat.port_lb as u16;
 
                 // NOTE: Update the csum from TCP header. This csum
                 // is computed from the TCP pseudo header (e.g. addresses
@@ -210,7 +210,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                     tcs = csum_update_u32(src_addr, nat.ip_src, tcs);
                 }
                 // The destination port is part of the TCP header
-                tcs = csum_update_u16(src_port, nat.port_lb, tcs);
+                tcs = csum_update_u32(src_port as u32, nat.port_lb, tcs);
                 (*tcphdr).check = !csum_fold_32_to_16(tcs);
 
                 // TBD: monitor RST flag to remove the conntrack entry
@@ -220,7 +220,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
                 // NOTE: the destination port remains the same
 
-                (*udphdr).source = nat.port_lb;
+                (*udphdr).source = nat.port_lb as u16;
 
                 // NOTE: Update the csum from header. This csum
                 // is computed from the pseudo header (e.g. addresses
@@ -234,7 +234,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                     ucs = csum_update_u32(src_addr, nat.ip_src, ucs);
                 }
                 // The destination port is part of the header
-                ucs = csum_update_u16(src_port, nat.port_lb, ucs);
+                ucs = csum_update_u32(src_port as u32, nat.port_lb, ucs);
                 (*udphdr).check = !csum_fold_32_to_16(ucs);
 
                 // TBD: always delete entry ?
@@ -343,8 +343,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         };
         let nat4value = NAT4Value {
             ip_src: src_addr,
-            port_lb: dst_port,
-            _reserved: 0,
+            port_lb: dst_port as u32,
         };
 
         // NOTE: Always use 64-bits values for faster data transfer and
