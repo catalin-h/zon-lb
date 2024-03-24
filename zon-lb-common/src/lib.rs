@@ -233,6 +233,17 @@ pub struct NAT4Value {
     /// The saved lb port. Use a 32-bit value in order to
     /// align to 32-bit and avoid bpf verifier error.
     pub port_lb: u32,
+    /// The interface index to redirect the reply packet from
+    /// the backend. This is the interface index that the
+    /// request packet was received by the LB.
+    /// See `EPFlags::XDP_REDIRECT`.
+    pub ifindex: u32,
+    /// Destination and source MAC addresses. The MAC addresses
+    /// are stored so they are just copied in the reply Ethernet
+    /// frame. It is used only on redirect the flow and is computed
+    /// from the request frame.
+    /// See `EPFlags::XDP_REDIRECT`.
+    pub mac_addresses: [u32; 3],
 }
 
 #[cfg(feature = "user")]

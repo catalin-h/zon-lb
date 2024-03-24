@@ -341,9 +341,22 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             port_lb_dst: src_port, // use the source port of the endpoint
             proto: proto as u32,
         };
+        let mac_addresses = if !be.flags.contains(EPFlags::XDP_REDIRECT) {
+            let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
+            let macs = unsafe { macs.as_ref() }.ok_or(())?;
+            let macs = [
+                (macs[1] & 0xffff_ffff) << 16 | macs[0] >> 48 | macs[0] << 48,
+                macs[0] >> 16,
+            ];
+            unsafe { *(macs.as_ptr() as *const [u32; 3]) }
+        } else {
+            [0; 3]
+        };
         let nat4value = NAT4Value {
             ip_src: src_addr,
             port_lb: dst_port as u32,
+            ifindex: if_index,
+            mac_addresses,
         };
 
         // NOTE: Always use 64-bits values for faster data transfer and
