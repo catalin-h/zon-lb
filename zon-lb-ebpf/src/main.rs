@@ -2,7 +2,7 @@
 #![no_main]
 
 use aya_bpf::{
-    bindings::xdp_action,
+    bindings::xdp_action::{self, XDP_PASS, XDP_TX},
     macros::{map, xdp},
     maps::{Array, HashMap, LruHashMap},
     programs::XdpContext,
@@ -244,22 +244,40 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             }
         };
 
-        info!(
-            ctx,
-            "[out] fw to {:i}:{}",
-            nat.ip_src.to_be(),
-            dst_port.to_be()
-        );
+        let ret = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
+            let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+            let ret = unsafe {
+                *macs = nat.mac_addresses;
+                aya_bpf::helpers::bpf_redirect(nat.ifindex, 0) as xdp_action::Type
+            };
+            info!(
+                ctx,
+                "[out] redirect to {:i}:{} via {}, ret={}",
+                nat.ip_src.to_be(),
+                dst_port.to_be(),
+                nat.ifindex,
+                ret,
+            );
+            ret
+        } else if nat.flags.contains(EPFlags::XDP_TX) {
+            info!(
+                ctx,
+                "[out] tx to {:i}:{}",
+                nat.ip_src.to_be(),
+                dst_port.to_be(),
+            );
+            XDP_TX
+        } else {
+            info!(
+                ctx,
+                "[out] pass to {:i}:{}",
+                nat.ip_src.to_be(),
+                dst_port.to_be(),
+            );
+            XDP_PASS
+        };
 
-        //let ret = unsafe { bpf_redirect(6, 0) };
-        //info!(ctx, "[out] redirect to oif:{}, ret:{}", 6, ret);
-        //return Ok(ret as xdp_action::Type);
-        // TODO: check if bpf_redirect_peer() is usable for veth
-        // TODO: check if we can use XDP_TX to re-enqueue packet
-        // to the same interface when doint PORT nat only.
-        return Ok(xdp_action::XDP_PASS);
-
-        //return Ok(xdp_action::XDP_TX);
+        return Ok(ret);
     } else {
         info!(ctx, "No conntrack entry");
     }
@@ -446,9 +464,11 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // Send back the packet to the same interface
     if be.flags.contains(EPFlags::XDP_TX) {
+        info!(ctx, "in => xdp_tx");
         return Ok(xdp_action::XDP_TX);
     }
 
+    info!(ctx, "in => xdp_pass");
     Ok(xdp_action::XDP_PASS)
 }
 
