@@ -341,7 +341,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             port_lb_dst: src_port, // use the source port of the endpoint
             proto: proto as u32,
         };
-        let mac_addresses = if !be.flags.contains(EPFlags::XDP_REDIRECT) {
+        let mac_addresses = if be.flags.contains(EPFlags::XDP_REDIRECT) {
             let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
             let macs = unsafe { macs.as_ref() }.ok_or(())?;
             let macs = [
