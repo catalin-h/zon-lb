@@ -244,6 +244,10 @@ pub struct NAT4Value {
     /// from the request frame.
     /// See `EPFlags::XDP_REDIRECT`.
     pub mac_addresses: [u32; 3],
+    /// Flags that control the way to forward the packet,
+    /// for e.g. pass to net stack to redirect it to
+    /// another interface.
+    pub flags: EPFlags,
 }
 
 #[cfg(feature = "user")]

@@ -357,6 +357,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             port_lb: dst_port as u32,
             ifindex: if_index,
             mac_addresses,
+            flags: be.flags,
         };
 
         // NOTE: Always use 64-bits values for faster data transfer and
