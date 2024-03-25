@@ -1,0 +1,11 @@
+[netif.veth0.1]
+ip = "10.0.0.1"
+proto = 6
+port = 23
+options = []
+
+[backend.1_0]
+ip = "127.0.0.23"
+proto = 6
+port = 223
+options = ["redirect"]
