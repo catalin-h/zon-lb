@@ -37,7 +37,11 @@ using the same =load= command.
 - The zon-lb uses [[https://docs.kernel.org/bpf/redirect.html][xdp redirect]]
 and on some older Linux kernels the mechanism needs a dummy xdp program attached
 to the pair veth. However, on newer than 6.x.y kernels this isn't necessary
-anymore.
+anymore. If the test system has an older kernel and the example doesn't work
+this example contain a [[xdp_dummy.o][dummy xdp program]] that can be attached
+to the pair veth interface from the custom netns with the follwing command:
+`sudo ip -netns zone1 link set veth1 xdp obj xdp_dummy.o sec .text`. To detach
+the xdp program run `sudo ip -netns zone1 link set veth1 xdp off`.
 - By default the kernel does not compute the checsum in the TCP header for
 connection between localhost addresses. On some configurations the packets are
 dropped because of incorrect TCP checksum. To make the example work on these
@@ -89,4 +93,5 @@ As a reference, on a modest `Ivy bridge` Linux system the throughput is:
 
 - Dummy xdp program required on other =veth= pair [[https://github.com/xdp-project/xdp-tutorial/issues/160][xdp-project]]
 - Packet dropped due to tcp checksum [[https://github.com/cilium/cilium/issues/26300][Cilium]
+- Netdev conference [[https://netdevconf.info/0x13/session.html?talk-veth-xdp][Veth XDP: XDP for containers]]
 
