@@ -4,94 +4,78 @@ This is a simple example that bridges TCP client connections from a custom
 network namespace via veth interface to a local TCP server. For convenience
 the server is binded to an address added on the loopback.
 
-# Zon-lb features:
+** Zon-lb features:
 
 - XDP redirect on veth
 - Connection tracking
 
-# Setup
+** Setup
 
 Run the [[./setup.sh][setup]] to create the custom namespace =zone1=:
 
-```
+#+begin_src
 # ./setup.sh
-```
+#+end_src
 
 Load the configuration [[./zonlb.toml][config]]:
 
-```
+#+begin_src
 # ./zon-lb ./zonlb.toml load
-```
+#+end_src
 
 Add the =lo= address in order to bind the TCP server to:
 
-```
+#+begin_src
 # ip address add 127.0.0.23/24 dev lo
-```
+#+end_src
 
-# Notes
+** Notes
 
-- In order to change the server address or port number the 
-[[./zonlb.toml][config]] must be changed and the configuration reloaded
-using the same =load= command.
-- The zon-lb uses [[https://docs.kernel.org/bpf/redirect.html][xdp redirect]]
-and on some older Linux kernels the mechanism needs a dummy xdp program attached
-to the pair veth. However, on newer than 6.x.y kernels this isn't necessary
-anymore. If the test system has an older kernel and the example doesn't work
-this example contain a [[xdp_dummy.o][dummy xdp program]] that can be attached
-to the pair veth interface from the custom netns with the follwing command:
-`sudo ip -netns zone1 link set veth1 xdp obj xdp_dummy.o sec .text`. To detach
-the xdp program run `sudo ip -netns zone1 link set veth1 xdp off`.
-- By default the kernel does not compute the checsum in the TCP header for
-connection between localhost addresses. On some configurations the packets are
-dropped because of incorrect TCP checksum. To make the example work on these
-configurations must disable the offload on veth using `ethtool -K veth0 tx
-off` (see [[./setup.sh][setup]]).
-- Since the server is binded to a local host address and packets are exchanged
-between two local host addresses on local interfaces (veth and lo) must allow
-this with `net.ipv4.conf.$IF0.accept_local=1` (see [[./setup.sh][setup]]).
+- In order to change the server address or port number the [[./zonlb.toml][config]] must be changed and the configuration reloaded using the same =load= command.
+- The zon-lb uses [[https://docs.kernel.org/bpf/redirect.html][xdp redirect]] and on some older Linux kernels the mechanism needs a dummy xdp program attached to the pair veth. However, on newer than 6.x.y kernels this isn't necessary anymore. If the test system has an older kernel and the example doesn't work this example contain a [[xdp_dummy.o][dummy xdp program]] that can be attached to the pair veth interface from the custom netns with the follwing command: =sudo ip -netns zone1 link set veth1 xdp obj xdp_dummy.o sec .text=. To detach the xdp program run =sudo ip -netns zone1 link set veth1 xdp off=.
+- By default the kernel does not compute the checsum in the TCP header for connection between localhost addresses. On some configurations the packets are dropped because of incorrect TCP checksum. To make the example work on these configurations must disable the offload on veth using =ethtool -K veth0 tx off= (see [[./setup.sh][setup]]).
+- Since the server is binded to a local host address and packets are exchanged between two local host addresses on local interfaces (veth and lo) must allow this with =net.ipv4.conf.veth0.accept_local=1= (see [[./setup.sh][setup]]).
 
-# Telnet test
+** Telnet test
 
 The primary test to do when verifying a load balanaced TCP connection is
 to use =telnet=:
 
 In the default netns launch a =netcat= TCP server listening on port 223:
 
-```
+#+begin_src
 # nc -n -l -p 223 -s 127.0.0.23
-```
+#+end_src
 
 In the custom netns run the =telnet= connecting to the pair veth IPv4 address:
 
-```
+#+begin_src
 # ip netns exec zone1 telnet 10.0.0.1 23
-```
+#+end_src
 
-# Run =iperf=
+** Run =iperf=
 
 Launch the server in default netns:
 
-```
+#+begin_src
 # iperf -s -p 223 -B 127.0.0.23
-```
+#+end_src
 
 In the custom netns run iperf in client mode:
 
-```
+#+begin_src
 # ip netns exec zone1 iperf -p 23 -c 10.0.0.1
-```
+#+end_src
 
-As a reference, on a modest `Ivy bridge` Linux system the throughput is:
+As a reference, on a modest =Ivy bridge= Linux system the throughput is:
 
-```
+#+begin_src
 [ ID] Interval       Transfer     Bandwidth
 [  7] 0.0000-10.0012 sec  4.41 GBytes  3.79 Gbits/sec
-```
+#+end_src
 
-# References
+** References
 
-- Dummy xdp program required on other =veth= pair [[https://github.com/xdp-project/xdp-tutorial/issues/160][xdp-project]]
-- Packet dropped due to tcp checksum [[https://github.com/cilium/cilium/issues/26300][Cilium]
+- Dummy xdp program required on other veth pair [[https://github.com/xdp-project/xdp-tutorial/issues/160][xdp-project]]
+- Packet dropped due to tcp checksum [[https://github.com/cilium/cilium/issues/26300][Cilium]]
 - Netdev conference [[https://netdevconf.info/0x13/session.html?talk-veth-xdp][Veth XDP: XDP for containers]]
-
