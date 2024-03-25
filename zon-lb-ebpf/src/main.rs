@@ -245,6 +245,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         };
 
         let ret = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
+            // TDB: use bpf_redirect_neigh in order to fill the l2 addresses from neighboring system.
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             let ret = unsafe {
                 *macs = nat.mac_addresses;
@@ -460,7 +461,10 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     };
 
-    // TODO: check if bpf_redirect_peer() is usable for veth
+    // TODO: use bpf_redirect_neigh to redirect a packet to an interface
+    // without modifying the L2 addresses. This bpf helper will do this for us
+    // since it will do a FIB lookup in the neighbour tables in order to fill
+    // the L2 addresses.
 
     // Send back the packet to the same interface
     if be.flags.contains(EPFlags::XDP_TX) {
