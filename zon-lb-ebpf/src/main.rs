@@ -461,10 +461,14 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     };
 
-    // TODO: use bpf_redirect_neigh to redirect a packet to an interface
-    // without modifying the L2 addresses. This bpf helper will do this for us
-    // since it will do a FIB lookup in the neighbour tables in order to fill
-    // the L2 addresses.
+    // TODO: Try use:
+    // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
+    // in order to compute the source/dest mac + vlan info from IP source,destination
+    // before redirecting a packet to the backend. This feature is different from
+    // XDP_REDIRECT as it is used to redirect the source packet to an backend
+    // via configured interface on the ingress flow. In the egress flow we already have
+    // the ifindex and the mac addresses info, which are saved in the conntrack map
+    // on the ingress flow.
 
     // Send back the packet to the same interface
     if be.flags.contains(EPFlags::XDP_TX) {
