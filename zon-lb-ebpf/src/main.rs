@@ -245,7 +245,10 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         };
 
         let ret = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
-            // TDB: use bpf_redirect_neigh in order to fill the l2 addresses from neighboring system.
+            // TODO: Try use:
+            // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
+            // in order to compute the source/dest mac + vlan info from IP source,destination
+            // before redirecting a packet to the backend.
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             let ret = unsafe {
                 *macs = nat.mac_addresses;
