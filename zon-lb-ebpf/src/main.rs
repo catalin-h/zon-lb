@@ -249,6 +249,14 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
             // in order to compute the source/dest mac + vlan info from IP source,destination
             // before redirecting a packet to the backend.
+
+            // TODO: use bpf_redirect_map(map, ifindex) to boost performance as it supports
+            // packet batch processing instead of single/immediate packet redirect.
+            // The devmap must be update by the user application.
+            // See:
+            // - https://lwn.net/Articles/728146/
+            // - https://docs.kernel.org/bpf/map_devmap.html
+            // - https://docs.kernel.org/bpf/redirect.html
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             let ret = unsafe {
                 *macs = nat.mac_addresses;
