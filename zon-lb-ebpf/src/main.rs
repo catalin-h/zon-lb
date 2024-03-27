@@ -363,6 +363,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             port_lb_dst: src_port, // use the source port of the endpoint
             proto: proto as u32,
         };
+
+        // NOTE: Always use 64-bits values for faster data transfer and
+        // fewer instructions during initialization
         let mac_addresses = if be.flags.contains(EPFlags::XDP_REDIRECT) {
             let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
             let macs = unsafe { macs.as_ref() }.ok_or(())?;
@@ -374,24 +377,33 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         } else {
             [0; 3]
         };
-        let nat4value = NAT4Value {
-            ip_src: src_addr,
-            port_lb: dst_port as u32,
-            ifindex: if_index,
-            mac_addresses,
-            flags: be.flags,
+
+        // Update the nat entry only if the source details changes.
+        // This will boost performance and less error prone on tests like iperf.
+        let do_insert = if let Some(nat4) = unsafe { ZLB_CONNTRACK4.get(&nat4key) } {
+            nat4.ifindex != if_index
+                || nat4.ip_src != src_addr
+                || nat4.mac_addresses != mac_addresses
+        } else {
+            true
         };
 
-        // NOTE: Always use 64-bits values for faster data transfer and
-        // fewer instructions during initialization
+        if do_insert {
+            let nat4value = NAT4Value {
+                ip_src: src_addr,
+                port_lb: dst_port as u32,
+                ifindex: if_index,
+                mac_addresses,
+                flags: be.flags,
+            };
 
-        // TBD: always update contrack entry if exists ?
-        // TBD: use lock or atomic update ?
-        // TBD: use BPF_F_LOCK ?
-        match unsafe { ZLB_CONNTRACK4.insert(&nat4key, &nat4value, 0) } {
-            Ok(()) => info!(ctx, "[ctrk] {:i} added", src_addr.to_be()),
-            Err(ret) => error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr.to_be(), ret),
-        };
+            // TBD: use lock or atomic update ?
+            // TBD: use BPF_F_LOCK ?
+            match unsafe { ZLB_CONNTRACK4.insert(&nat4key, &nat4value, 0) } {
+                Ok(()) => info!(ctx, "[ctrk] {:i} added", src_addr.to_be()),
+                Err(ret) => error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr.to_be(), ret),
+            };
+        }
     }
 
     // NOTE: optimization: compute the IP csum as if only
