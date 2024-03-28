@@ -3,6 +3,7 @@
 
 use aya_bpf::{
     bindings::xdp_action::{self, XDP_PASS, XDP_TX},
+    bindings::BPF_F_NO_COMMON_LRU,
     macros::{map, xdp},
     maps::{Array, HashMap, LruHashMap},
     programs::XdpContext,
@@ -51,9 +52,10 @@ type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 /// Used for IPV4 connection tracking and NAT between backend and source endpoint.
 /// This map will be updated upon forwarding the packet to backend and searched
 /// upon returning the backend reply.
+/// NOTE: BPF_F_NO_COMMON_LRU will increase the performance but in the user space
+/// the conntrack listing will be affected as there are different LRU lists per CPU.
 #[map]
-static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, 0);
-// TODO: check flag BPF_F_NO_COMMON_LRU
+static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
 // TODO: add ipv6 connection tracking
 
