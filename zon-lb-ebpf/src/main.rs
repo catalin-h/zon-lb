@@ -51,8 +51,6 @@ type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 /// Used for IPV4 connection tracking and NAT between backend and source endpoint.
 /// This map will be updated upon forwarding the packet to backend and searched
 /// upon returning the backend reply.
-/// TBD: pin this map so the NAT table isn't lost when the program is reattached.
-/// TODO: add timestamp in order to delete after some time
 #[map]
 static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, 0);
 // TODO: check flag BPF_F_NO_COMMON_LRU
@@ -119,8 +117,6 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
         _ => (0, 0),
     };
-
-    // TODO: add prefilter based on port and proto for both ingress and egress
 
     info!(
         ctx,
@@ -236,12 +232,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 // The destination port is part of the header
                 ucs = csum_update_u32(src_port as u32, nat.port_lb, ucs);
                 (*udphdr).check = !csum_fold_32_to_16(ucs);
-
-                // TBD: always delete entry ?
             },
-            _ => {
-                // TODO: always delete contrack entry
-            }
+            _ => {}
         };
 
         let ret = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
@@ -300,24 +292,6 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         proto: proto as u16,
     };
 
-    // Temp
-    unsafe {
-        let e = &ep4 as *const _ as *const u8;
-        let a: &[u8] = core::slice::from_raw_parts(e, 8);
-        info!(
-            ctx,
-            "raw ep4: 0x{:x},0x{:x},0x{:x},0x{:x},0x{:x},0x{:x},0x{:x},0x{:x}",
-            a[0],
-            a[1],
-            a[2],
-            a[3],
-            a[4],
-            a[5],
-            a[6],
-            a[7],
-        );
-    }
-
     let group = match unsafe { ZLB_LB4.get(&ep4) } {
         Some(group) => *group,
         None => {
@@ -352,12 +326,6 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         be.address.v4.to_be(),
         be.port.to_be()
     );
-
-    // TODO: goto conntrack search if backend == source or replace it with lb and return ?
-
-    // For non-connection protocols like ICMP is ok to forward the call here and not insert
-    // it in the conntrack. This works because the be is picked based on a computed hash.
-    if dst_port == 0 && be.address.v4 == src_addr {}
 
     // NOTE: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
@@ -475,13 +443,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // The destination port is part of the header
             ucs = csum_update_u16(dst_port, be.port, ucs);
             (*udphdr).check = !csum_fold_32_to_16(ucs);
-
-            // TBD: always delete entry ?
         },
-        _ => {
-            // TODO: update ip csum
-            // TODO: always delete contrack entry
-        }
+        _ => {}
     };
 
     // TODO: Try use:
