@@ -4,8 +4,9 @@
 use aya_bpf::{
     bindings::xdp_action::{self, XDP_PASS, XDP_TX},
     bindings::BPF_F_NO_COMMON_LRU,
+    helpers::bpf_redirect,
     macros::{map, xdp},
-    maps::{Array, HashMap, LruHashMap},
+    maps::{Array, DevMap, HashMap, LruHashMap},
     programs::XdpContext,
 };
 use aya_log_ebpf::{error, info};
@@ -22,6 +23,9 @@ use zon_lb_common::{
     MAX_CONNTRACKS, MAX_GROUPS,
 };
 
+// TODO: change it to array to add:
+// - packet counters
+// - enable / disable logging
 /// Keeps runtime config data.
 #[map]
 static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
@@ -47,6 +51,12 @@ static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::pinned(MAX_GROU
 /// Same as ZLB_LB4 but for IPv6 packets.
 #[map]
 static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROUPS, 0);
+
+/// Used to boost performance when redirecting the packets as the kernel will batch
+/// process them. This array map is just a one-2-one with the current created interfaces.
+/// The user app must initialize this map once on first program load.
+#[map]
+static ZLB_TXPORT: DevMap = DevMap::pinned(256, 0);
 
 type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 /// Used for IPV4 connection tracking and NAT between backend and source endpoint.
@@ -244,7 +254,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // in order to compute the source/dest mac + vlan info from IP source,destination
             // before redirecting a packet to the backend.
 
-            // TODO: use bpf_redirect_map(map, ifindex) to boost performance as it supports
+            // NOTE: use bpf_redirect_map(map, ifindex) to boost performance as it supports
             // packet batch processing instead of single/immediate packet redirect.
             // The devmap must be update by the user application.
             // See:
@@ -254,7 +264,13 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             let ret = unsafe {
                 *macs = nat.mac_addresses;
-                aya_bpf::helpers::bpf_redirect(nat.ifindex, 0) as xdp_action::Type
+                match ZLB_TXPORT.redirect(nat.ifindex, 0) {
+                    Ok(action) => action,
+                    Err(e) => {
+                        error!(ctx, "No tx port for if key: {}, error: {}", nat.ifindex, e);
+                        bpf_redirect(nat.ifindex, 0) as xdp_action::Type
+                    }
+                }
             };
             info!(
                 ctx,
