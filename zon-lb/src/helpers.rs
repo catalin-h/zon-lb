@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use aya::{maps::MapData, Bpf};
+use aya::{maps::MapData, Ebpf};
 use aya_obj::generated::{bpf_link_type, BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
 use bitflags;
 use log::{info, warn};
@@ -54,7 +54,7 @@ pub(crate) fn _mapdata_by_name(_ifname: &str, _map_name: &str) -> Result<MapData
 }
 
 pub(crate) fn _create_pinned_links_for_maps(
-    bpf: &mut Bpf,
+    bpf: &mut Ebpf,
     ifname: &str,
 ) -> Result<(), anyhow::Error> {
     for (name, map) in bpf.maps() {

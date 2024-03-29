@@ -9,8 +9,8 @@ mod protocols;
 mod services;
 
 use anyhow::Context;
-use aya::{include_bytes_aligned, programs::XdpFlags, BpfLoader};
-use aya_log::BpfLogger;
+use aya::{include_bytes_aligned, programs::XdpFlags, EbpfLoader};
+use aya_log::EbpfLogger;
 use backends::{Backend, EndPoint, ToEndPoint};
 use clap::{Parser, ValueEnum};
 use config::ConfigFile;
@@ -351,13 +351,13 @@ const ZONLB: &[u8] = include_bytes_aligned!("../../target/bpfel-unknown-none/rel
 pub(crate) const PROG_NAME: &str = "zon_lb";
 pub(crate) const BPFFS: &str = "/sys/fs/bpf/";
 
-pub(crate) fn bpf_instance() -> Result<aya::Bpf, anyhow::Error> {
-    let mut bpf = BpfLoader::new()
+pub(crate) fn bpf_instance() -> Result<aya::Ebpf, anyhow::Error> {
+    let mut bpf = EbpfLoader::new()
         .load(ZONLB)
         .context("Failed to load the maps and program blob")?;
 
     // NOTE: initialize the log here in order to catch the verifier errors
-    if let Err(e) = BpfLogger::init(&mut bpf) {
+    if let Err(e) = EbpfLogger::init(&mut bpf) {
         // This can happen if all log statements are removed from eBPF program.
         warn!("Failed to initialize eBPF logger: {}", e);
     }

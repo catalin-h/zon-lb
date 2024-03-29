@@ -5,9 +5,9 @@ use anyhow;
 /// Enables the xdp program logging by attaching the default logger
 /// to the log map loaded along the ebpf program.
 pub fn init_log(ifname: &str) -> Result<(), anyhow::Error> {
-    use aya_log::BpfLogger;
+    use aya_log::EbpfLogger;
     let program_info = info::get_program_info_by_ifname(ifname)?;
-    let _logger = BpfLogger::init_from_id(program_info.id())?;
+    let _logger = EbpfLogger::init_from_id(program_info.id())?;
     Ok(())
 }
 

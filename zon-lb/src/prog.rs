@@ -6,7 +6,7 @@ use aya::{
         links::{FdLink, PinnedLink},
         Xdp, XdpFlags,
     },
-    Bpf,
+    Ebpf,
 };
 use log::info;
 use std::path::PathBuf;
@@ -85,21 +85,21 @@ impl Prog {
         self.unload()
     }
 
-    fn load_program(bpf: &mut Bpf) -> Result<&mut Xdp, anyhow::Error> {
+    fn load_program(bpf: &mut Ebpf) -> Result<&mut Xdp, anyhow::Error> {
         let program: &mut Xdp = bpf.program_mut("zon_lb").unwrap().try_into()?;
         program.load()?;
         Ok(program)
     }
 
     /// Initialize program info and start params   
-    fn init_info(&self, bpf: &mut Bpf) -> Result<(), anyhow::Error> {
+    fn init_info(&self, bpf: &mut Ebpf) -> Result<(), anyhow::Error> {
         let mut info: Array<_, ZonInfo> = Array::try_from(bpf.map_mut("ZLB_INFO").unwrap())?;
         info.set(0, ZonInfo::new(), 0)
             .context("Failed to set zon info")?;
         Ok(())
     }
 
-    pub fn replace(&self, bpf: &mut Bpf) -> Result<(), anyhow::Error> {
+    pub fn replace(&self, bpf: &mut Ebpf) -> Result<(), anyhow::Error> {
         if !self.link_exists {
             return Err(anyhow!(
                 "Can't replace program, link {} doesn't exist, try load the program first",
@@ -118,7 +118,7 @@ impl Prog {
         self.init_info(bpf)
     }
 
-    pub fn load(&self, bpf: &mut Bpf, flags: XdpFlags) -> Result<(), anyhow::Error> {
+    pub fn load(&self, bpf: &mut Ebpf, flags: XdpFlags) -> Result<(), anyhow::Error> {
         if self.link_exists {
             return Err(anyhow!(
                 "Can't load program, link {} already exists, try reload instead",
