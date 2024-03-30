@@ -1,7 +1,7 @@
-use crate::{backends, conntrack, helpers::*};
+use crate::{backends, conntrack, helpers::*, ToMapName};
 use anyhow::{anyhow, Context};
 use aya::{
-    maps::Array,
+    maps::{Array, DevMap, Map},
     programs::{
         links::{FdLink, PinnedLink},
         Xdp, XdpFlags,
@@ -11,6 +11,34 @@ use aya::{
 use log::info;
 use std::path::PathBuf;
 use zon_lb_common::ZonInfo;
+
+struct TxPorts;
+
+impl ToMapName for TxPorts {
+    fn map_name() -> &'static str {
+        "ZLB_TXPORT"
+    }
+}
+
+impl TxPorts {
+    fn init() -> Result<(), anyhow::Error> {
+        let ports = mapdata_from_pinned_map("", Self::map_name())
+            .ok_or(anyhow!("No tx port map, must reload program"))?;
+        let ports = Map::DevMap(ports);
+        let mut ports: DevMap<_> = ports.try_into()?;
+        let len = ports.len();
+        // TODO: setting an ifindex that currently does not exist will return an error.
+        // To set only the interfaces that exist must iterate over all interfaces.
+        // Next, must use netdev crate to iterate and retrieve the indecses.
+        for p in 1..len {
+            match ports.set(p, p, None, 0) {
+                Ok(()) => info!("Map tx port: {} to ifindex: {}", p, p),
+                Err(_) => {} //error!("Failed to map tx port: {} to ifindex: {}, {}", p, p, e),
+            }
+        }
+        Ok(())
+    }
+}
 
 // Manages the life cycle of a program for a specific network interface
 pub struct Prog {
@@ -115,6 +143,9 @@ impl Prog {
         program
             .attach_to_link(link.try_into()?)
             .context("Failed to attach new program to existing link")?;
+
+        TxPorts::init()?;
+
         self.init_info(bpf)
     }
 
@@ -141,6 +172,8 @@ impl Prog {
         fdlink
             .pin(&self.link_path)
             .context("Failed to create pinned link for program")?;
+
+        TxPorts::init()?;
         self.init_info(bpf)?;
 
         info!("Successfully load the program on interface {}", self.ifname);
