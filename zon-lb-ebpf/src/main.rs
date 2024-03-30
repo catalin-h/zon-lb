@@ -345,6 +345,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         be.port.to_be()
     );
 
+    let redirect = be.flags.contains(EPFlags::XDP_REDIRECT);
     // NOTE: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
     if !be.flags.contains(EPFlags::NO_CONNTRACK) {
@@ -360,7 +361,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
         // NOTE: Always use 64-bits values for faster data transfer and
         // fewer instructions during initialization
-        let mac_addresses = if be.flags.contains(EPFlags::XDP_REDIRECT) {
+        let mac_addresses = if redirect {
             let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
             let macs = unsafe { macs.as_ref() }.ok_or(())?;
             let macs = [
@@ -465,6 +466,12 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         _ => {}
     };
 
+    // Send back the packet to the same interface
+    if !redirect && be.flags.contains(EPFlags::XDP_TX) {
+        info!(ctx, "in => xdp_tx");
+        return Ok(xdp_action::XDP_TX);
+    }
+
     // TODO: Try use:
     // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
     // in order to compute the source/dest mac + vlan info from IP source,destination
@@ -473,12 +480,6 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // via configured interface on the ingress flow. In the egress flow we already have
     // the ifindex and the mac addresses info, which are saved in the conntrack map
     // on the ingress flow.
-
-    // Send back the packet to the same interface
-    if be.flags.contains(EPFlags::XDP_TX) {
-        info!(ctx, "in => xdp_tx");
-        return Ok(xdp_action::XDP_TX);
-    }
 
     info!(ctx, "in => xdp_pass");
     Ok(xdp_action::XDP_PASS)

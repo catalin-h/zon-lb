@@ -31,10 +31,12 @@ pub struct EPFlags: u32 {
     // TODO: Use only IPV4
     const IPV4 = 2;
     const IPV6 = 4;
-    /// Forward the packet to the same interface it came.
+    /// Forward the packet to the same interface it came when the
+    /// XDP_REDIRECT bit is off. When XDP_REDIRECT is on the packet
+    /// is redirected to the interface returned after consulting
+    /// the FIB (forward informational base).
     const XDP_TX = 8;
-    /// TBD: redirect the packet to another interface.
-    /// This flag affects both ingress and egress flows.
+    /// Redirect the packet to another interface.
     const XDP_REDIRECT = 1 << 4;
     /// Disable connection tracking and NAT for the backend connection.
     const NO_CONNTRACK = 1 << 8;
