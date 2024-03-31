@@ -483,7 +483,61 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     info!(ctx, "in => xdp_pass");
     Ok(xdp_action::XDP_PASS)
+#[repr(C)]
+struct BpfFibLookUp {
+    /// input: network family for lookup (AF_INET, AF_INET6)
+    /// output: network family of egress nexthop
+    family: u8,
+
+    /// Set if lookup is to consider L4 data - e.g., FIB rules
+    l4_protocol: u8,
+    sport: u16,
+    dport: u16,
+
+    /// input: L3 length from network hdr (iph->tot_len)
+    /// ouput: output: MTU value
+    tot_len: u16,
+
+    /// input: L3 device index for lookup
+    /// output: device index from FIB lookup
+    ifindex: u32,
+
+    /// input:
+    /// - AF_INET: tos
+    /// - AF_INET6: flow label + priority
+    /// output: rt_metric or metric of fib result (IPv4/IPv6 only)
+    tos: u32,
+
+    /// input:  source address, network order
+    src: [u32; 4],
+    /// input:  destination address, network order
+    dst: [u32; 4],
+
+    /// output
+    h_vlan_proto: u16,
+    h_vlan_tci: u16,
+    smac: [u8; 6],
+    dmac: [u8; 6],
 }
+
+impl BpfFibLookUp {
+    fn new_inet(tot_len: u16, ifindex: u32, tos: u32, src: u32, dst: u32) -> Self {
+        let mut fib: BpfFibLookUp = unsafe { core::mem::zeroed() };
+        fib.family = AF_INET;
+        fib.tot_len = tot_len;
+        fib.ifindex = ifindex;
+        fib.tos = tos;
+        fib.src[0] = src;
+        fib.dst[0] = dst;
+        fib
+    }
+}
+
+// Address families
+const AF_INET: u8 = 2; // Internet IP Protocol
+
+// TODO: ipv6
+//const AF_INET6: u8 = 10; // Internet IP Protocol
 
 fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
