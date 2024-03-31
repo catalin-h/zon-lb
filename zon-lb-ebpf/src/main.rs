@@ -2,12 +2,17 @@
 #![no_main]
 
 use aya_bpf::{
-    bindings::xdp_action::{self, XDP_PASS, XDP_TX},
-    bindings::BPF_F_NO_COMMON_LRU,
-    helpers::bpf_redirect,
+    bindings::{
+        bpf_fib_lookup as bpf_fib_lookup_param_t,
+        xdp_action::{self, XDP_DROP, XDP_PASS, XDP_TX},
+        BPF_FIB_LKUP_RET_BLACKHOLE, BPF_FIB_LKUP_RET_PROHIBIT, BPF_FIB_LKUP_RET_SUCCESS,
+        BPF_FIB_LKUP_RET_UNREACHABLE, BPF_F_NO_COMMON_LRU,
+    },
+    helpers::{bpf_fib_lookup, bpf_redirect},
     macros::{map, xdp},
     maps::{Array, DevMap, HashMap, LruHashMap},
     programs::XdpContext,
+    BpfContext,
 };
 use aya_log_ebpf::{error, info};
 use core::mem;
@@ -264,6 +269,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             let ret = unsafe {
                 *macs = nat.mac_addresses;
+                // NOTE: aya embeds the bpf_redirect_map in map struct impl
                 match ZLB_TXPORT.redirect(nat.ifindex, 0) {
                     Ok(action) => action,
                     Err(e) => {
@@ -481,8 +487,65 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // the ifindex and the mac addresses info, which are saved in the conntrack map
     // on the ingress flow.
 
-    info!(ctx, "in => xdp_pass");
-    Ok(xdp_action::XDP_PASS)
+    let fib_param = unsafe {
+        BpfFibLookUp::new_inet(
+            (*ipv4hdr).tot_len.to_be(),
+            if_index,
+            (*ipv4hdr).tos as u32,
+            (*ipv4hdr).src_addr,
+            (*ipv4hdr).dst_addr,
+        )
+    };
+    let p_fib_param = &fib_param as *const BpfFibLookUp as *mut bpf_fib_lookup_param_t;
+    let rc = unsafe {
+        bpf_fib_lookup(
+            ctx.as_ptr(),
+            p_fib_param,
+            mem::size_of::<BpfFibLookUp>() as i32,
+            0,
+        )
+    };
+
+    let mut action = xdp_action::XDP_PASS;
+
+    match rc as u32 {
+        BPF_FIB_LKUP_RET_SUCCESS => {
+            info!(
+                ctx,
+                "[redirect] forward: if: {}, dmac: {:mac}, smac: {:mac}",
+                fib_param.ifindex,
+                fib_param.dmac,
+                fib_param.smac
+            );
+
+            // TODO: copy s/d mac,
+            // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
+            // call bpf_redirect(fib_param.ifindex,0) or
+            // ZLB_TXPORT.redirect(nat.ifindex, 0) {
+        }
+        BPF_FIB_LKUP_RET_BLACKHOLE | BPF_FIB_LKUP_RET_UNREACHABLE | BPF_FIB_LKUP_RET_PROHIBIT => {
+            action = XDP_DROP;
+            error!(ctx, "[redirect] can't fw, rc: {}", rc);
+        }
+        _ => {
+            if rc < 0 {
+                error!(ctx, "[redirect] invalid arg, rc: {}", rc);
+            } else {
+                // let it pass to the stack to handle it
+                info!(ctx, "[redirect] packet not fwd, rc: {}", rc);
+            }
+        }
+    };
+
+    if action >= XDP_PASS {
+        info!(ctx, "[in] ok action: {}", action);
+    } else {
+        error!(ctx, "[in] fail action: {}", action);
+    }
+
+    Ok(action)
+}
+
 #[repr(C)]
 struct BpfFibLookUp {
     /// input: network family for lookup (AF_INET, AF_INET6)
