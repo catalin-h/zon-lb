@@ -11,6 +11,7 @@ use aya_bpf::{
     helpers::{bpf_fib_lookup, bpf_redirect},
     macros::{map, xdp},
     maps::{Array, DevMap, HashMap, LruHashMap},
+    memcpy,
     programs::XdpContext,
     BpfContext,
 };
@@ -506,44 +507,62 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         )
     };
 
-    let mut action = xdp_action::XDP_PASS;
+    if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
+        // info!(
+        //     ctx,
+        //     "[redirect] forward: if: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
+        //     fib_param.ifindex,
+        //     fib_param.src[0].to_be(),
+        //     fib_param.dst[0].to_be(),
+        //     fib_param.dmac,
+        //     fib_param.smac,
+        // );
 
-    match rc as u32 {
-        BPF_FIB_LKUP_RET_SUCCESS => {
-            info!(
-                ctx,
-                "[redirect] forward: if: {}, dmac: {:mac}, smac: {:mac}",
-                fib_param.ifindex,
-                fib_param.dmac,
-                fib_param.smac
+        // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
+
+        let action = unsafe {
+            let eth = ptr_at::<EthHdr>(&ctx, 0)?.cast_mut();
+            memcpy(
+                (*eth).dst_addr.as_mut_ptr(),
+                fib_param.dmac.as_ptr().cast_mut(),
+                6,
+            );
+            memcpy(
+                (*eth).src_addr.as_mut_ptr(),
+                fib_param.smac.as_ptr().cast_mut(),
+                6,
             );
 
-            // TODO: copy s/d mac,
-            // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
-            // call bpf_redirect(fib_param.ifindex,0) or
-            // ZLB_TXPORT.redirect(nat.ifindex, 0) {
-        }
-        BPF_FIB_LKUP_RET_BLACKHOLE | BPF_FIB_LKUP_RET_UNREACHABLE | BPF_FIB_LKUP_RET_PROHIBIT => {
-            action = XDP_DROP;
-            error!(ctx, "[redirect] can't fw, rc: {}", rc);
-        }
-        _ => {
-            if rc < 0 {
-                error!(ctx, "[redirect] invalid arg, rc: {}", rc);
-            } else {
-                // let it pass to the stack to handle it
-                info!(ctx, "[redirect] packet not fwd, rc: {}", rc);
+            // NOTE: aya embeds the bpf_redirect_map in map struct impl
+            match ZLB_TXPORT.redirect(fib_param.ifindex, 0) {
+                Ok(action) => action,
+                Err(e) => {
+                    error!(ctx, "[redirect] No tx port: {}, {}", fib_param.ifindex, e);
+                    bpf_redirect(fib_param.ifindex, 0) as xdp_action::Type
+                }
             }
-        }
-    };
+        };
 
-    if action >= XDP_PASS {
-        info!(ctx, "[in] ok action: {}", action);
-    } else {
-        error!(ctx, "[in] fail action: {}", action);
+        info!(ctx, "[redirect] action => {}", action);
+
+        return Ok(action);
     }
 
-    Ok(action)
+    if rc == BPF_FIB_LKUP_RET_BLACKHOLE as i64
+        || rc == BPF_FIB_LKUP_RET_UNREACHABLE as i64
+        || rc == BPF_FIB_LKUP_RET_PROHIBIT as i64
+    {
+        error!(ctx, "[redirect] can't fw, rc: {}", rc);
+        return Ok(XDP_DROP);
+    }
+    if rc < 0 {
+        error!(ctx, "[redirect] invalid arg, rc: {}", rc);
+    } else {
+        // let it pass to the stack to handle it
+        info!(ctx, "[redirect] packet not fwd, rc: {}", rc);
+    }
+
+    Ok(XDP_PASS)
 }
 
 #[repr(C)]
@@ -579,6 +598,8 @@ struct BpfFibLookUp {
     /// output
     h_vlan_proto: u16,
     h_vlan_tci: u16,
+    /// Optimization done for easy memcopy
+    /// mac: [u32; 3],
     smac: [u8; 6],
     dmac: [u8; 6],
 }
