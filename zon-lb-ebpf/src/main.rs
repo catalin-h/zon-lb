@@ -508,15 +508,15 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     };
 
     if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
-        // info!(
-        //     ctx,
-        //     "[redirect] forward: if: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
-        //     fib_param.ifindex,
-        //     fib_param.src[0].to_be(),
-        //     fib_param.dst[0].to_be(),
-        //     fib_param.dmac,
-        //     fib_param.smac,
-        // );
+        info!(
+            ctx,
+            "[redirect] forward: if: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
+            fib_param.ifindex,
+            fib_param.src[0].to_be(),
+            fib_param.dst[0].to_be(),
+            fib_param.dmac,
+            fib_param.smac,
+        );
 
         // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
 
@@ -525,12 +525,12 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             memcpy(
                 (*eth).dst_addr.as_mut_ptr(),
                 fib_param.dmac.as_ptr().cast_mut(),
-                6,
+                ETH_ALEN,
             );
             memcpy(
                 (*eth).src_addr.as_mut_ptr(),
                 fib_param.smac.as_ptr().cast_mut(),
-                6,
+                ETH_ALEN,
             );
 
             // NOTE: aya embeds the bpf_redirect_map in map struct impl
@@ -616,6 +616,8 @@ impl BpfFibLookUp {
         fib
     }
 }
+
+const ETH_ALEN: usize = 6;
 
 // Address families
 const AF_INET: u8 = 2; // Internet IP Protocol
