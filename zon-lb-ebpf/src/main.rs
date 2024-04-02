@@ -488,6 +488,10 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // the ifindex and the mac addresses info, which are saved in the conntrack map
     // on the ingress flow.
 
+    // TODO: sometimes the network stack to which the packet is redirected doesn't
+    // know how to forward the packet back to the LB. In this case we must do a full
+    // NAT for both L2/l3 src and dst addresses.
+
     let fib_param = unsafe {
         BpfFibLookUp::new_inet(
             (*ipv4hdr).tot_len.to_be(),
