@@ -491,6 +491,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // TODO: sometimes the network stack to which the packet is redirected doesn't
     // know how to forward the packet back to the LB. In this case we must do a full
     // NAT for both L2/l3 src and dst addresses.
+    // NOTE: using BPF_FIB_LOOKUP_OUTPUT doesn't work when reversing src and destination.
 
     let fib_param = unsafe {
         BpfFibLookUp::new_inet(
@@ -511,19 +512,21 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         )
     };
 
-    if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
-        info!(
-            ctx,
-            "[redirect] forward: if: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
-            fib_param.ifindex,
-            fib_param.src[0].to_be(),
-            fib_param.dst[0].to_be(),
-            fib_param.dmac,
-            fib_param.smac,
-        );
+    info!(
+        ctx,
+        "[redirect] output, lkp_ret: {}, fw if: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
+        rc,
+        fib_param.ifindex,
+        fib_param.src[0].to_be(),
+        fib_param.dst[0].to_be(),
+        fib_param.dmac,
+        fib_param.smac,
+    );
 
+    if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
         // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
 
+        // TODO: try use 3 u32 array
         let action = unsafe {
             let eth = ptr_at::<EthHdr>(&ctx, 0)?.cast_mut();
             memcpy(
