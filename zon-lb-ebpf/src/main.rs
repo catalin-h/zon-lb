@@ -490,8 +490,15 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // TODO: sometimes the network stack to which the packet is redirected doesn't
     // know how to forward the packet back to the LB. In this case we must do a full
-    // NAT for both L2/l3 src and dst addresses.
+    // NAT for both L2/L3 src and dst addresses.
     // NOTE: using BPF_FIB_LOOKUP_OUTPUT doesn't work when reversing src and destination.
+    // NOTE: in order to obtain the _right_ source IP for the network on which the packet
+    // is redirected must use a newer kernel (>=6.7) that implements 'source IP addr
+    // derivation via bpf_*_fib_lookup()' by passing flag BPF_FIB_LOOKUP_SRC:
+    // See:
+    // Extend the bpf_fib_lookup() helper by making it to return the source
+    // IPv4/IPv6 address if the BPF_FIB_LOOKUP_SRC flag is set.
+    // https://github.com/torvalds/linux/commit/dab4e1f06cabb6834de14264394ccab197007302
 
     let fib_param = unsafe {
         BpfFibLookUp::new_inet(
