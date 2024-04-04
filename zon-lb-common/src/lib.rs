@@ -7,6 +7,9 @@ pub const MAX_GROUPS: u32 = 64;
 pub const MAX_BACKENDS: u32 = 1024;
 pub const MAX_CONNTRACKS: u32 = 10; // tmp dev, actual = 1 << 15;
 
+// ARP table it should at least the number of supported backends
+pub const MAX_ARP_ENTRIES: u32 = MAX_BACKENDS;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ZonInfo {
@@ -254,5 +257,24 @@ pub struct NAT4Value {
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for NAT4Value {}
+
+/// Arp table entry
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArpEntry {
+    /// Interface index
+    pub ifindex: u32,
+    /// The dmac and smac combo
+    pub macs: [u32; 3],
+    /// Derived source IP combo for both IPv4/v6.
+    pub ip_src: [u32; 4],
+    /// The expiry timestamp
+    pub expiry: u32,
+    /// reserved
+    pub _reserved: u64,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for ArpEntry {}
 
 // TODO: add hasher function

@@ -25,8 +25,8 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4, EP6, MAX_BACKENDS,
-    MAX_CONNTRACKS, MAX_GROUPS,
+    ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4, EP6,
+    MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
 // TODO: change it to array to add:
@@ -74,6 +74,15 @@ type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
 // TODO: add ipv6 connection tracking
+
+type HMARP4 = HashMap<u32, ArpEntry>;
+/// ARP table for caching destination ip to smac/dmac and derived source ip.
+/// The derived source ip is the address used as source when redirecting the
+/// the packet.
+#[map]
+static mut ZLB_ARP4: HMARP4 = HMARP4::pinned(MAX_ARP_ENTRIES, 0);
+
+// TODO: add ipv6 arp table
 
 #[inline(always)]
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
@@ -487,8 +496,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // via configured interface on the ingress flow. In the egress flow we already have
     // the ifindex and the mac addresses info, which are saved in the conntrack map
     // on the ingress flow.
-
-    // TODO: sometimes the network stack to which the packet is redirected doesn't
+    // NOTE: sometimes the network stack to which the packet is redirected doesn't
     // know how to forward the packet back to the LB. In this case we must do a full
     // NAT for both L2/L3 src and dst addresses.
     // NOTE: using BPF_FIB_LOOKUP_OUTPUT doesn't work when reversing src and destination.
@@ -499,6 +507,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // Extend the bpf_fib_lookup() helper by making it to return the source
     // IPv4/IPv6 address if the BPF_FIB_LOOKUP_SRC flag is set.
     // https://github.com/torvalds/linux/commit/dab4e1f06cabb6834de14264394ccab197007302
+    // NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
+    // ifindex used to redirect the packet.
 
     let fib_param = unsafe {
         BpfFibLookUp::new_inet(
