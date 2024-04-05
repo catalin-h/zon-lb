@@ -270,8 +270,6 @@ pub struct ArpEntry {
     pub ip_src: [u32; 4],
     /// The expiry timestamp
     pub expiry: u32,
-    /// reserved
-    pub _reserved: u64,
 }
 
 #[cfg(feature = "user")]

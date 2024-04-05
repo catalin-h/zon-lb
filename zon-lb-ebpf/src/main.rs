@@ -8,7 +8,7 @@ use aya_bpf::{
         BPF_FIB_LKUP_RET_BLACKHOLE, BPF_FIB_LKUP_RET_PROHIBIT, BPF_FIB_LKUP_RET_SUCCESS,
         BPF_FIB_LKUP_RET_UNREACHABLE, BPF_F_NO_COMMON_LRU,
     },
-    helpers::{bpf_fib_lookup, bpf_redirect},
+    helpers::{bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect},
     macros::{map, xdp},
     maps::{Array, DevMap, HashMap, LruHashMap},
     memcpy,
@@ -72,8 +72,6 @@ type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 /// the conntrack listing will be affected as there are different LRU lists per CPU.
 #[map]
 static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
-
-// TODO: add ipv6 connection tracking
 
 type HMARP4 = HashMap<u32, ArpEntry>;
 /// ARP table for caching destination ip to smac/dmac and derived source ip.
@@ -362,6 +360,12 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     );
 
     let redirect = be.flags.contains(EPFlags::XDP_REDIRECT);
+
+    if redirect && be.flags.contains(EPFlags::XDP_TX) {
+        // TODO: check the arp table and update or insert
+        // smac/dmac and derived ip src and redirect ifindex
+    }
+
     // NOTE: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
     if !be.flags.contains(EPFlags::NO_CONNTRACK) {
@@ -488,7 +492,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_TX);
     }
 
-    // TODO: Try use:
+    // NOTE: Try use:
     // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
     // in order to compute the source/dest mac + vlan info from IP source,destination
     // before redirecting a packet to the backend. This feature is different from
@@ -569,6 +573,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
         info!(ctx, "[redirect] action => {}", action);
 
+        update_arp(ctx, fib_param);
+
         return Ok(action);
     }
 
@@ -587,6 +593,27 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     }
 
     Ok(XDP_PASS)
+}
+
+fn update_arp(ctx: &XdpContext, fib_param: BpfFibLookUp) {
+    let arp = ArpEntry {
+        ifindex: fib_param.ifindex,
+        macs: [0; 3],
+        ip_src: fib_param.src,
+        expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32,
+    };
+    match unsafe { ZLB_ARP4.insert(&fib_param.dst[0], &arp, 0) } {
+        Ok(()) => info!(
+            ctx,
+            "[arp] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
+            fib_param.dst[0],
+            fib_param.ifindex,
+            fib_param.smac,
+            fib_param.dmac,
+            fib_param.src[0].to_be(),
+        ),
+        Err(e) => error!(ctx, "[arp] fail to insert entry, err:{}", e),
+    };
 }
 
 #[repr(C)]
