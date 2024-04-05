@@ -602,6 +602,9 @@ fn update_arp(ctx: &XdpContext, fib_param: BpfFibLookUp) {
         ip_src: fib_param.src,
         expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32,
     };
+
+    // NOTE: after updating the value or key struct size must remove the pinned map
+    // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
     match unsafe { ZLB_ARP4.insert(&fib_param.dst[0], &arp, 0) } {
         Ok(()) => info!(
             ctx,
