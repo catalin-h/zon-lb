@@ -11,7 +11,6 @@ use aya_bpf::{
     helpers::{bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect},
     macros::{map, xdp},
     maps::{Array, DevMap, HashMap, LruHashMap},
-    memcpy,
     programs::XdpContext,
     BpfContext,
 };
@@ -540,8 +539,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         fib_param.ifindex,
         fib_param.src[0].to_be(),
         fib_param.dst[0].to_be(),
-        fib_param.dmac,
-        fib_param.smac,
+        fib_param.dest_mac(),
+        fib_param.src_mac(),
     );
 
     if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
@@ -549,17 +548,18 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
         // TODO: try use 3 u32 array
         let action = unsafe {
-            let eth = ptr_at::<EthHdr>(&ctx, 0)?.cast_mut();
-            memcpy(
-                (*eth).dst_addr.as_mut_ptr(),
-                fib_param.dmac.as_ptr().cast_mut(),
-                ETH_ALEN,
-            );
-            memcpy(
-                (*eth).src_addr.as_mut_ptr(),
-                fib_param.smac.as_ptr().cast_mut(),
-                ETH_ALEN,
-            );
+            let eth = ptr_at::<EthHdr>(&ctx, 0)?;
+            fib_param.fill_ethdr_macs(eth.cast_mut());
+            // memcpy(
+            //     (*eth).dst_addr.as_mut_ptr(),
+            //     fib_param.dmac.as_ptr().cast_mut(),
+            //     ETH_ALEN,
+            // );
+            // memcpy(
+            //     (*eth).src_addr.as_mut_ptr(),
+            //     fib_param.smac.as_ptr().cast_mut(),
+            //     ETH_ALEN,
+            // );
 
             // NOTE: aya embeds the bpf_redirect_map in map struct impl
             match ZLB_TXPORT.redirect(fib_param.ifindex, 0) {
@@ -611,8 +611,8 @@ fn update_arp(ctx: &XdpContext, fib_param: BpfFibLookUp) {
             "[arp] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
             fib_param.dst[0],
             fib_param.ifindex,
-            fib_param.smac,
-            fib_param.dmac,
+            fib_param.src_mac(),
+            fib_param.dest_mac(),
             fib_param.src[0].to_be(),
         ),
         Err(e) => error!(ctx, "[arp] fail to insert entry, err:{}", e),
@@ -653,9 +653,9 @@ struct BpfFibLookUp {
     h_vlan_proto: u16,
     h_vlan_tci: u16,
     /// Optimization done for easy memcopy
-    /// mac: [u32; 3],
-    smac: [u8; 6],
-    dmac: [u8; 6],
+    macs: [u32; 3],
+    //smac: [u8; 6],
+    //dmac: [u8; 6],
 }
 
 impl BpfFibLookUp {
@@ -668,6 +668,21 @@ impl BpfFibLookUp {
         fib.src[0] = src;
         fib.dst[0] = dst;
         fib
+    }
+
+    unsafe fn fill_ethdr_macs(&self, ethdr: *mut EthHdr) {
+        let mac = ethdr as *mut [u32; 3];
+        (*mac)[0] = self.macs[2] << 16 | self.macs[1] >> 16;
+        (*mac)[1] = self.macs[0] << 16 | self.macs[2] >> 16;
+        (*mac)[2] = self.macs[1] << 16 | self.macs[0] >> 16;
+    }
+
+    fn dest_mac(&self) -> [u8; ETH_ALEN] {
+        unsafe { *((self.macs.as_ptr() as *const [u8; ETH_ALEN]).offset(1)) }
+    }
+
+    fn src_mac(&self) -> [u8; ETH_ALEN] {
+        unsafe { *(self.macs.as_ptr() as *const [u8; ETH_ALEN]) }
     }
 }
 
