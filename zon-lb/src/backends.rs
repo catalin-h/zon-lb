@@ -217,6 +217,7 @@ impl EndPoint {
         let flags = flags | self.options.flags;
         BE {
             address,
+            src_ip: [0; 4],
             port: self.port.to_be(),
             proto: self.proto as u8,
             flags,

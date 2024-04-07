@@ -189,6 +189,9 @@ unsafe impl aya::Pod for INET {}
 pub struct BE {
     /// Holds both an IPv4 and IPv6 address (big-endian)
     pub address: INET,
+    /// Prefered source ip for this backend instead of the LB ip.
+    /// It should be used if it is different than 0.0.0.0 or ::0.
+    pub src_ip: [u32; 4],
     /// The backend listening port and it should be used
     /// only if PORT flag is set. The default value is 0
     // and it should be ignored regardless of the LB flag.
