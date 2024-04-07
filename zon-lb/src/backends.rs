@@ -9,6 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
 use log::{error, info, warn};
 use std::collections::{BTreeMap, BTreeSet, HashMap as StdHashMap};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Shl;
 use std::{fmt, net::IpAddr};
 use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX, INET};
@@ -583,8 +584,21 @@ impl Backend {
         Ok(gmap.group)
     }
 
+    fn be_src_ip_string(be: &BE) -> String {
+        if be.src_ip == [0; 4] {
+            return "lb-ip".to_string();
+        };
+
+        if be.flags.contains(EPFlags::IPV6) {
+            let bytes = be.src_ip.as_ptr() as *const [u8; 16];
+            unsafe { Ipv6Addr::from(*bytes).to_string() }
+        } else {
+            Ipv4Addr::from(be.src_ip[0]).to_string()
+        }
+    }
+
     fn build_backend_list(gid: u16, becount: u16) -> Result<InfoTable, anyhow::Error> {
-        let mut table = InfoTable::new(vec!["id", "endpoint", "options"]);
+        let mut table = InfoTable::new(vec!["id", "endpoint", "options", "src_ip"]);
         let backends = Self::backends()?;
 
         for index in 0..becount {
@@ -596,6 +610,7 @@ impl Backend {
                         index.to_string(),
                         ep.to_string(),
                         ep.options.to_string(),
+                        Self::be_src_ip_string(&be),
                     ]);
                 }
                 _ => {}
@@ -606,8 +621,14 @@ impl Backend {
     }
 
     fn list_all() -> Result<(), anyhow::Error> {
-        let mut table =
-            InfoTable::new(vec!["gid:id", "if / lb_endpoint", "", "backend", "options"]);
+        let mut table = InfoTable::new(vec![
+            "gid:id",
+            "if / lb_endpoint",
+            "src_ip",
+            "",
+            "backend",
+            "options",
+        ]);
         let backends = Self::backends()?;
         let mut cache: StdHashMap<u16, String> = StdHashMap::new();
 
@@ -624,6 +645,7 @@ impl Backend {
             table.push_row(vec![
                 format!("{}:{}", key.gid, key.index),
                 ep_str.to_string(),
+                Self::be_src_ip_string(&be),
                 "<->".to_string(),
                 bep.to_string(),
                 bep.options.to_string(),
