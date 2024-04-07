@@ -4,7 +4,7 @@ use crate::helpers::{
 };
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
-use crate::{EpOptions, ToMapName};
+use crate::{options, EpOptions, ToMapName};
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
 use log::{error, info, warn};
@@ -215,9 +215,23 @@ impl EndPoint {
             IpAddr::V6(ip) => (INET::from(ip.octets()), EPFlags::IPV6),
         };
         let flags = flags | self.options.flags;
+        let src_ip = match self.options.props.get(options::SRC_IP) {
+            Some(ips) => match ips.parse::<IpAddr>() {
+                Ok(ip) => match ip {
+                    IpAddr::V4(ip) => [ip.into(), 0, 0, 0],
+                    IpAddr::V6(ipv6) => unsafe { *(ipv6.octets().as_ptr() as *const [u32; 4]) },
+                },
+                Err(e) => {
+                    error!("[backend] invalid source ip '{}', {}", ips, e);
+                    [0_u32; 4]
+                }
+            },
+            None => [0_u32; 4],
+        };
+
         BE {
             address,
-            src_ip: [0; 4],
+            src_ip,
             port: self.port.to_be(),
             proto: self.proto as u8,
             flags,

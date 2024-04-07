@@ -21,7 +21,7 @@ use log::{info, warn};
 use logging::init_log;
 use prog::*;
 use protocols::Protocol;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, net::IpAddr};
 use tokio::signal;
 use zon_lb_common::EPFlags;
 
@@ -80,11 +80,13 @@ struct ProgOpt {
     action: ProgAction,
 }
 
+// TODO: move options to own source
 mod options {
     pub const DISABLE: &str = "disable";
     pub const REDIRECT: &str = "redirect";
     pub const TX: &str = "tx";
     pub const NO_NAT: &str = "no_nat";
+    pub const SRC_IP: &str = "src_ip";
 }
 
 #[derive(Clone)]
@@ -159,7 +161,7 @@ impl EpOptions {
                 Some(kv) => kv,
             };
             match key {
-                "redirect" => match helpers::ifindex(value) {
+                options::REDIRECT => match helpers::ifindex(value) {
                     Ok(_) => {
                         flags.insert(EPFlags::XDP_REDIRECT);
                         props.insert(key.to_string(), value.to_string());
@@ -167,6 +169,12 @@ impl EpOptions {
                     Err(_) => {
                         log::error!("No '{}' interface, see option '{}'", value, arg)
                     }
+                },
+                options::SRC_IP => match value.parse::<IpAddr>() {
+                    Ok(_) => {
+                        props.insert(key.to_string(), value.to_string());
+                    }
+                    Err(e) => log::error!("Invalid src_ip '{}', {}", value, e),
                 },
                 _ => log::error!("Unknown key '{}' in option '{}'", key, arg),
             };
