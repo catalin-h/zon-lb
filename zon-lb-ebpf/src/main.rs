@@ -604,7 +604,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 fn update_arp(ctx: &XdpContext, fib_param: BpfFibLookUp) {
     let arp = ArpEntry {
         ifindex: fib_param.ifindex,
-        macs: fib_param.macs,
+        macs: fib_param.ethdr_macs(),
         ip_src: fib_param.src,
         expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32,
     };
@@ -681,6 +681,14 @@ impl BpfFibLookUp {
         (*mac)[0] = self.macs[2] << 16 | self.macs[1] >> 16;
         (*mac)[1] = self.macs[0] << 16 | self.macs[2] >> 16;
         (*mac)[2] = self.macs[1] << 16 | self.macs[0] >> 16;
+    }
+
+    fn ethdr_macs(&self) -> [u32; 3] {
+        [
+            self.macs[2] << 16 | self.macs[1] >> 16,
+            self.macs[0] << 16 | self.macs[2] >> 16,
+            self.macs[1] << 16 | self.macs[0] >> 16,
+        ]
     }
 
     fn dest_mac(&self) -> [u8; ETH_ALEN] {
