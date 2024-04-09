@@ -604,7 +604,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 fn update_arp(ctx: &XdpContext, fib_param: BpfFibLookUp) {
     let arp = ArpEntry {
         ifindex: fib_param.ifindex,
-        macs: [0; 3],
+        macs: fib_param.macs,
         ip_src: fib_param.src,
         expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32,
     };
