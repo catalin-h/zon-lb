@@ -530,6 +530,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
     // ifindex used to redirect the packet.
 
+    return redirect_ipv4(ctx, ipv4hdr);
+
     let fib_param = unsafe {
         BpfFibLookUp::new_inet(
             (*ipv4hdr).tot_len.to_be(),
@@ -596,6 +598,104 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     } else {
         // let it pass to the stack to handle it
         info!(ctx, "[redirect] packet not fwd, rc: {}", rc);
+    }
+
+    Ok(XDP_PASS)
+}
+
+fn redirect_txport(ctx: &XdpContext, ifindex: u32) -> xdp_action::Type {
+    // NOTE: aya embeds the bpf_redirect_map in map struct impl
+    match ZLB_TXPORT.redirect(ifindex, 0) {
+        Ok(action) => action,
+        Err(e) => {
+            error!(ctx, "[redirect] No tx port: {}, {}", ifindex, e);
+            unsafe { bpf_redirect(ifindex, 0) as xdp_action::Type }
+        }
+    }
+}
+
+fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
+    let dest_ip = unsafe { (*ipv4hdr).dst_addr };
+
+    if let Some(&entry) = unsafe { ZLB_ARP4.get(&dest_ip) } {
+        // TODO: check expiry before using this entry
+
+        let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+
+        // NOTE: look like aya can't convert the '*eth = entry.macs' into
+        // a 3 load instructions block that doesn't panic the bpf verifier
+        // with 'invalid access to packet'. The same statement when modifying
+        // stack data passes the verifier check.
+        unsafe {
+            (*eth)[0] = entry.macs[0];
+            (*eth)[1] = entry.macs[1];
+            (*eth)[2] = entry.macs[2];
+        };
+
+        let action = redirect_txport(ctx, entry.ifindex);
+        return Ok(action);
+    }
+
+    let fib_param = unsafe {
+        BpfFibLookUp::new_inet(
+            (*ipv4hdr).tot_len.to_be(),
+            (*ctx.ctx).ingress_ifindex,
+            (*ipv4hdr).tos as u32,
+            (*ipv4hdr).src_addr,
+            dest_ip,
+        )
+    };
+
+    let p_fib_param = &fib_param as *const BpfFibLookUp as *mut bpf_fib_lookup_param_t;
+    let rc = unsafe {
+        bpf_fib_lookup(
+            ctx.as_ptr(),
+            p_fib_param,
+            mem::size_of::<BpfFibLookUp>() as i32,
+            0,
+        )
+    };
+
+    info!(
+        ctx,
+        "[redirect] output, lkp_ret: {}, fw if: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
+        rc,
+        fib_param.ifindex,
+        fib_param.src[0].to_be(),
+        fib_param.dst[0].to_be(),
+        fib_param.dest_mac(),
+        fib_param.src_mac(),
+    );
+
+    if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
+        // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
+
+        let action = unsafe {
+            let eth = ptr_at::<EthHdr>(&ctx, 0)?;
+            fib_param.fill_ethdr_macs(eth.cast_mut());
+            redirect_txport(ctx, fib_param.ifindex)
+        };
+
+        info!(ctx, "[redirect] action => {}", action);
+
+        update_arp(ctx, fib_param);
+
+        return Ok(action);
+    }
+
+    if rc == BPF_FIB_LKUP_RET_BLACKHOLE as i64
+        || rc == BPF_FIB_LKUP_RET_UNREACHABLE as i64
+        || rc == BPF_FIB_LKUP_RET_PROHIBIT as i64
+    {
+        error!(ctx, "[redirect] can't fw, fib rc: {}", rc);
+        return Ok(XDP_DROP);
+    }
+
+    if rc < 0 {
+        error!(ctx, "[redirect] invalid arg, fib rc: {}", rc);
+    } else {
+        // let it pass to the stack to handle it
+        info!(ctx, "[redirect] packet not fwd, fib rc: {}", rc);
     }
 
     Ok(XDP_PASS)
