@@ -563,20 +563,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
         // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
 
-        // TODO: try use 3 u32 array
         let action = unsafe {
             let eth = ptr_at::<EthHdr>(&ctx, 0)?;
             fib_param.fill_ethdr_macs(eth.cast_mut());
-            // memcpy(
-            //     (*eth).dst_addr.as_mut_ptr(),
-            //     fib_param.dmac.as_ptr().cast_mut(),
-            //     ETH_ALEN,
-            // );
-            // memcpy(
-            //     (*eth).src_addr.as_mut_ptr(),
-            //     fib_param.smac.as_ptr().cast_mut(),
-            //     ETH_ALEN,
-            // );
 
             // NOTE: aya embeds the bpf_redirect_map in map struct impl
             match ZLB_TXPORT.redirect(fib_param.ifindex, 0) {
