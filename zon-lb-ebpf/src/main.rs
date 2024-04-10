@@ -618,22 +618,26 @@ fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
     let dest_ip = unsafe { (*ipv4hdr).dst_addr };
 
     if let Some(&entry) = unsafe { ZLB_ARP4.get(&dest_ip) } {
-        // TODO: check expiry before using this entry
+        // NOTE: check expiry before using this entry
+        // TODO: check performance
+        let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
 
-        let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+        if now - entry.expiry < 600 {
+            let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
 
-        // NOTE: look like aya can't convert the '*eth = entry.macs' into
-        // a 3 load instructions block that doesn't panic the bpf verifier
-        // with 'invalid access to packet'. The same statement when modifying
-        // stack data passes the verifier check.
-        unsafe {
-            (*eth)[0] = entry.macs[0];
-            (*eth)[1] = entry.macs[1];
-            (*eth)[2] = entry.macs[2];
-        };
+            // NOTE: look like aya can't convert the '*eth = entry.macs' into
+            // a 3 load instructions block that doesn't panic the bpf verifier
+            // with 'invalid access to packet'. The same statement when modifying
+            // stack data passes the verifier check.
+            unsafe {
+                (*eth)[0] = entry.macs[0];
+                (*eth)[1] = entry.macs[1];
+                (*eth)[2] = entry.macs[2];
+            };
 
-        let action = redirect_txport(ctx, entry.ifindex);
-        return Ok(action);
+            let action = redirect_txport(ctx, entry.ifindex);
+            return Ok(action);
+        }
     }
 
     let fib_param = unsafe {
