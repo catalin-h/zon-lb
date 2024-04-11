@@ -225,7 +225,7 @@ impl EndPoint {
         let src_ip = match self.options.props.get(options::SRC_IP) {
             Some(ips) => match ips.parse::<IpAddr>() {
                 Ok(ip) => match ip {
-                    IpAddr::V4(ip) => [ip.into(), 0, 0, 0],
+                    IpAddr::V4(ip) => [u32::from(ip).to_be(), 0, 0, 0],
                     IpAddr::V6(ipv6) => unsafe { *(ipv6.octets().as_ptr() as *const [u32; 4]) },
                 },
                 Err(e) => {
@@ -599,7 +599,7 @@ impl Backend {
             let bytes = be.src_ip.as_ptr() as *const [u8; 16];
             unsafe { Ipv6Addr::from(*bytes).to_string() }
         } else {
-            Ipv4Addr::from(be.src_ip[0]).to_string()
+            Ipv4Addr::from(be.src_ip[0].to_be()).to_string()
         }
     }
 
