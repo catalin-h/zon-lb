@@ -132,13 +132,19 @@ impl ToEndPoint for BE {
             self.ipv6()
         };
 
+        let mut props = BTreeMap::new();
+
+        if self.src_ip != [0; 4] {
+            props.insert(options::SRC_IP.to_string(), Backend::be_src_ip_string(self));
+        };
+
         EndPoint {
             ipaddr,
             proto: self.proto.into(),
             port: u16::from_be(self.port),
             options: EpOptions {
                 flags: self.flags,
-                props: BTreeMap::from([]),
+                props,
             },
         }
     }
