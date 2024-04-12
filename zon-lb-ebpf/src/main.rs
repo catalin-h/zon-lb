@@ -636,6 +636,11 @@ fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
             };
 
             let action = redirect_txport(ctx, entry.ifindex);
+
+            info!(
+                ctx,
+                "[redirect] [arp-cache] oif: {} action => {}", entry.ifindex, action
+            );
             return Ok(action);
         }
     }
