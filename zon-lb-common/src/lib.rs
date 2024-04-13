@@ -256,6 +256,10 @@ pub struct NAT4Value {
     /// for e.g. pass to net stack to redirect it to
     /// another interface.
     pub flags: EPFlags,
+    /// The original LB IP when the NAT changed this address also.
+    /// On reply flow the destination IP must be replaced with this
+    /// address if it's different than the current destination ip.
+    pub lb_ip: u32,
 }
 
 #[cfg(feature = "user")]

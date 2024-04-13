@@ -186,21 +186,37 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_DROP);
         }
 
+        let full_nat = nat.lb_ip != dst_addr;
+        let diff_src_ip = src_addr != nat.ip_src;
+
         // NOTE: optimization: since the destination IP (LB)
         // 'remains' in the csum we can recompute it as if
         // only the source IP changes.
         unsafe {
             let hdr = ipv4hdr.cast_mut();
             (*hdr).dst_addr = nat.ip_src;
-            (*hdr).src_addr = dst_addr;
 
-            // NOTE: optimization: skip csum computation if the addresses
-            // don't actually change.
-            if src_addr != nat.ip_src {
-                //csum = csum_update_u32(src_addr, dst_addr, csum);
-                //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
-                let csum = csum_update_u32(src_addr, nat.ip_src, check);
+            if full_nat {
+                // NOTE: both src and dest IPs must be translated
+
+                (*hdr).src_addr = nat.lb_ip;
+                (*hdr).dst_addr = nat.ip_src;
+
+                let csum = csum_update_u32(src_addr, nat.lb_ip, check);
+                let csum = csum_update_u32(dst_addr, nat.ip_src, csum);
+
                 (*hdr).check = !csum_fold_32_to_16(csum);
+            } else {
+                (*hdr).src_addr = dst_addr;
+
+                // NOTE: optimization: skip csum computation if the addresses
+                // don't actually change.
+                if diff_src_ip {
+                    //csum = csum_update_u32(src_addr, dst_addr, csum);
+                    //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
+                    let csum = csum_update_u32(src_addr, nat.ip_src, check);
+                    (*hdr).check = !csum_fold_32_to_16(csum);
+                }
             }
         }
 
@@ -225,10 +241,14 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
                 let mut tcs = !(*tcphdr).check as u32;
 
-                // The source ip is part of the TCP pseudo header
-                if src_addr != nat.ip_src {
+                // The source and destination IPs are part of the TCP pseudo header
+                if full_nat {
+                    tcs = csum_update_u32(src_addr, nat.lb_ip, tcs);
+                    tcs = csum_update_u32(dst_addr, nat.ip_src, tcs);
+                } else if diff_src_ip {
                     tcs = csum_update_u32(src_addr, nat.ip_src, tcs);
                 }
+
                 // The destination port is part of the TCP header
                 tcs = csum_update_u32(src_port as u32, nat.port_lb, tcs);
                 (*tcphdr).check = !csum_fold_32_to_16(tcs);
@@ -249,10 +269,14 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
                 let mut ucs = !(*udphdr).check as u32;
 
-                // The source ip is part of the pseudo header
-                if src_addr != nat.ip_src {
+                // The source and destination IPs are part of the UDP pseudo header
+                if full_nat {
+                    ucs = csum_update_u32(src_addr, nat.lb_ip, ucs);
+                    ucs = csum_update_u32(dst_addr, nat.ip_src, ucs);
+                } else if diff_src_ip {
                     ucs = csum_update_u32(src_addr, nat.ip_src, ucs);
                 }
+
                 // The destination port is part of the header
                 ucs = csum_update_u32(src_port as u32, nat.port_lb, ucs);
                 (*udphdr).check = !csum_fold_32_to_16(ucs);
@@ -412,6 +436,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 ifindex: if_index,
                 mac_addresses,
                 flags: be.flags,
+                lb_ip: dst_addr, // save the original LB IP
             };
 
             // TBD: use lock or atomic update ?
