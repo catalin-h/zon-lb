@@ -724,7 +724,7 @@ fn update_arp(ctx: &XdpContext, fib_param: BpfFibLookUp) {
         Ok(()) => info!(
             ctx,
             "[arp] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
-            fib_param.dst[0],
+            fib_param.dst[0].to_be(),
             fib_param.ifindex,
             fib_param.src_mac(),
             fib_param.dest_mac(),
