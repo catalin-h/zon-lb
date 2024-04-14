@@ -1,0 +1,56 @@
+* Test zon-lb between two custom network namespace via veth pairs
+
+** Zon-lb features:
+
+- XDP redirect on veth
+- Connection tracking
+- FIB lookup
+- ARP caching
+- full NAT (src/dst L2/L3 addresses change)
+
+** Debugging ignored TCP SYN packet redirected to veth but received by pair veth L2
+
+Note:
+
+- This problem prevents the 3-way TCP handshake as the SYN packet is ignored and no ACK+SYN
+packet is replyed back.
+- This isn't a network route problem as the ICMP reply works and the source IP is reachable
+from the netns. This also means that the packet reaches L3 and the IP inet check sum is computed correctly.
+- The =ip -s a= command show that the veth pair received w/o errors the SYN packet but also
+shows that the endpoint doesn't respond back.
+
+*** Using the ethtool
+
+The =ethtool -S veth<id>= will show the xdp statistics and they show that there are no L2
+xmit or rx issues or regarding the received xdp frames.
+
+#+begin_src
+# sudo ethtool -S veth2
+NIC statistics:
+     peer_ifindex: 2
+     rx_queue_0_xdp_packets: 450
+     rx_queue_0_xdp_bytes: 28292
+     rx_queue_0_drops: 0
+     rx_queue_0_xdp_redirect: 187
+     rx_queue_0_xdp_drops: 0
+     rx_queue_0_xdp_tx: 0
+     rx_queue_0_xdp_tx_errors: 0
+     tx_queue_0_xdp_xmit: 720
+     tx_queue_0_xdp_xmit_errors: 0
+     
+# ethtool -S veth3
+NIC statistics:
+     peer_ifindex: 17
+     rx_queue_0_xdp_packets: 1596
+     rx_queue_0_xdp_bytes: 132827
+     rx_queue_0_drops: 0
+     rx_queue_0_xdp_redirect: 0
+     rx_queue_0_xdp_drops: 0
+     rx_queue_0_xdp_tx: 0
+     rx_queue_0_xdp_tx_errors: 0
+     tx_queue_0_xdp_xmit: 0
+     tx_queue_0_xdp_xmit_errors: 0
+#+end_src
+  
+** References
+
