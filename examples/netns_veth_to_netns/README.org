@@ -10,10 +10,12 @@
 
 ** Debugging ignored TCP SYN packet redirected to veth but received by pair veth L2
 
-Note:
+Notes:
 
 - This problem prevents the 3-way TCP handshake as the SYN packet is ignored and no ACK+SYN
 packet is replyed back.
+- The L4 UDP communication is also affected. For IPv4 the UDP the inet csum is optional so
+the packet drop happens during L4 handling.
 - This isn't a network route problem as the ICMP reply works and the source IP is reachable
 from the netns. This also means that the packet reaches L3 and the IP inet check sum is computed correctly.
 - The =ip -s a= command show that the veth pair received w/o errors the SYN packet but also
@@ -51,6 +53,11 @@ NIC statistics:
      tx_queue_0_xdp_xmit: 0
      tx_queue_0_xdp_xmit_errors: 0
 #+end_src
-  
+
+*** Using bpftrace tcpdrop-bpfcc
+
+The available tracepoints (kfree_skb, consume_skb) doesn't seem to catch TCP packets.
+ICMP packets seem to be freed by consume_skb.
+
 ** References
 
