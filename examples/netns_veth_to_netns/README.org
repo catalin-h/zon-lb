@@ -59,5 +59,36 @@ NIC statistics:
 The available tracepoints (kfree_skb, consume_skb) doesn't seem to catch TCP packets.
 ICMP packets seem to be freed by consume_skb.
 
+*** Using bpftrace custom script
+
+**** Step 1: veth driver trace
+
+Find the functions called:
+
+#+begin_src
+# bpftrace -e 'kprobe:veth_* { @cnt[probe]=count(); }'
+Attaching 45 probes...
+@cnt[kprobe:veth_xmit]: 3
+@cnt[kprobe:veth_xdp_xmit]: 3
+@cnt[kprobe:veth_xdp_rcv_skb]: 3
+@cnt[kprobe:veth_xdp_get]: 3
+@cnt[kprobe:veth_xdp_rcv_bulk_skb.constprop.0]: 3
+@cnt[kprobe:veth_ndo_xdp_xmit]: 3
+@cnt[kprobe:veth_xdp_rcv_one]: 3
+@cnt[kprobe:veth_xdp_rcv.constprop.0]: 6
+@cnt[kprobe:veth_poll]: 8
+@cnt[kprobe:veth_get_iflink]: 195
+@cnt[kprobe:veth_get_link_net]: 195
+@cnt[kprobe:veth_get_stats64]: 403
+@cnt[kprobe:veth_stats_rx]: 744
+#+end_src
+
+Attach probe to receive functions and indentify which one is used to handle the redirect
+
+#+begin_src
+
+#+end_src
+
+
 ** References
 
