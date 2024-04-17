@@ -1,0 +1,217 @@
+#!/usr/bin/env bpftrace
+/*
+ * veth redirect - shows veth received packets
+ *
+ * Adapted for veth after bpftrace tcpdrop.bt.
+ */
+
+#ifndef BPFTRACE_HAVE_BTF
+#include <linux/socket.h>
+#include <net/sock.h>
+#else
+#include <sys/socket.h>
+#endif
+
+BEGIN
+{
+  printf("Tracing veth rx packets. Ctrl-C to end.\n");
+
+  @tcp_states[1] = "ESTABLISHED";
+  @tcp_states[2] = "SYN_SENT";
+  @tcp_states[3] = "SYN_RECV";
+  @tcp_states[4] = "FIN_WAIT1";
+  @tcp_states[5] = "FIN_WAIT2";
+  @tcp_states[6] = "TIME_WAIT";
+  @tcp_states[7] = "CLOSE";
+  @tcp_states[8] = "CLOSE_WAIT";
+  @tcp_states[9] = "LAST_ACK";
+  @tcp_states[10] = "LISTEN";
+  @tcp_states[11] = "CLOSING";
+  @tcp_states[12] = "NEW_SYN_RECV";
+}
+
+kprobe:napi_gro_receive
+{
+  $napi = (struct napi_struct *)arg0;
+  $ifname = $napi->dev->name;
+
+  $skb = (struct sk_buff *)arg1;
+  $sk = ((struct sock *) $skb->sk);
+  $inet_family = $sk->__sk_common.skc_family;
+
+  if ($inet_family == AF_INET || $inet_family == AF_INET6) {
+  if ($inet_family == AF_INET) {
+    $daddr = ntop($sk->__sk_common.skc_daddr);
+    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+  } else {
+    $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+  }
+
+  $lport = $sk->__sk_common.skc_num;
+  $dport = $sk->__sk_common.skc_dport;
+
+  // Destination port is big endian, it must be flipped
+  $dport = bswap($dport);
+
+  $state = $sk->__sk_common.skc_state;
+  $statestr = @tcp_states[$state];
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s ", pid, comm);
+  printf("%s %-24s %19s:%-6d %19s:%-6d %-10s\n", $ifname, probe, $saddr, $lport, $daddr, $dport, $statestr);
+  }
+}
+
+kprobe:__xdp_build_skb_from_frame
+{
+  $ndev = (struct net_device *)arg2;
+  $ifname = $ndev->name;
+  // TODO: print first frame pointer and trace it later in rx functions
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s %s %-24s\n", pid, comm, $ifname, probe);
+  //printf("%s\n", kstack);
+}
+
+kretprobe:__xdp_build_skb_from_frame
+{
+  $skb = (struct sk_buff *)retval;
+  $sk = ((struct sock *) $skb->sk);
+  $inet_family = $sk->__sk_common.skc_family;
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s ", pid, comm);
+
+  if ($inet_family != AF_INET && $inet_family != AF_INET6) {
+    printf("%-24s unknown inet_family: %d , reval: %p\n",
+		probe, $inet_family, retval);
+    return;
+  }
+
+  if ($inet_family == AF_INET) {
+    $daddr = ntop($sk->__sk_common.skc_daddr);
+    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+  } else {
+    $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+  }
+
+  $lport = $sk->__sk_common.skc_num;
+  $dport = $sk->__sk_common.skc_dport;
+
+  // Destination port is big endian, it must be flipped
+  $dport = bswap($dport);
+
+  $state = $sk->__sk_common.skc_state;
+  $statestr = @tcp_states[$state];
+
+  printf("%-24s %19s:%-6d %19s:%-6d %-10s\n", probe, $saddr, $lport, $daddr, $dport, $statestr);
+}
+
+kprobe:xdp_return_frame,
+{
+  // TODO: print first frame ptr
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s %-24s\n", pid, comm, probe);
+  printf("%s\n", kstack);
+}
+
+kprobe:veth_xdp_rcv.constprop.0,
+kprobe:veth_xdp_rcv_bulk_skb.constprop.0,
+kprobe:veth_xdp_rcv_one
+{
+  $rq = (struct veth_rq *)arg0;
+  $ifname = $rq->dev->name;
+  // TODO: print first frame ptr
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s %s %-24s\n", pid, comm, $ifname, probe);
+  //printf("%s\n", kstack);
+}
+
+kprobe:veth_xdp_xmit
+{
+  $ndev = (struct net_device *)arg0;
+  $ifname = $ndev->name;
+  $ndotx = (uint8)arg4;
+  // TODO: print first frame pointer and trace it later in rx functions
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s %s %-24s ndtx=%d\n", pid, comm, $ifname, probe, $ndotx);
+  //printf("%s\n", kstack);
+}
+
+kprobe:veth_xmit
+{
+  $skb = (struct sk_buff *)arg0;
+  $sk = ((struct sock *) $skb->sk);
+  $inet_family = $sk->__sk_common.skc_family;
+
+  $ndev = (struct net_device *)arg1;
+  $ifname = $ndev->name;
+
+  if ($inet_family == AF_INET || $inet_family == AF_INET6) {
+  if ($inet_family == AF_INET) {
+    $daddr = ntop($sk->__sk_common.skc_daddr);
+    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+  } else {
+    $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+  }
+
+  $lport = $sk->__sk_common.skc_num;
+  $dport = $sk->__sk_common.skc_dport;
+
+  // Destination port is big endian, it must be flipped
+  $dport = bswap($dport);
+
+  $state = $sk->__sk_common.skc_state;
+  $statestr = @tcp_states[$state];
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s ", pid, comm);
+  printf("%s %-24s %19s:%-6d %19s:%-6d %-10s\n", $ifname, probe, $saddr, $lport, $daddr, $dport, $statestr);
+  //printf("%s\n", kstack);
+  }
+}
+
+kprobe:veth_xdp_rcv_skb
+{
+  $rq = (struct veth_rq *)arg0;
+  $ifname = $rq->dev->name;
+
+  $skb = (struct sk_buff *)arg1;
+  $sk = ((struct sock *) $skb->sk);
+  $inet_family = $sk->__sk_common.skc_family;
+
+  if ($inet_family == AF_INET || $inet_family == AF_INET6) {
+  if ($inet_family == AF_INET) {
+    $daddr = ntop($sk->__sk_common.skc_daddr);
+    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+  } else {
+    $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+  }
+
+  $lport = $sk->__sk_common.skc_num;
+  $dport = $sk->__sk_common.skc_dport;
+
+  // Destination port is big endian, it must be flipped
+  $dport = bswap($dport);
+
+  $state = $sk->__sk_common.skc_state;
+  $statestr = @tcp_states[$state];
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s ", pid, comm);
+  printf("%s %-24s %19s:%-6d %19s:%-6d %-10s\n", $ifname, probe, $saddr, $lport, $daddr, $dport, $statestr);
+  //printf("%s\n", kstack);
+  }
+}
+
+END
+{
+  clear(@tcp_states);
+}
