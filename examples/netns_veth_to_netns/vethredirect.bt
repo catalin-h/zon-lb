@@ -35,6 +35,124 @@ BEGIN
 // Note: the net namespace is retrieved from the
 // skb->dev->nd_net; see ip_local_deliver
 
+tracepoint:tcp:tcp_bad_csum
+{
+  $skb = (struct sk_buff *)args->skbaddr;
+  $sk = ((struct sock *) $skb->sk);
+  $ifname = $skb->dev->name;
+
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  $inet_family = ((struct sockaddr_in *)args->saddr)->sin_family;
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s %s ", pid, comm, $ifname);
+
+  if ($inet_family != AF_INET && $inet_family != AF_INET6) {
+    printf("%-24s unknown inet_family: %d \n", probe, $inet_family);
+    return;
+  }
+
+ // if ($inet_family == AF_INET) {
+      $inet = (struct sockaddr_in *)args->daddr;
+      $daddr = ntop($inet->sin_addr.s_addr);
+      $dport = bswap($inet->sin_port);
+
+      $inet = (struct sockaddr_in *)args->saddr;
+      $saddr = ntop($inet->sin_addr.s_addr);
+      $sport = bswap($inet->sin_port);
+ // } else {
+ // }
+
+  $state = $sk->__sk_common.skc_state;
+  $statestr = @tcp_states[$state];
+
+  printf("%s %s:%-6d %s:%-6d %-10s\n", probe, $saddr, $sport, $daddr, $dport, $statestr);
+  //printf("%s\n", kstack);
+}
+
+kprobe:kfree_skb_reason
+{
+  $skb = (struct sk_buff *)arg0;
+  $sk = ((struct sock *) $skb->sk);
+  $inet_family = $sk->__sk_common.skc_family;
+  $ifname = $skb->dev->name;
+
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s %s %-24s reason: %d ",
+	pid, comm, $ifname, probe, arg1);
+
+  if ($inet_family != AF_INET && $inet_family != AF_INET6) {
+    printf(" unknown inet_family: %d \n", $inet_family);
+    return;
+  }
+
+  if ($inet_family == AF_INET) {
+    $daddr = ntop($sk->__sk_common.skc_daddr);
+    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+  } else {
+    $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+  }
+
+  $lport = $sk->__sk_common.skc_num;
+  $dport = $sk->__sk_common.skc_dport;
+
+  // Destination port is big endian, it must be flipped
+  $dport = bswap($dport);
+
+  $state = $sk->__sk_common.skc_state;
+  $statestr = @tcp_states[$state];
+
+  printf("%19s:%-6d %19s:%-6d %-10s\n",
+	$saddr, $lport, $daddr, $dport, $statestr);
+}
+
+kprobe:tcp_v4_rcv
+{
+  $skb = (struct sk_buff *)arg0;
+  $sk = ((struct sock *) $skb->sk);
+  $inet_family = $sk->__sk_common.skc_family;
+  $ifname = $skb->dev->name;
+
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  time("%H:%M:%S ");
+  printf("%-8d %-16s %s %-24s ", pid, comm, $ifname, probe);
+
+  if ($inet_family != AF_INET && $inet_family != AF_INET6) {
+    printf("unknown inet_family: %d \n", $inet_family);
+    return;
+  }
+
+  if ($inet_family == AF_INET) {
+    $daddr = ntop($sk->__sk_common.skc_daddr);
+    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+  } else {
+    $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+  }
+
+  $lport = $sk->__sk_common.skc_num;
+  $dport = $sk->__sk_common.skc_dport;
+
+  // Destination port is big endian, it must be flipped
+  $dport = bswap($dport);
+
+  $state = $sk->__sk_common.skc_state;
+  $statestr = @tcp_states[$state];
+
+  printf("%-24s %19s:%-6d %19s:%-6d %-10s\n",
+	probe, $saddr, $lport, $daddr, $dport, $statestr);
+}
  
 kprobe:ip_protocol_deliver_rcu
 {
@@ -49,18 +167,24 @@ kprobe:ip_protocol_deliver_rcu
   }
 
   time("%H:%M:%S ");
-  printf("%-8d %-16s %s ", pid, comm, $ifname);
+  printf("%-8d %-16s %s %-24s ", pid, comm, $ifname, probe);
 
-  if ($ethertype != ETH_P_IP && $ethertype != ETH_P_IPV6) {
-    printf("%-24s unknown ethertype: %d , proto: %d\n",
-		probe, $ethertype, $proto);
+  if ( $ethertype != ETH_P_IP && $ethertype != ETH_P_IPV6 ) {
+    printf("unknown ethertype: %p , proto: %d \n", $ethertype, $proto);
+    return;
+  }
+
+  if ( $skb->network_header > 16 ) {
+    printf("ethertype: %p  no net hdr set \n", $ethertype);
     return;
   }
 
   if ($ethertype == ETH_P_IP) {
     $iphdr4 = (struct iphdr *)($skb->data + $skb->network_header);
-    $daddr = ntop( $iphdr4->daddr);
-    $saddr = ntop($iphdr4->saddr);
+      $daddr = ntop($iphdr4->daddr);
+      $saddr = ntop($iphdr4->saddr);
+      //$daddr = ntop($sk->__sk_common.skc_daddr);
+      //$saddr = ntop($sk->__sk_common.skc_rcv_saddr);
   } else {
     $iphdr6 = (struct ipv6hdr *)($skb->data + $skb->network_header);
     $daddr  = ntop($iphdr6->daddr.in6_u.u6_addr8);
