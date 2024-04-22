@@ -20,6 +20,8 @@ the packet drop happens during L4 handling.
 from the netns. This also means that the packet reaches L3 and the IP inet check sum is computed correctly.
 - The =ip -s a= command show that the veth pair received w/o errors the SYN packet but also
 shows that the endpoint doesn't respond back.
+- The veth pair from network namespace had the required xdp program to enable the link with
+the action XDP_PASS. Any other actions would drop the packet.
 
 *** Using the ethtool
 
