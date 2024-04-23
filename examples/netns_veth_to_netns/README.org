@@ -63,9 +63,7 @@ ICMP packets seem to be freed by consume_skb.
 
 *** Using bpftrace custom script
 
-**** Step 1: veth driver trace
-
-Find the functions called:
+**** Find the veth driver functions called during the redirect
 
 #+begin_src
 # bpftrace -e 'kprobe:veth_* { @cnt[probe]=count(); }'
@@ -85,12 +83,50 @@ Attaching 45 probes...
 @cnt[kprobe:veth_stats_rx]: 744
 #+end_src
 
-Attach probe to receive functions and indentify which one is used to handle the redirect
+**** Attach probez to receive functions and indentify which one is used to handle the redirect
 
 #+begin_src
-
+// todo
 #+end_src
 
+Note that this packet is passed to network stack as the =napi_complete_done= is called.
+
+**** Since the icmp works and tcp does not attach probe to =kprobe_skb_reason=
+
+#+begin_src
+22:02:59 0 swapper/3 veth3 kprobe:kfree_skb_reason  reason: 4 ..
+
+        kfree_skb_reason+1
+        tcp_v4_rcv+129
+        ip_protocol_deliver_rcu+50
+        ip_local_deliver_finish+114
+        ip_sublist_rcv_finish+126
+        ip_sublist_rcv+402
+        ip_list_rcv+313
+        __netif_receive_skb_list_core+670
+        netif_receive_skb_list_internal+461
+        napi_complete_done+109
+        veth_poll+218
+        __napi_poll+43
+        net_rx_action+670
+        __softirqentry_text_start+198
+        __irq_exit_rcu+170
+        sysvec_apic_timer_interrupt+110
+        asm_sysvec_apic_timer_interrupt+22
+        cpuidle_enter_state+222
+        cpuidle_enter+41
+        do_idle+514
+        cpu_startup_entry+38
+        start_secondary+298
+        secondary_startup_64_no_verify+229
+#+end_src
+
+The reason id =4= means the tcp checksum is wrong:
+
+#+begin_src
+/** @SKB_DROP_REASON_TCP_CSUM: TCP checksum error */
+	SKB_DROP_REASON_TCP_CSUM,
+#+end_src
 
 ** References
 
