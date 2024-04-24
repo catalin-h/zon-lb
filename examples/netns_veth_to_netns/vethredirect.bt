@@ -13,10 +13,13 @@
 #endif
 #include <linux/ip.h>
 #include <linux/ipv6.h>
+#include <linux/in.h>
+#include <net/tcp.h>
+#include <net/udp.h>
 
 BEGIN
 {
-  printf("Tracing veth rx packets. Ctrl-C to end.\n");
+  printf("Tracing veth packets. Ctrl-C to end.\n");
 
   @tcp_states[1] = "ESTABLISHED";
   @tcp_states[2] = "SYN_SENT";
@@ -32,9 +35,6 @@ BEGIN
   @tcp_states[12] = "NEW_SYN_RECV";
 }
 
-// Note: the net namespace is retrieved from the
-// skb->dev->nd_net; see ip_local_deliver
-
 tracepoint:tcp:tcp_bad_csum
 {
   $skb = (struct sk_buff *)args->skbaddr;
@@ -48,7 +48,8 @@ tracepoint:tcp:tcp_bad_csum
   $inet_family = ((struct sockaddr_in *)args->saddr)->sin_family;
 
   time("%H:%M:%S ");
-  printf("%-8d %-16s %s %s ", pid, comm, $ifname, probe);
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p ", $skb);
 
   if ($inet_family != AF_INET && $inet_family != AF_INET6) {
     printf("%-24s unknown inet_family: %d \n", probe, $inet_family);
@@ -73,49 +74,13 @@ tracepoint:tcp:tcp_bad_csum
       $sport = bswap($inet6->sin6_port);
   }
 
-  printf("%s:%-6d %s:%-6d %p\n", $saddr, $sport, $daddr, $dport, $skb);
+  printf("%s:%-5d -> %s:%-5d\n", $saddr, $sport, $daddr, $dport);
   //printf("%s\n", kstack);
-}
-
-kprobe:kfree_skb_reason
-{
-  $skb = (struct sk_buff *)arg0;
-  $sk = ((struct sock *) $skb->sk);
-  $ethertype = bswap($skb->protocol);
-  $ifname = $skb->dev->name;
-
-  if (strncmp($ifname, "veth", 4)) {
-    return;
-  }
-
-  time("%H:%M:%S ");
-  printf("%-8d %-16s %s %-24s reason: %d ",
-	pid, comm, $ifname, probe, arg1);
-
-  if ( $ethertype != ETH_P_IP && $ethertype != ETH_P_IPV6 ) {
-    printf("unknown ethertype: %p \n", $ethertype);
-    return;
-  }
-
-  if ($ethertype == ETH_P_IP) {
-    $iphdr4 = (struct iphdr *)($skb->data + $skb->network_header);
-    printf (" skb: %p data: %p iphdr: %p ",$skb, $skb->data, $iphdr4);
-    $daddr = ntop($iphdr4->daddr);
-    $saddr = ntop($iphdr4->saddr);
-  } else {
-    $iphdr6 = (struct ipv6hdr *)($skb->data + $skb->network_header);
-    $daddr  = ntop($iphdr6->daddr.in6_u.u6_addr8);
-    $saddr  = ntop($iphdr6->saddr.in6_u.u6_addr8);
-  }
-
-  printf("%s %s \n", $saddr, $daddr);
-  printf("%s\n", kstack);
 }
 
 kprobe:tcp_v4_rcv
 {
   $skb = (struct sk_buff *)arg0;
-  $sk = ((struct sock *) $skb->sk);
   $ethertype = bswap($skb->protocol);
   $ifname = $skb->dev->name;
 
@@ -124,7 +89,8 @@ kprobe:tcp_v4_rcv
   }
 
   time("%H:%M:%S ");
-  printf("%-8d %-16s %s %-24s ", pid, comm, $ifname, probe);
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p ", $skb);
 
   if ( $ethertype != ETH_P_IP && $ethertype != ETH_P_IPV6 ) {
     printf("unknown ethertype: %p \n", $ethertype);
@@ -132,25 +98,38 @@ kprobe:tcp_v4_rcv
   }
 
   if ($ethertype == ETH_P_IP) {
-    $iphdr4 = (struct iphdr *)($skb->data + $skb->network_header);
-    printf (" skb: %p data: %p iphdr: %p ",$skb, $skb->data, $iphdr4);
-    $daddr = ntop($iphdr4->daddr);
-    $saddr = ntop($iphdr4->saddr);
+    $iphdr4 = (struct iphdr *)($skb->head + $skb->network_header);
+    $daddr  = ntop($iphdr4->daddr);
+    $saddr  = ntop($iphdr4->saddr);
+    $proto  = $iphdr4->protocol;
   } else {
-    $iphdr6 = (struct ipv6hdr *)($skb->data + $skb->network_header);
+    $iphdr6 = (struct ipv6hdr *)($skb->head + $skb->network_header);
     $daddr  = ntop($iphdr6->daddr.in6_u.u6_addr8);
     $saddr  = ntop($iphdr6->saddr.in6_u.u6_addr8);
+    $proto  = $iphdr6->nexthdr;
   }
 
-  printf("%s %s \n", $saddr, $daddr);
+  if ( $proto == IPPROTO_TCP ) {
+    $tcphdr = (struct tcphdr *)($skb->head + $skb->transport_header);
+    $sport  = bswap($tcphdr->source);
+    $dport  = bswap($tcphdr->dest);
+  } else if ( $proto == IPPROTO_UDP ) {
+    $udphdr = (struct udphdr *)($skb->head + $skb->transport_header);
+    $sport  = bswap($udphdr->source);
+    $dport  = bswap($udphdr->dest);
+  } else {
+    $sport = 0;
+    $dport = 0;
+  }
+
+  printf("%s:%-5d -> %s:%-5d\n", $saddr, $sport, $daddr, $dport);
+ // printf("%s\n", kstack);
 }
- 
-kprobe:ip_protocol_deliver_rcu
+
+kprobe:kfree_skb_reason
 {
-  $skb = (struct sk_buff *)arg1;
-  $sk = ((struct sock *) $skb->sk);
+  $skb = (struct sk_buff *)arg0;
   $ethertype = bswap($skb->protocol);
-  $proto = (int32)arg2;
   $ifname = $skb->dev->name;
 
   if (strncmp($ifname, "veth", 4)) {
@@ -158,24 +137,96 @@ kprobe:ip_protocol_deliver_rcu
   }
 
   time("%H:%M:%S ");
-  printf("%-8d %-16s %s %-24s ", pid, comm, $ifname, probe);
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p ", $skb);
 
   if ( $ethertype != ETH_P_IP && $ethertype != ETH_P_IPV6 ) {
-    printf("unknown ethertype: %p , proto: %d \n", $ethertype, $proto);
+    printf("unknown ethertype: %p \n", $ethertype);
     return;
   }
 
   if ($ethertype == ETH_P_IP) {
-    $iphdr4 = (struct iphdr *)($skb->data + $skb->network_header);
-    $daddr = ntop($iphdr4->daddr);
-    $saddr = ntop($iphdr4->saddr);
+    $iphdr4 = (struct iphdr *)($skb->head + $skb->network_header);
+    $daddr  = ntop($iphdr4->daddr);
+    $saddr  = ntop($iphdr4->saddr);
+    $proto  = $iphdr4->protocol;
   } else {
-    $iphdr6 = (struct ipv6hdr *)($skb->data + $skb->network_header);
+    $iphdr6 = (struct ipv6hdr *)($skb->head + $skb->network_header);
     $daddr  = ntop($iphdr6->daddr.in6_u.u6_addr8);
     $saddr  = ntop($iphdr6->saddr.in6_u.u6_addr8);
+    $proto  = $iphdr6->nexthdr;
   }
 
-  printf("%s %s \n", $saddr, $daddr);
+  if ( $proto == IPPROTO_TCP ) {
+    $tcphdr = (struct tcphdr *)($skb->head + $skb->transport_header);
+    $sport  = bswap($tcphdr->source);
+    $dport  = bswap($tcphdr->dest);
+  } else if ( $proto == IPPROTO_UDP ) {
+    $udphdr = (struct udphdr *)($skb->head + $skb->transport_header);
+    $sport  = bswap($udphdr->source);
+    $dport  = bswap($udphdr->dest);
+  } else {
+    $sport = 0;
+    $dport = 0;
+  }
+
+  printf("%s:%-5d -> %s:%-5d ", $saddr, $sport, $daddr, $dport);
+  printf("drop_reason: %d\n", arg1);
+
+ // printf("%s\n", kstack);
+}
+
+// Note: the net namespace is retrieved from the
+// skb->dev->nd_net; see ip_local_deliver
+
+kprobe:ip_protocol_deliver_rcu
+{
+  $skb = (struct sk_buff *)arg1;
+  $ethertype = bswap($skb->protocol);
+  $ifname = $skb->dev->name;
+
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p ", $skb);
+
+  if ( $ethertype != ETH_P_IP && $ethertype != ETH_P_IPV6 ) {
+    printf("unknown ethertype: %p\n", $ethertype);
+    return;
+  }
+
+  if ($ethertype == ETH_P_IP) {
+    $iphdr4 = (struct iphdr *)($skb->head + $skb->network_header);
+    $daddr  = ntop($iphdr4->daddr);
+    $saddr  = ntop($iphdr4->saddr);
+    $proto  = $iphdr4->protocol;
+  } else {
+    $iphdr6 = (struct ipv6hdr *)($skb->head + $skb->network_header);
+    $daddr  = ntop($iphdr6->daddr.in6_u.u6_addr8);
+    $saddr  = ntop($iphdr6->saddr.in6_u.u6_addr8);
+    $proto  = $iphdr6->nexthdr;
+  }
+
+  if ( $proto == IPPROTO_TCP ) {
+    $tcphdr = (struct tcphdr *)($skb->head + $skb->transport_header);
+    $sport  = bswap($tcphdr->source);
+    $dport  = bswap($tcphdr->dest);
+  } else if ( $proto == IPPROTO_UDP ) {
+    $udphdr = (struct udphdr *)($skb->head + $skb->transport_header);
+    $sport  = bswap($udphdr->source);
+    $dport  = bswap($udphdr->dest);
+  } else {
+    $sport = 0;
+    $dport = 0;
+  }
+
+  printf("%s:%-5d -> %s:%-5d ", $saddr, $sport, $daddr, $dport);
+  printf("protocol: %d\n", arg2);
+
+ // printf("%s\n", kstack);
 }
 
 kprobe:napi_complete_done,
@@ -189,85 +240,78 @@ kprobe:veth_poll
   }
 
   time("%H:%M:%S ");
-  printf("%-8d %-16s %s %-24s\n", pid, comm, $ifname, probe);
+  printf("%-8d %-12s %s %-24s\n", pid, comm, $ifname, probe);
   //printf("%s\n", kstack);
 }
 
 tracepoint:net:napi_gro_receive_entry
 {
   $skb = (struct sk_buff *)args->skbaddr;
-  $sk = ((struct sock *) $skb->sk);
-  $inet_family = $sk->__sk_common.skc_family;
+  $ethertype = bswap($skb->protocol);
+  $ifname = $skb->dev->name;
 
-  if ($inet_family == AF_INET || $inet_family == AF_INET6) {
-  if ($inet_family == AF_INET) {
-    $daddr = ntop($sk->__sk_common.skc_daddr);
-    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p ", $skb);
+
+  if ( $ethertype != ETH_P_IP && $ethertype != ETH_P_IPV6 ) {
+    printf("unknown ethertype: %p\n", $ethertype);
+    return;
+  }
+
+  if ($ethertype == ETH_P_IP) {
+    $iphdr4 = (struct iphdr *)($skb->data);
+    $daddr  = ntop($iphdr4->daddr);
+    $saddr  = ntop($iphdr4->saddr);
+    $proto  = $iphdr4->protocol;
   } else {
-    $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
-    $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+    $iphdr6 = (struct ipv6hdr *)($skb->data);
+    $daddr  = ntop($iphdr6->daddr.in6_u.u6_addr8);
+    $saddr  = ntop($iphdr6->saddr.in6_u.u6_addr8);
+    $proto  = $iphdr6->nexthdr;
   }
 
-  $lport = $sk->__sk_common.skc_num;
-  $dport = $sk->__sk_common.skc_dport;
-
-  // Destination port is big endian, it must be flipped
-  $dport = bswap($dport);
-
-  $state = $sk->__sk_common.skc_state;
-  $statestr = @tcp_states[$state];
-
-  time("%H:%M:%S ");
-  printf("%-8d %-16s ", pid, comm);
-  printf("%-24s %19s:%-6d %19s:%-6d %-10s\n", probe, $saddr, $lport, $daddr, $dport, $statestr);
-  }
-}
-
-kprobe:__xdp_build_skb_from_frame
-{
-  $ndev = (struct net_device *)arg2;
-  $ifname = $ndev->name;
-  // TODO: print first frame pointer and trace it later in rx functions
-
-  time("%H:%M:%S ");
-  printf("%-8d %-16s %s %-24s\n", pid, comm, $ifname, probe);
-  //printf("%s\n", kstack);
+  printf("%s -> %s ", $saddr, $daddr);
+  printf("ethertype: %p, next: %d \n", args->protocol, $proto);
 }
 
 kretprobe:__xdp_build_skb_from_frame
 {
   $skb = (struct sk_buff *)retval;
-  $sk = ((struct sock *) $skb->sk);
-  $inet_family = $sk->__sk_common.skc_family;
+  $ethertype = bswap($skb->protocol);
   $ifname = $skb->dev->name;
 
-  time("%H:%M:%S ");
-  printf("%-8d %-16s %s ", pid, comm, $ifname);
-
-  if ($inet_family != AF_INET && $inet_family != AF_INET6) {
-    printf("%-24s unknown inet_family: %d , reval: %p\n",
-		probe, $inet_family, retval);
+  if (strncmp($ifname, "veth", 4)) {
     return;
   }
 
-  if ($inet_family == AF_INET) {
-    $daddr = ntop($sk->__sk_common.skc_daddr);
-    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
-  } else {
-    $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
-    $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p ", $skb);
+
+  if ( $ethertype != ETH_P_IP && $ethertype != ETH_P_IPV6 ) {
+    printf("unknown ethertype: %p\n", $ethertype);
+    return;
   }
 
-  $lport = $sk->__sk_common.skc_num;
-  $dport = $sk->__sk_common.skc_dport;
+  if ($ethertype == ETH_P_IP) {
+    $iphdr4 = (struct iphdr *)($skb->data);
+    $daddr  = ntop($iphdr4->daddr);
+    $saddr  = ntop($iphdr4->saddr);
+    $proto  = $iphdr4->protocol;
+  } else {
+    $iphdr6 = (struct ipv6hdr *)($skb->data);
+    $daddr  = ntop($iphdr6->daddr.in6_u.u6_addr8);
+    $saddr  = ntop($iphdr6->saddr.in6_u.u6_addr8);
+    $proto  = $iphdr6->nexthdr;
+  }
 
-  // Destination port is big endian, it must be flipped
-  $dport = bswap($dport);
-
-  $state = $sk->__sk_common.skc_state;
-  $statestr = @tcp_states[$state];
-
-  printf("%-24s %19s:%-6d %19s:%-6d %-10s\n", probe, $saddr, $lport, $daddr, $dport, $statestr);
+  printf("%s -> %s ", $saddr, $daddr);
+  printf("ethertype: %p, next: %d \n", bswap($skb->protocol), $proto);
 }
 
 kprobe:xdp_return_frame,
@@ -275,12 +319,12 @@ kprobe:xdp_return_frame,
   // TODO: print first frame ptr
 
   time("%H:%M:%S ");
-  printf("%-8d %-16s %-24s\n", pid, comm, probe);
+  printf("%-8d %-12s %-24s\n", pid, comm, probe);
   printf("%s\n", kstack);
 }
 
-kprobe:veth_xdp_rcv.constprop.0,
-kprobe:veth_xdp_rcv_bulk_skb.constprop.0,
+//kprobe:veth_xdp_rcv.constprop.0,
+//kprobe:veth_xdp_rcv_bulk_skb.constprop.0,
 kprobe:veth_xdp_rcv_one
 {
   $rq = (struct veth_rq *)arg0;
@@ -288,7 +332,7 @@ kprobe:veth_xdp_rcv_one
   // TODO: print first frame ptr
 
   time("%H:%M:%S ");
-  printf("%-8d %-16s %s %-24s\n", pid, comm, $ifname, probe);
+  printf("%-8d %-12s %s %-24s\n", pid, comm, $ifname, probe);
   //printf("%s\n", kstack);
 }
 
@@ -300,7 +344,7 @@ kprobe:veth_xdp_xmit
   // TODO: print first frame pointer and trace it later in rx functions
 
   time("%H:%M:%S ");
-  printf("%-8d %-16s %s %-24s ndtx=%d\n", pid, comm, $ifname, probe, $ndotx);
+  printf("%-8d %-12s %s %-40s ndtx=%d\n", pid, comm, $ifname, probe, $ndotx);
   //printf("%s\n", kstack);
 }
 
@@ -313,7 +357,14 @@ kprobe:veth_xmit
   $ndev = (struct net_device *)arg1;
   $ifname = $ndev->name;
 
-  if ($inet_family == AF_INET || $inet_family == AF_INET6) {
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s skb:%p ", pid, comm, $ifname, probe, $skb);
+
+  if ($inet_family != AF_INET && $inet_family != AF_INET6) {
+     printf(" invalid inet_family: %d\n", $inet_family);
+     return;
+  }
+
   if ($inet_family == AF_INET) {
     $daddr = ntop($sk->__sk_common.skc_daddr);
     $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
@@ -331,11 +382,8 @@ kprobe:veth_xmit
   $state = $sk->__sk_common.skc_state;
   $statestr = @tcp_states[$state];
 
-  time("%H:%M:%S ");
-  printf("%-8d %-16s ", pid, comm);
-  printf("%s %-24s %19s:%-6d %19s:%-6d %-10s\n", $ifname, probe, $saddr, $lport, $daddr, $dport, $statestr);
+  printf("%s:%-5d -> %s:%-5d %s\n", $saddr, $lport, $daddr, $dport, $statestr);
   //printf("%s\n", kstack);
-  }
 }
 
 kprobe:veth_xdp_rcv_skb
@@ -347,7 +395,14 @@ kprobe:veth_xdp_rcv_skb
   $sk = ((struct sock *) $skb->sk);
   $inet_family = $sk->__sk_common.skc_family;
 
-  if ($inet_family == AF_INET || $inet_family == AF_INET6) {
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s skb:%p ", pid, comm, $ifname, probe, $skb);
+
+  if ($inet_family != AF_INET && $inet_family != AF_INET6) {
+     printf(" invalid inet_family: %d\n", $inet_family);
+     return;
+  }
+
   if ($inet_family == AF_INET) {
     $daddr = ntop($sk->__sk_common.skc_daddr);
     $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
@@ -365,11 +420,8 @@ kprobe:veth_xdp_rcv_skb
   $state = $sk->__sk_common.skc_state;
   $statestr = @tcp_states[$state];
 
-  time("%H:%M:%S ");
-  printf("%-8d %-16s ", pid, comm);
-  printf("%s %-24s %19s:%-6d %19s:%-6d %-10s\n", $ifname, probe, $saddr, $lport, $daddr, $dport, $statestr);
+  printf("%s:%-5d -> %s:%-5d %s\n", $saddr, $lport, $daddr, $dport, $statestr);
   //printf("%s\n", kstack);
-  }
 }
 
 END
