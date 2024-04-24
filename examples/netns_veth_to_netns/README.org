@@ -128,5 +128,25 @@ The reason id =4= means the tcp checksum is wrong:
 	SKB_DROP_REASON_TCP_CSUM,
 #+end_src
 
+**** The full trace from =xmit= to =kfree_skb_reason=
+
+#+begin_src
+TIME     PID      COMMAND      VETH  PROBE                                    SKB_ADDR               SOURCE            DEST          DETAILS
+21:56:03 3157123  telnet       veth1 kprobe:veth_xmit                         skb:0xffff940acaf1e6e8 10.0.0.2:35890 -> 10.0.0.1:23    SYN_SENT
+21:56:03 3157123  telnet       veth0 kprobe:veth_poll
+21:56:03 3157123  telnet       veth0 kprobe:veth_xdp_rcv_skb                  skb:0xffff940acaf1e6e8 10.0.0.2:35890 -> 10.0.0.1:23    SYN_SENT
+21:56:03 3157123  telnet       veth2 kprobe:veth_xdp_xmit                     ndtx=1
+21:56:03 3157123  telnet       veth0 kprobe:napi_complete_done
+21:56:03 3157123  telnet       veth3 kprobe:veth_poll
+21:56:03 3157123  telnet       veth3 kprobe:veth_xdp_rcv_one
+21:56:03 3157123  telnet       veth3 kretprobe:__xdp_build_skb_from_frame     skb:0xffff940c5a86c300 10.2.0.1 -> 10.2.0.2 ethertype: 0x800, next: 6
+21:56:03 3157123  telnet       veth3 tracepoint:net:napi_gro_receive_entry    skb:0xffff940c5a86c300 10.2.0.1 -> 10.2.0.2 ethertype: 0x800, next: 6
+21:56:03 3157123  telnet       veth3 kprobe:napi_complete_done
+21:56:03 3157123  telnet       veth3 kprobe:ip_protocol_deliver_rcu           skb:0xffff940c5a86c300 10.2.0.1:35890 -> 10.2.0.2:223   protocol: 6
+21:56:03 3157123  telnet       veth3 kprobe:tcp_v4_rcv                        skb:0xffff940c5a86c300 10.2.0.1:35890 -> 10.2.0.2:223
+21:56:03 3157123  telnet       veth3 tracepoint:tcp:tcp_bad_csum              skb:0xffff940c5a86c300 10.2.0.1:35890 -> 10.2.0.2:223
+21:56:03 3157123  telnet       veth3 kprobe:kfree_skb_reason                  skb:0xffff940c5a86c300 10.2.0.1:35890 -> 10.2.0.2:223   drop_reason: 4
+#+end_src
+
 ** References
 
