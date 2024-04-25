@@ -280,6 +280,22 @@ tracepoint:net:napi_gro_receive_entry
   printf("ethertype: %p, next: %d \n", args->protocol, $proto);
 }
 
+kprobe:__xdp_build_skb_from_frame
+{
+  $frame = (struct xdp_frame *)arg0;
+  $skb = (struct sk_buff *)arg1;
+  $ndev = (struct net_device *)arg2;
+  $ifname = $ndev->name;
+
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("frm:%p -> skb:%p\n", $frame->data, $skb);
+}
+
 kretprobe:__xdp_build_skb_from_frame
 {
   $skb = (struct sk_buff *)retval;
@@ -330,10 +346,12 @@ kprobe:veth_xdp_rcv_one
 {
   $rq = (struct veth_rq *)arg0;
   $ifname = $rq->dev->name;
-  // TODO: print first frame ptr
+  $frame = (struct xdp_frame *)arg1;
 
   time("%H:%M:%S ");
-  printf("%-8d %-12s %s %-24s\n", pid, comm, $ifname, probe);
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("frm:%p\n", $frame->data);
+
   //printf("%s\n", kstack);
 }
 
