@@ -34,6 +34,11 @@ BEGIN
   @tcp_states[10] = "LISTEN";
   @tcp_states[11] = "CLOSING";
   @tcp_states[12] = "NEW_SYN_RECV";
+
+  @checksum[0] = "CSUM_NONE";
+  @checksum[1] = "CSUM_UNNECESSARY";
+  @checksum[2] = "CSUM_COMPLETE";
+  @checksum[3] = "CSUM_PARTIAL";
 }
 
 tracepoint:tcp:tcp_bad_csum
@@ -416,8 +421,16 @@ kprobe:veth_xmit
   $state = $sk->__sk_common.skc_state;
   $statestr = @tcp_states[$state];
 
-  printf("%s:%-5d -> %s:%-5d %s\n", $saddr, $lport, $daddr, $dport, $statestr);
-  //printf("%s\n", kstack);
+  printf("%s:%-5d -> %s:%-5d %s ", $saddr, $lport, $daddr, $dport, $statestr);
+  printf("%s ", @checksum[$skb->ip_summed]);
+
+  if ($ndev->features & (1 << 3)) {
+    printf("NETIF_F_HW_CSUM ");
+  }
+
+  printf("\n");
+
+  // printf("%s\n", kstack);
 }
 
 kprobe:veth_xdp_rcv_skb
@@ -461,4 +474,5 @@ kprobe:veth_xdp_rcv_skb
 END
 {
   clear(@tcp_states);
+  clear(@checksum);
 }
