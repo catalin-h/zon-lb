@@ -83,19 +83,13 @@ Attaching 45 probes...
 @cnt[kprobe:veth_stats_rx]: 744
 #+end_src
 
-**** Attach probez to receive functions and indentify which one is used to handle the redirect
+**** Find where the TCP SYN packet gets dropped by tracing the relevant veth driver and network stack functions
 
-#+begin_src
-// todo
-#+end_src
-
-Note that this packet is passed to network stack as the =napi_complete_done= is called.
-
-**** Since the icmp works and tcp does not attach probe to =kprobe_skb_reason=
+Since the icmp works and tcp does not attach probe to =kfree_skb_reason= to catch when the packet is discarded.
+We can use the bpftrace =kstack= function to print the kernel stack trace from the =kfree_skb_reason=:
 
 #+begin_src
 22:02:59 0 swapper/3 veth3 kprobe:kfree_skb_reason  reason: 4 ..
-
         kfree_skb_reason+1
         tcp_v4_rcv+129
         ip_protocol_deliver_rcu+50
@@ -121,15 +115,15 @@ Note that this packet is passed to network stack as the =napi_complete_done= is 
         secondary_startup_64_no_verify+229
 #+end_src
 
-The reason id =4= means the tcp checksum is wrong:
+The reason id =4= means the tcp checksum is wrong according to the enum value
+[[https://elixir.bootlin.com/linux/v6.1/source/include/net/dropreason.h#L90][SKB_DROP_REASON_TCP_CSUM]]:
 
 #+begin_src
 /** @SKB_DROP_REASON_TCP_CSUM: TCP checksum error */
 	SKB_DROP_REASON_TCP_CSUM,
 #+end_src
 
-**** The full trace from =xmit= to =kfree_skb_reason=
-
+The full packet trace within the network stack is this:
 #+begin_src
 TIME     PID      COMMAND      VETH  PROBE                                    SKB_ADDR               SOURCE            DEST          DETAILS
 17:55:40 3482215  telnet       veth1 kprobe:veth_xmit                         skb:0xffff940bcd4846e8 10.0.0.2:46846 -> 10.0.0.1:23    SYN_SENT
@@ -147,6 +141,154 @@ TIME     PID      COMMAND      VETH  PROBE                                    SK
 17:55:40 3482215  telnet       veth3 kprobe:tcp_v4_rcv                        skb:0xffff940c92429500 10.2.0.1:46846 -> 10.2.0.2:223
 17:55:40 3482215  telnet       veth3 tracepoint:tcp:tcp_bad_csum              skb:0xffff940c92429500 10.2.0.1:46846 -> 10.2.0.2:223
 17:55:40 3482215  telnet       veth3 kprobe:kfree_skb_reason                  skb:0xffff940c92429500 10.2.0.1:46846 -> 10.2.0.2:223   drop_reason: 4
+#+end_src
+
+Note, that this packet is passed to the network stack as the =napi_complete_done= is called.
+Also, since the xdp program uses =redirect= the packet will be encapsulated into an xdp frame
+when it is transmitted from veth2 to veth3, hence the =veth_xdp_xmit= call. The frame address
+is prefixed by =frm:=. The conversion back to skb happens in function =__xdp_build_skb_from_frame=
+just before the driver passes the packet to the network stack.
+
+**** Finding root cause by investigating the kernel call stack on =xmit=
+
+To print the call stack one must use the same =kstack= function mentioned
+above but in the kprobe attached to =veth_xmit=. On Linux kernel 6.1 the
+stack look like:
+
+#+begin_src
+        veth_xmit+1
+        dev_hard_start_xmit+99
+        __dev_queue_xmit+618
+        ip_finish_output2+364
+        __ip_queue_xmit+369
+        __tcp_transmit_skb+2724
+        tcp_connect+2858
+        tcp_v4_connect+1042
+        __inet_stream_connect+218
+        inet_stream_connect+54
+        __sys_connect+164
+        __x64_sys_connect+20
+        do_syscall_64+91
+        entry_SYSCALL_64_after_hwframe+100
+#+end_src
+
+Note that this is the first attempt to transmit the packet and since this is
+the TCP SYN packet there can be packet retransmissions that are done using
+a different stack (actually from the network tx softirq thread).
+
+Investigating the source code for the called functions some problem details
+look more clearer.
+
+Looking at the veth kernel sources the problem looks evident: the driver
+falsely advertises in it's features that it supports HW checksum offload
+(=NETIF_F_HW_CSUM=).
+#+begin_src C
+#define VETH_FEATURES (NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_HW_CSUM | \
+		       NETIF_F_RXCSUM | NETIF_F_SCTP_CRC | NETIF_F_HIGHDMA | \
+		       NETIF_F_GSO_SOFTWARE | NETIF_F_GSO_ENCAP_ALL | \
+		       NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX | \
+		       NETIF_F_HW_VLAN_STAG_TX | NETIF_F_HW_VLAN_STAG_RX )
+#+end_src
+See [[https://elixir.bootlin.com/linux/v6.1/source/drivers/net/veth.c#L1619][kernel 6.1 net/drivers/veth.c]].
+
+The network stack does not attempt to build the transport layer checksum
+as the driver is required to compute it, according to the comments from =skbuff.h= at section
+[[https://elixir.bootlin.com/linux/v6.1/source/include/linux/skbuff.h#L165][Checksumming on transmit for non-GSO]]:
+#+BEGIN_QUOTE
+ * The stack requests checksum offload in the &sk_buff.ip_summed for a packet.
+ * Values are:
+ *
+ * - %CHECKSUM_PARTIAL
+ *
+ *   The driver is required to checksum the packet as seen by hard_start_xmit()
+ *   from &sk_buff.csum_start up to the end, and to record/write the checksum at
+ *   offset &sk_buff.csum_start + &sk_buff.csum_offset.
+#+END_QUOTE
+
+Looking inside the function
+[[https://elixir.bootlin.com/linux/v6.1/source/net/core/dev.c#L3687][validate_xmit_skb]]
+called from =__dev_queue_xmit= in case of software devices with no queues like veth,
+we see there is a test if =ip_summed= is =CHECKSUM_PARTIAL= and if the device supports
+checksum offloading (=NETIF_F_HW_CSUM= feature):
+#+begin_src C
+/* If packet is not checksummed and device does not
+* support checksumming for this protocol, complete
+* checksumming here.
+*/
+if (skb->ip_summed == CHECKSUM_PARTIAL) {
+...
+if (skb_csum_hwoffload_help(skb, features))
+#+end_src
+
+The device features can be viewed and modified using the ethtool. For =NETIF_F_HW_CSUM=
+feature the mapped ethtool setting is =tx-checksumming=. According to the veth sources
+this setting is =on= by default:
+
+#+begin_src
+# ethtool -k veth1 | grep tx-checksumming
+tx-checksumming: on
+#+end_src
+
+The next question is where exactly in the xmit call stack this flag is used to decide
+if the to checksum needs to be built. To answer to this question we must either trace
+the fields =ip_summed= and =csum= values from skbuff creation to transmission.
+This can be tedious but the
+[[https://elixir.bootlin.com/linux/v6.1/source/include/linux/skbuff.h#L188][Checksumming on transmit for non-GSO]]
+offers a clue. The decision to compute the checksum is taken in the =skb_csum_hwoffload_help= based on the
+net device feature =NETIF_F_HW_CSUM=:
+
+#+BEGIN_QUOTE
+ *   %NETIF_F_IP_CSUM and %NETIF_F_IPV6_CSUM are being deprecated in favor of
+ *   %NETIF_F_HW_CSUM. New devices should use %NETIF_F_HW_CSUM to indicate
+ *   checksum offload capability.
+ *   skb_csum_hwoffload_help() can be called to resolve %CHECKSUM_PARTIAL based
+ *   on network device checksumming capabilities: if a packet does not match
+ *   them, skb_checksum_help() or skb_crc32c_help() (depending on the value of
+ *   &sk_buff.csum_not_inet, see :ref:`crc`)
+ *   is called to resolve the checksum.
+#+END_QUOTE
+
+Using the above information and adding kprobes to relevant function the call trace
+show that on =tx-checksumming on= the checksum is not computed:
+#+begin_src
+21:24:06 3627436  telnet       veth1 kprobe:ip_finish_output2                 skb:0xffff940bc65530e8 CSUM_PARTIAL cs:18011000
+21:24:06 3627436  telnet       veth1 kprobe:__dev_queue_xmit                  skb:0xffff940bc65530e8 CSUM_PARTIAL cs:18011000
+21:24:06 3627436  telnet       veth1 kprobe:validate_xmit_skb                 skb:0xffff940bc65530e8 CSUM_PARTIAL NETIF_F_HW_CSUM
+21:24:06 3627436  telnet       veth1 kretprobe:validate_xmit_skb              skb:0xffff940bc65530e8 CSUM_PARTIAL NETIF_F_HW_CSUM
+21:24:06 3627436  telnet       veth1 kprobe:dev_hard_start_xmit               skb:0xffff940bc65530e8 CSUM_PARTIAL cs:18011000
+21:24:06 3627436  telnet       veth1 kprobe:veth_xmit                         skb:0xffff940bc65530e8 10.0.0.2:37266 -> 10.0.0.1:23    SYN_SENT CSUM_PARTIAL NETIF_F_HW_CSUM
+#+end_src
+
+But, when =tx-checksumming off= the network stack will indeed compute the checksum:
+#+begin_src
+21:26:26 3628038  telnet       veth1 kprobe:ip_finish_output2                 skb:0xffff940b318d3ee8 CSUM_PARTIAL cs:18011000
+21:26:26 3628038  telnet       veth1 kprobe:__dev_queue_xmit                  skb:0xffff940b318d3ee8 CSUM_PARTIAL cs:18011000
+21:26:26 3628038  telnet       veth1 kprobe:validate_xmit_skb                 skb:0xffff940b318d3ee8 CSUM_PARTIAL
+21:26:26 3628038  telnet       veth1 kprobe:skb_checksum_help                 skb:0xffff940b318d3ee8 CSUM_PARTIAL
+21:26:26 3628038  telnet       veth1 kprobe:skb_checksum                      skb:0xffff940b318d3ee8 CSUM_PARTIAL
+21:26:26 3628038  telnet       veth1 kretprobe:validate_xmit_skb              skb:0xffff940b318d3ee8 CSUM_NONE
+21:26:26 3628038  telnet       veth1 kprobe:dev_hard_start_xmit               skb:0xffff940b318d3ee8 CSUM_NONE cs:18011000
+21:26:26 3628038  telnet       veth1 kprobe:veth_xmit                         skb:0xffff940b318d3ee8 10.0.0.2:37578 -> 10.0.0.1:23    SYN_SENT CSUM_NONE
+#+end_src
+
+Note, that indeed the decision to compute is done in =validate_xmit_skb= and also
+the =ip_summed= is changed from =CHECKSUM_PARTIAL= to =CHECKSUM_NONE= which means
+(looking at the same skbuff header comment):
+#+BEGIN_QUOTE
+ * - %CHECKSUM_NONE
+ *
+ *   The skb was already checksummed by the protocol, or a checksum is not
+ *   required.
+#+END_QUOTE
+
+As a final note, the kprobes target only the functions between =__ip_queue_xmit= and =veth_xmit=
+in order to filter only those packets that use veth net devices. The skbuff may be created
+in =tcp_connect= but at that time there is no net device attached to the skbuff.
+This information is later added between =__ip_queue_xmit= and =ip_finish_output2= for veth devices.
+
+To finally fix the issue just turn off the =tx-checksumming= with =ethtool=:
+#+begin_src
+# ethtool -K veth1 tx-checksumming off
 #+end_src
 
 ** References
