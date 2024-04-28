@@ -1,0 +1,185 @@
+#!/usr/bin/env bpftrace
+/*
+ * Shows packet trace inside network stack to veth driver xmit.
+ * It is oriented to TCP connections and it shows details like:
+ * - inet checksum
+ * - addreses and ports for source and destination endpoints
+ * - if inet checksum is computed by veth or stack
+ * - TCP state
+ *
+ * Adapted for veth after bpftrace tcpdrop.bt.
+ */
+
+#ifndef BPFTRACE_HAVE_BTF
+#include <linux/socket.h>
+#include <net/sock.h>
+#else
+#include <sys/socket.h>
+#endif
+#include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <linux/in.h>
+#include <net/tcp.h>
+#include <net/udp.h>
+#include <net/xdp.h>
+
+BEGIN
+{
+  printf("Tracing veth packets. Ctrl-C to end.\n");
+
+  @tcp_states[1] = "ESTABLISHED";
+  @tcp_states[2] = "SYN_SENT";
+  @tcp_states[3] = "SYN_RECV";
+  @tcp_states[4] = "FIN_WAIT1";
+  @tcp_states[5] = "FIN_WAIT2";
+  @tcp_states[6] = "TIME_WAIT";
+  @tcp_states[7] = "CLOSE";
+  @tcp_states[8] = "CLOSE_WAIT";
+  @tcp_states[9] = "LAST_ACK";
+  @tcp_states[10] = "LISTEN";
+  @tcp_states[11] = "CLOSING";
+  @tcp_states[12] = "NEW_SYN_RECV";
+
+  @checksum[0] = "CSUM_NONE";
+  @checksum[1] = "CSUM_UNNECESSARY";
+  @checksum[2] = "CSUM_COMPLETE";
+  @checksum[3] = "CSUM_PARTIAL";
+}
+
+kretprobe:validate_xmit_xfrm,
+kretprobe:validate_xmit_skb
+{
+  $skb  = (struct sk_buff *)retval;
+  $ndev = $skb->dev;
+  $ifname = $ndev->name;
+
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p ", $skb);
+  printf("%s ", @checksum[$skb->ip_summed]);
+
+  if ($ndev->features & (1 << 3)) {
+    printf("NETIF_F_HW_CSUM ");
+  }
+
+  //printf("%s\n", kstack);
+
+  printf("\n");
+}
+
+kprobe:skb_checksum,
+kprobe:skb_checksum_help,
+kprobe:validate_xmit_xfrm,
+kprobe:validate_xmit_skb
+{
+  $skb  = (struct sk_buff *)arg0;
+  $ndev = $skb->dev;
+  $ifname = $ndev->name;
+
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p ", $skb);
+  printf("%s ", @checksum[$skb->ip_summed]);
+
+  if ($ndev->features & (1 << 3)) {
+    printf("NETIF_F_HW_CSUM ");
+  }
+
+  //printf("%s\n", kstack);
+
+  printf("\n");
+}
+
+kprobe:dev_hard_start_xmit,
+kprobe:__dev_queue_xmit
+{
+  $skb    = (struct sk_buff *)arg0;
+  $ifname = $skb->dev->name;
+
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p %s cs:%x", $skb, @checksum[$skb->ip_summed],
+	bswap($skb->csum));
+
+  printf("\n");
+}
+
+kprobe:ip_finish_output2
+{
+  $skb = (struct sk_buff *)arg2;
+  $ifname = $skb->dev->name;
+
+  if (strncmp($ifname, "veth", 4)) {
+    return;
+  }
+
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s ", pid, comm, $ifname, probe);
+  printf("skb:%p %s cs:%x", $skb, @checksum[$skb->ip_summed],
+	bswap($skb->csum));
+
+  printf("\n");
+}
+
+kprobe:veth_xmit
+{
+  $skb = (struct sk_buff *)arg0;
+  $sk = ((struct sock *) $skb->sk);
+  $inet_family = $sk->__sk_common.skc_family;
+
+  $ndev = (struct net_device *)arg1;
+  $ifname = $ndev->name;
+
+  time("%H:%M:%S ");
+  printf("%-8d %-12s %s %-40s skb:%p ", pid, comm, $ifname, probe, $skb);
+
+  if ($inet_family != AF_INET && $inet_family != AF_INET6) {
+     printf(" invalid inet_family: %d\n", $inet_family);
+     return;
+  }
+
+  if ($inet_family == AF_INET) {
+    $daddr = ntop($sk->__sk_common.skc_daddr);
+    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+  } else {
+    $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+  }
+
+  $lport = $sk->__sk_common.skc_num;
+  $dport = $sk->__sk_common.skc_dport;
+
+  // Destination port is big endian, it must be flipped
+  $dport = bswap($dport);
+
+  $state = $sk->__sk_common.skc_state;
+  $statestr = @tcp_states[$state];
+
+  printf("%s:%-5d -> %s:%-5d %s ", $saddr, $lport, $daddr, $dport, $statestr);
+  printf("%s ", @checksum[$skb->ip_summed]);
+
+  if ($ndev->features & (1 << 3)) {
+    printf("NETIF_F_HW_CSUM ");
+  }
+
+  printf("\n");
+  //printf("%s\n", kstack);
+}
+
+END
+{
+  clear(@tcp_states);
+  clear(@checksum);
+}
