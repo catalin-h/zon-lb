@@ -23,17 +23,11 @@
 ** Debugging ignored TCP SYN packet redirected to veth but received by pair veth L2
 
 Notes:
-
-- This problem prevents the 3-way TCP handshake as the SYN packet is ignored and no ACK+SYN
-packet is replyed back.
-- The L4 UDP communication is also affected. For IPv4 the UDP the inet csum is optional so
-the packet drop happens during L4 handling.
-- This isn't a network route problem as the ICMP reply works and the source IP is reachable
-from the netns. This also means that the packet reaches L3 and the IP inet check sum is computed correctly.
-- The =ip -s a= command show that the veth pair received w/o errors the SYN packet but also
-shows that the endpoint doesn't respond back.
-- The veth pair from network namespace had the required xdp program to enable the link with
-the action XDP_PASS. Any other actions would drop the packet.
+- This problem prevents the 3-way TCP handshake as the SYN packet is ignored and no ACK+SYN packet is replyed back.
+- The L4 UDP communication is also affected. For IPv4 the UDP the inet csum is optional so the packet drop happens during L4 handling.
+- This isn't a network route problem as the ICMP reply works and the source IP is reachable from the netns. This also means that the packet reaches L3 and the IP inet check sum is computed correctly.
+- The =ip -s a= command show that the veth pair received w/o errors the SYN packet but also shows that the endpoint doesn't respond back.
+- The veth pair from network namespace had the required xdp program to enable the link with the action XDP_PASS. Any other actions would drop the packet.
 
 *** Using the ethtool
 
@@ -206,7 +200,7 @@ See [[https://elixir.bootlin.com/linux/v6.1/source/drivers/net/veth.c#L1619][ker
 The network stack does not attempt to build the transport layer checksum
 as the driver is required to compute it, according to the comments from =skbuff.h= at section
 [[https://elixir.bootlin.com/linux/v6.1/source/include/linux/skbuff.h#L165][Checksumming on transmit for non-GSO]]:
-#+BEGIN_QUOTE
+#+BEGIN_SRC C
  * The stack requests checksum offload in the &sk_buff.ip_summed for a packet.
  * Values are:
  *
@@ -215,7 +209,7 @@ as the driver is required to compute it, according to the comments from =skbuff.
  *   The driver is required to checksum the packet as seen by hard_start_xmit()
  *   from &sk_buff.csum_start up to the end, and to record/write the checksum at
  *   offset &sk_buff.csum_start + &sk_buff.csum_offset.
-#+END_QUOTE
+#+END_SRC
 
 Looking inside the function
 [[https://elixir.bootlin.com/linux/v6.1/source/net/core/dev.c#L3687][validate_xmit_skb]]
@@ -249,7 +243,7 @@ This can be tedious but the
 offers a clue. The decision to compute the checksum is taken in the =skb_csum_hwoffload_help= based on the
 net device feature =NETIF_F_HW_CSUM=:
 
-#+BEGIN_QUOTE
+#+BEGIN_SRC
  *   %NETIF_F_IP_CSUM and %NETIF_F_IPV6_CSUM are being deprecated in favor of
  *   %NETIF_F_HW_CSUM. New devices should use %NETIF_F_HW_CSUM to indicate
  *   checksum offload capability.
@@ -258,7 +252,7 @@ net device feature =NETIF_F_HW_CSUM=:
  *   them, skb_checksum_help() or skb_crc32c_help() (depending on the value of
  *   &sk_buff.csum_not_inet, see :ref:`crc`)
  *   is called to resolve the checksum.
-#+END_QUOTE
+#+END_SRC
 
 Using the above information and adding kprobes to relevant function the call trace
 show that on =tx-checksumming on= the checksum is not computed:
@@ -286,12 +280,12 @@ But, when =tx-checksumming off= the network stack will indeed compute the checks
 Note, that indeed the decision to compute is done in =validate_xmit_skb= and also
 the =ip_summed= is changed from =CHECKSUM_PARTIAL= to =CHECKSUM_NONE= which means
 (looking at the same skbuff header comment):
-#+BEGIN_QUOTE
+#+BEGIN_SRC
  * - %CHECKSUM_NONE
  *
  *   The skb was already checksummed by the protocol, or a checksum is not
  *   required.
-#+END_QUOTE
+#+END_SRC
 
 As a final note, the kprobes target only the functions between =__ip_queue_xmit= and =veth_xmit=
 in order to filter only those packets that use veth net devices. The skbuff may be created
@@ -299,7 +293,7 @@ in =tcp_connect= but at that time there is no net device attached to the skbuff.
 This information is later added between =__ip_queue_xmit= and =ip_finish_output2= for veth devices.
 
 To finally fix the issue just turn off the =tx-checksumming= with =ethtool=:
-#+begin_src
+#+begin_src sh
 # ethtool -K veth1 tx-checksumming off
 #+end_src
 
