@@ -1,4 +1,4 @@
-* Test zon-lb between two custom network namespace via veth pairs
+#+TITLE: Test zon-lb between two custom network namespace via veth pairs
 
 #+begin_src
 ┌───────────────────┐              ┌─────────────────────┐    ┌────────────────────┐
@@ -55,7 +55,54 @@ To unload the xdp program just set it to =none=:
 # ip link set veth3 xdp none
 #+end_src
 
-** Debugging ignored TCP SYN packet redirected to veth but received by pair veth L2
+*** Must disable tx offload checksumming on both veth interfaces from netns
+The script also disables the TCP checksumming offload because veth does not
+support hw checksum compute although it advertises this support (=NETIF_F_HW_CSUM=)
+in its exported features. To overcome this bug the script will disable this
+feature. More details on how to issue was investigated see section [[Debugging ignored TCP SYN packet]].
+
+** Run Telnet test
+
+The primary test to do when verifying a load balanaced TCP connection is
+to use =telnet=:
+
+In the zone2 netns launch a =netcat= TCP server listening on port 223:
+
+#+begin_src sh
+# nc -nlv -p 223 -s 10.2.0.2
+#+end_src
+
+If the server is started without errors and a client is connect it will print:
+
+#+begin_src
+listening on [10.2.0.2] 223 ...
+connect to [10.2.0.2] from (UNKNOWN) [10.2.0.1] 37578
+#+end_src
+
+Note that since the packets are redirected the source address will be
+=10.2.0.1=, the IP address assigned by =zon-lb= when redirecting packets
+to this backend. For kernels version less than 6.7 this address needs
+to be provided by hand. Starting with kernel 6.7 this source address
+will be obtained automatically after the FIB query. See
+[[https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/bpf.h?h=v6.7.12&#n3267][BPF_FIB_LOOKUP_SRC]]
+
+In the =zone1= netns run the =telnet= connecting to the pair veth IPv4
+address from the default netns:
+
+#+begin_src sh
+# telnet 10.0.0.1 23
+#+end_src
+
+If the telnet client starts and connects to the telnet server
+from the =zone2= netns without errors it will print:
+
+##+begin_src
+Trying 10.0.0.1...
+Connected to 10.0.0.1.
+Escape character is '^]'.
+#+end_src
+
+** Debugging ignored TCP SYN packet redirected to veth but received by pair veth driver
 
 Notes:
 - This problem prevents the 3-way TCP handshake as the SYN packet is ignored and no ACK+SYN packet is replyed back.
