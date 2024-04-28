@@ -1,5 +1,17 @@
 * Test zon-lb between two custom network namespace via veth pairs
 
+#+begin_src
+┌───────────────────┐              ┌─────────────────────┐    ┌────────────────────┐
+│zone2 netns        │              │   default netns     │    │         zone1 netns│
+│  server           │              │                     │    │            client  │
+│                 ┌─┴──────────────┴─┐                 ┌─┴────┴─┐                  │
+│            veth3│<--xdp_redirect-->│veth2       veth0│<------>│veth1             │
+│         xdp:pass└─┬──────────────┬─┘zon-lb     zon-lb└─┬────┬─┘xdp:pass          │
+│tx-checksumminf:off│              │                     │    │tx-checksumming:off │
+│                   │              │                     │    │                    │
+└───────────────────┘              └─────────────────────┘    └────────────────────┘
+#+end_src
+
 ** Zon-lb features:
 
 - XDP redirect on veth
@@ -292,4 +304,8 @@ To finally fix the issue just turn off the =tx-checksumming= with =ethtool=:
 #+end_src
 
 ** References
+
+- [[https://github.com/bpftrace/bpftrace/blob/master/man/adoc/bpftrace.adoc][Bpftrace manual]]
+- [[https://github.com/bpftrace/bpftrace/tree/master/tools][Bpftrace tools]]
+- [[https://docs.kernel.org/networking/skbuff.html#checksumming-on-transmit-for-non-gso][Kernel doc: Checksumming on transmit for non-GSO]]
 
