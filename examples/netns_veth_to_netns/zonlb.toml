@@ -1,0 +1,32 @@
+[netif.veth0.1]
+ip = "10.0.0.1"
+proto = 6
+port = 23
+options = []
+
+[backend.1_0]
+ip = "10.2.0.2"
+proto = 6
+port = 223
+options = ["tx", "redirect", "src_ip=10.2.0.1"]
+
+[netif.veth0.2]
+ip = "10.0.0.1"
+proto = 17
+port = 23
+options = []
+
+[backend.2_0]
+ip = "10.2.0.2"
+proto = 17
+port = 223
+options = ["tx", "redirect", "src_ip=10.2.0.1"]
+
+[netif.veth0.3]
+ip = "10.0.0.1"
+proto = 1
+
+[backend.3_0]
+ip = "10.2.0.2"
+proto = 1
+options = ["tx", "redirect", "src_ip=10.2.0.1"]
