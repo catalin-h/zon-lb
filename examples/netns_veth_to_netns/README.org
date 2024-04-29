@@ -2,7 +2,7 @@
 
 #+begin_src
 ┌───────────────────┐              ┌─────────────────────┐    ┌────────────────────┐
-│zone2 netns        │              │   default netns     │    │         zone1 netns│
+│zone1 netns        │              │   default netns     │    │         zone0 netns│
 │  server           │              │                     │    │            client  │
 │                 ┌─┴──────────────┴─┐                 ┌─┴────┴─┐                  │
 │            veth3│<--xdp_redirect-->│veth2       veth0│<------>│veth1             │
@@ -22,7 +22,7 @@
 
 ** Setup
 
-Run the [[./setup.sh][setup]] to create the custom namespace =zone1=:
+Run the [[./setup.sh][setup]] to create the custom namespace =zone0=:
 
 #+begin_src
 # ./setup.sh
@@ -66,7 +66,7 @@ feature. More details on how to issue was investigated see section [[Debugging i
 The primary test to do when verifying a load balanaced TCP connection is
 to use =telnet=:
 
-In the zone2 netns launch a =netcat= TCP server listening on port 223:
+In the zone1 netns launch a =netcat= TCP server listening on port 223:
 
 #+begin_src sh
 # nc -nlv -p 223 -s 10.2.0.2
@@ -86,7 +86,7 @@ to be provided by hand. Starting with kernel 6.7 this source address
 will be obtained automatically after the FIB query. See
 [[https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/bpf.h?h=v6.7.12&#n3267][BPF_FIB_LOOKUP_SRC]]
 
-In the =zone1= netns run the =telnet= connecting to the pair veth IPv4
+In the =zone0= netns run the =telnet= connecting to the pair veth IPv4
 address from the default netns:
 
 #+begin_src sh
@@ -94,7 +94,7 @@ address from the default netns:
 #+end_src
 
 If the telnet client starts and connects to the telnet server
-from the =zone2= netns without errors it will print:
+from the =zone1= netns without errors it will print:
 
 ##+begin_src
 Trying 10.0.0.1...

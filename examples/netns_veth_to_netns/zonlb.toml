@@ -22,7 +22,7 @@ proto = 17
 port = 223
 options = ["tx", "redirect", "src_ip=10.2.0.1"]
 
-[netif.veth0.3]
+[netif.veth2.3]
 ip = "10.0.0.1"
 proto = 1
 
