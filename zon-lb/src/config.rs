@@ -1,10 +1,12 @@
 use crate::{
     backends::{Backend as BCKND, EndPoint, Group, ToEndPoint},
-    helpers,
+    helpers::{get_xdp_link_info, if_index_to_name},
+    prog::Prog,
     protocols::Protocol,
     EpOptions,
 };
 use anyhow::{anyhow, Context};
+use aya::programs::XdpFlags;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -172,7 +174,7 @@ impl ConfigFile {
 
         Group::iterate_all(|ep, group| {
             let ifname = group.ifindex.to_string();
-            let ifname = helpers::if_index_to_name(group.ifindex).unwrap_or(ifname);
+            let ifname = if_index_to_name(group.ifindex).unwrap_or(ifname);
             let netif = cfg.netif.entry(ifname).or_insert(NetIf::new());
             let ep = EP {
                 ip: ep.ipaddr,
@@ -202,10 +204,31 @@ impl ConfigWriter {
         }
     }
 
+    // TODO: add program options in config file to automatically
+    // load, reload, teardown  programs on the interfaces.
+    // Also, this will automatically create the necessary maps.
+    fn if_init(&self, ifname: &str) -> Result<(), anyhow::Error> {
+        let mut prog = Prog::new(ifname)?;
+        if !prog.link_exists {
+            return prog.load(&mut crate::bpf_instance()?, XdpFlags::default());
+        }
+        match get_xdp_link_info(ifname) {
+            Some(info) => {
+                log::info!("Program id: {} loaded to {}", info.program_id, ifname);
+                Ok(())
+            }
+            None => {
+                prog.unload()?;
+                prog.load(&mut crate::bpf_instance()?, XdpFlags::default())
+            }
+        }
+    }
+
     fn write(mut self, cfg: &Config) -> Result<(), anyhow::Error> {
         log::info!("Writing config ...");
 
         for (name, nif) in cfg.netif.iter() {
+            self.if_init(name)?;
             match Group::new(&name) {
                 Ok(group) => self.load_groups(group, &nif),
                 Err(e) => {

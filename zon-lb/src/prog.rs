@@ -45,7 +45,7 @@ pub struct Prog {
     ifname: String,
     link_path: PathBuf,
     pub link_path_str: String,
-    link_exists: bool,
+    pub link_exists: bool,
 }
 
 impl Prog {
@@ -61,10 +61,11 @@ impl Prog {
         })
     }
 
-    fn unload_by_pinned_link(&mut self) -> Result<(), anyhow::Error> {
+    fn unload_by_pinned_link(&mut self) -> Result<bool, anyhow::Error> {
         if !self.link_exists {
-            return Ok(());
+            return Ok(true);
         }
+
         let link = PinnedLink::from_pin(&self.link_path)
             .context("Failed to load pinned link for zon-lb bpffs")?;
 
@@ -85,7 +86,7 @@ impl Prog {
             if zlblink_exists { "not " } else { "" }
         );
 
-        Ok(())
+        Ok(zlblink_exists)
     }
 
     pub fn unload(&mut self) -> Result<(), anyhow::Error> {
@@ -98,12 +99,25 @@ impl Prog {
             );
         };
 
-        if let Err(e) = &self.unload_by_pinned_link() {
-            log::warn!("[{}] Failed to remove pinned, {}", &self.ifname, e);
+        let file_exists = match self.unload_by_pinned_link() {
+            Ok(exists) => exists,
+            Err(e) => {
+                log::warn!("[{}] Failed to remove pinned, {}", &self.ifname, e);
+                true
+            }
+        };
+
+        if file_exists {
+            if let Err(e) = std::fs::remove_file(&self.link_path) {
+                log::warn!(
+                    "[{}] Failed to remove bpffs {}, {}",
+                    &self.ifname,
+                    self.link_path_str,
+                    e
+                );
+            }
         }
 
-        // TODO: pin the program also and effectively unload() the program
-        // from kernel. This will detach the links also (TBD).
         Ok(())
     }
 
@@ -134,6 +148,7 @@ impl Prog {
                 self.link_path_str
             ));
         }
+        // TODO: check if the link exist
 
         let program = Self::load_program(bpf)?;
 
