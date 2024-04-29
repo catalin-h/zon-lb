@@ -1,10 +1,10 @@
 #!/bin/sh
 NSA=0
-NSB=1
+NSB=2
 
 setup_ns() {
   NS=zone$1
-  P0=$(($1*2))
+  P0=$1
   NET=$1
   P1=$(($P0+1))
   IF0=veth$P0
