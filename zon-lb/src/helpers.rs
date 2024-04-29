@@ -111,6 +111,12 @@ pub(crate) fn if_name_or_default(index: u32) -> String {
     }
 }
 pub fn ifindex(ifname: &str) -> Result<u32, anyhow::Error> {
+    if ifname.starts_with("if#") && ifname.len() > 3 {
+        if let Ok(index) = ifname[3..].parse::<u32>() {
+            return Ok(index);
+        }
+    }
+
     let c_interface = std::ffi::CString::new(ifname)?;
     let if_index = unsafe { libc::if_nametoindex(c_interface.as_ptr()) };
     if if_index == 0 {

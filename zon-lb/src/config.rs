@@ -255,8 +255,8 @@ impl ConfigWriter {
 
     fn load_groups(&mut self, group: Group, netif: &NetIf) {
         match group.remove_all() {
-            Ok(()) => log::info!("All groups removed from {}", group.ifname),
-            Err(e) => log::error!("Not all groups were removed from {}, {}", group.ifname, e),
+            Ok(()) => log::info!("All groups binded to {} were removed", group.ifname),
+            Err(e) => log::error!("Failed to remove groups binded to {}, {}", group.ifname, e),
         };
         for (gid, ep) in netif.groups.iter() {
             let gid = match gid.parse::<u16>() {
@@ -272,7 +272,9 @@ impl ConfigWriter {
                 }
             };
             let ep = ep.into();
-            let actual_gid = match group.add(&ep) {
+            // Do a replace as the interface can be removed but
+            // the group can still exist in the maps
+            let actual_gid = match group.replace(&ep) {
                 Ok(id) => id,
                 Err(e) => {
                     log::error!(

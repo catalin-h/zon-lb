@@ -322,16 +322,21 @@ impl Group {
         }
     }
 
+    pub fn replace(&self, ep: &EndPoint) -> Result<u16, anyhow::Error> {
+        if let Ok(beg) = self.get_by_ep(ep) {
+            info!("Replacing backend group {} with gid: {}", ep, beg.gid);
+            self.remove(beg.gid)?;
+        }
+        self.add(ep)
+    }
+
     pub fn add(&self, ep: &EndPoint) -> Result<u16, anyhow::Error> {
-        match self.get_by_ep(ep) {
-            Ok(beg) => {
-                return Err(anyhow!(
-                    "Backend group {} already exists, gid: {}",
-                    ep,
-                    beg.gid
-                ))
-            }
-            Err(_) => {}
+        if let Ok(beg) = self.get_by_ep(ep) {
+            return Err(anyhow!(
+                "Backend group {} already exists, gid: {}",
+                ep,
+                beg.gid
+            ));
         }
 
         let ginfo = ep.as_group_info(&self.ifname)?;
@@ -493,8 +498,7 @@ impl GroupMap {
     fn new(gid: u16) -> Result<GroupMap, anyhow::Error> {
         let meta = Group::group_meta()?;
         let info = meta.get(&(gid as u64), 0).context("No group in metadata")?;
-        // TODO: need ifname?
-        let ifname = if_index_to_name(info.ifindex).ok_or(anyhow!("Can't get netdev name"))?;
+        let ifname = if_name_or_default(info.ifindex);
         let group = Group::new(&ifname)?;
         Ok(Self { group, info })
     }
@@ -763,7 +767,7 @@ impl Backend {
             "Remove: can't find backend: {} : {}",
             self.gid, index
         ))?;
-        let rem_index = self.remove_from_group(index)?;
+        let rem_index = self.remove_from_group(index).context("Remove from group")?;
         let key = BEKey {
             gid: self.gid as u16,
             index: rem_index,
@@ -784,7 +788,7 @@ impl Backend {
         {
             match self.remove(0) {
                 Ok(be) => rem_eps.push(be),
-                Err(_) => {}
+                Err(e) => error!("Failed to remove be {}:0, {}", self.gid, e),
             }
         }
 
