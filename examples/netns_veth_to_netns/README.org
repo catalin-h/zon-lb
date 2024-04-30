@@ -114,6 +114,42 @@ while the server thinks it is connected to a client binded at =10.2.0.1=.
 
 The telnet client was also used to investigate the ignored TCP SYN packet below.
 
+** Run =iperf= benchmark
+
+To start the =iperf= server in the =zone2= netns run the following command
+from the default netns:
+#+begin_src sh
+sudo ip netns exec zone2 iperf -s -p 223 -B 10.2.0.2
+#+end_src
+On success it will print:
+#+begin_src
+------------------------------------------------------------
+Server listening on TCP port 223
+TCP window size:  128 KByte (default)
+#+end_src
+
+To launch the client in =zone0= netns run the next command also from default netns:
+#+begin_src sh
+sudo ip netns exec zone0 iperf -e -p 23 -c 10.0.0.1
+#+end_src
+
+The benchmark will start immediately and will end after a few seconds:
+
+#+begin_src
+Client connecting to 10.0.0.1, TCP port 23 with pid 4150738 (1 flows)
+Write buffer size: 131072 Byte
+TOS set to 0x0 (Nagle on)
+TCP window size: 85.0 KByte (default)
+------------------------------------------------------------
+[  1] local 10.0.0.2%veth1 port 38688 connected with 10.0.0.1 port 23 (sock=3) (icwnd/mss/irtt=14/1448/87) (ct=0.15 ms) ...
+[ ID] Interval            Transfer    Bandwidth       Write/Err  Rtry     Cwnd/RTT(var)        NetPwr
+[  1] 0.0000-10.0154 sec  4.09 GBytes  3.51 Gbits/sec  33522/0        145      147K/976(1462) us  449490
+#+end_src
+
+Note that the above result was obtained on an Ivy Bridge i5 dual core system.
+Also, note that during the benchmark there was no user app reading the aya-log
+as this will slow down the performance significantly.
+
 ** Debugging ignored TCP SYN packet redirected to veth but received by pair veth driver
 
 Notes:
