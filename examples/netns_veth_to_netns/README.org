@@ -2,7 +2,7 @@
 
 #+begin_src
 ┌───────────────────┐              ┌─────────────────────┐    ┌────────────────────┐
-│zone1 netns        │              │   default netns     │    │         zone0 netns│
+│zone2 netns        │              │   default netns     │    │         zone0 netns│
 │  server           │              │                     │    │            client  │
 │                 ┌─┴──────────────┴─┐                 ┌─┴────┴─┐                  │
 │            veth3│<--xdp_redirect-->│veth2       veth0│<------>│veth1             │
@@ -24,14 +24,14 @@
 
 Run the [[./setup.sh][setup]] to create the custom namespace =zone0=:
 
-#+begin_src
-# ./setup.sh
+#+begin_src sh
+sudp ./setup.sh
 #+end_src
 
 Load the configuration [[./zonlb.toml][config]]:
 
-#+begin_src
-# ./zon-lb ./zonlb.toml load
+#+begin_src sh
+sudo ./zon-lb ./zonlb.toml load
 #+end_src
 
 Note that there no need to preload or postload the =zon-lb= program
@@ -52,13 +52,13 @@ program attached. On the other side it necessary to have the xdp program return
 =xdp_frame= created during =xdp_redirect= and get the ethernet frame.
 
 To attach the xdp program in driver mode to an veth interface:
-#+begin_src
-# ip link set veth3 xdp obj xdp_pass.o sec .text
+#+begin_src sh
+ip link set veth3 xdp obj xdp_pass.o sec .text
 #+end_src
 
 To unload the xdp program just set it to =none=:
-#+begin_src
-# ip link set veth3 xdp none
+#+begin_src sh
+ip link set veth3 xdp none
 #+end_src
 
 *** Must disable tx offload checksumming on both veth interfaces from netns
@@ -67,15 +67,16 @@ support hw checksum compute although it advertises this support (=NETIF_F_HW_CSU
 in its exported features. To overcome this bug the script will disable this
 feature. More details on how to issue was investigated see section [[Debugging ignored TCP SYN packet]].
 
-** Run Telnet test
+** Run =netcat= test
 
 The primary test to do when verifying a load balanaced TCP connection is
 to use =telnet=:
 
-In the zone1 netns launch a =netcat= TCP server listening on port 223:
+From the default netns run the following command in order to launch
+a =netcat= TCP server listening on port 223 inside the =zone2= netns:
 
 #+begin_src sh
-# nc -nlv -p 223 -s 10.2.0.2
+sudo ip netns exec zone2 nc -nlv -p 223 -s 10.2.0.2
 #+end_src
 
 If the server is started without errors and a client is connect it will print:
@@ -92,17 +93,16 @@ to be provided by hand. Starting with kernel 6.7 this source address
 will be obtained automatically after the FIB query. See
 [[https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/bpf.h?h=v6.7.12&#n3267][BPF_FIB_LOOKUP_SRC]]
 
-In the =zone0= netns run the =telnet= connecting to the pair veth IPv4
-address from the default netns:
+From another terminal running in the default netns run the following
+command in order to start the =nc= client inside the =zone0= netns:
 
 #+begin_src sh
-# telnet 10.0.0.1 23
+sudo ip netns exec zone0 nc 10.0.0.1 23
 #+end_src
 
-If the telnet client starts and connects to the telnet server
-from the =zone1= netns without errors it will print:
+If the telnet client starts and connects to the telnet server without errors it will print:
 
-##+begin_src
+#+begin_src
 Trying 10.0.0.1...
 Connected to 10.0.0.1.
 Escape character is '^]'.
