@@ -1,15 +1,15 @@
 #+TITLE: Test zon-lb between two custom network namespace via veth pairs
 
 #+begin_src
-┌───────────────────┐              ┌─────────────────────┐    ┌────────────────────┐
-│zone2 netns        │              │   default netns     │    │         zone0 netns│
-│  server           │              │                     │    │            client  │
-│                 ┌─┴──────────────┴─┐                 ┌─┴────┴─┐                  │
-│            veth3│<--xdp_redirect-->│veth2       veth0│<------>│veth1             │
-│         xdp:pass└─┬──────────────┬─┘zon-lb     zon-lb└─┬────┬─┘xdp:pass          │
-│tx-checksumminf:off│              │                     │    │tx-checksumming:off │
-│                   │              │                     │    │                    │
-└───────────────────┘              └─────────────────────┘    └────────────────────┘
+┌───────────────────┐              ┌─────────────────────┐              ┌────────────────────┐
+│zone2 netns        │              │   default netns     │              │         zone0 netns│
+│  server           │              │                     │              │            client  │
+│                 ┌─┴──────────────┴─┐                 ┌─┴──────────────┴─┐                  │
+│            veth3│<--xdp_redirect---│veth2       veth0│<-----------------│veth1             │
+│                 │----------------->│                 │---xdp_redirect-->│                  │
+│         xdp:pass└─┬──────────────┬─┘zon-lb     zon-lb└─┬──────────────┬─┘xdp:pass          │
+│tx-checksumminf:off│              │                     │              │tx-checksumming:off │
+└───────────────────┘              └─────────────────────┘              └────────────────────┘
 #+end_src
 
 ** Zon-lb features:
@@ -67,10 +67,10 @@ support hw checksum compute although it advertises this support (=NETIF_F_HW_CSU
 in its exported features. To overcome this bug the script will disable this
 feature. More details on how to issue was investigated see section [[Debugging ignored TCP SYN packet]].
 
-** Run =netcat= test
+** Run =telnet= test
 
 The primary test to do when verifying a load balanaced TCP connection is
-to use =telnet=:
+to use =telnet=.
 
 From the default netns run the following command in order to launch
 a =netcat= TCP server listening on port 223 inside the =zone2= netns:
@@ -79,11 +79,10 @@ a =netcat= TCP server listening on port 223 inside the =zone2= netns:
 sudo ip netns exec zone2 nc -nlv -p 223 -s 10.2.0.2
 #+end_src
 
-If the server is started without errors and a client is connect it will print:
+If the server is started without errors it will print:
 
 #+begin_src
 listening on [10.2.0.2] 223 ...
-connect to [10.2.0.2] from (UNKNOWN) [10.2.0.1] 37578
 #+end_src
 
 Note that since the packets are redirected the source address will be
@@ -94,19 +93,26 @@ will be obtained automatically after the FIB query. See
 [[https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/bpf.h?h=v6.7.12&#n3267][BPF_FIB_LOOKUP_SRC]]
 
 From another terminal running in the default netns run the following
-command in order to start the =nc= client inside the =zone0= netns:
+command in order to start the =telnet= client inside the =zone0= netns:
 
 #+begin_src sh
-sudo ip netns exec zone0 nc 10.0.0.1 23
+sudo ip netns exec zone0 telnet 10.0.0.1
 #+end_src
 
-If the telnet client starts and connects to the telnet server without errors it will print:
-
+If the telnet client successfully connects to the nc server, the latter will print:
 #+begin_src
-Trying 10.0.0.1...
+connect to [10.2.0.2] from (UNKNOWN) [10.2.0.1] 37578
+#+end_src
+.. while the client will print:
+#+begin_src
 Connected to 10.0.0.1.
 Escape character is '^]'.
 #+end_src
+
+Note that the client thinks it is connected to a server at address =10.0.0.1=
+while the server thinks it is connected to a client binded at =10.2.0.1=.
+
+The telnet client was also used to investigate the ignored TCP SYN packet below.
 
 ** Debugging ignored TCP SYN packet redirected to veth but received by pair veth driver
 
