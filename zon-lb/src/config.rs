@@ -1,6 +1,6 @@
 use crate::{
     backends::{Backend as BCKND, EndPoint, Group, ToEndPoint},
-    helpers::{get_xdp_link_info, if_index_to_name},
+    helpers::if_index_to_name,
     prog::Prog,
     protocols::Protocol,
     EpOptions,
@@ -209,19 +209,17 @@ impl ConfigWriter {
     // Also, this will automatically create the necessary maps.
     fn if_init(&self, ifname: &str) -> Result<(), anyhow::Error> {
         let mut prog = Prog::new(ifname)?;
+
         if !prog.link_exists {
             return prog.load(&mut crate::bpf_instance()?, XdpFlags::default());
         }
-        match get_xdp_link_info(ifname) {
-            Some(info) => {
-                log::info!("Program id: {} loaded to {}", info.program_id, ifname);
-                Ok(())
-            }
-            None => {
-                prog.unload()?;
-                prog.load(&mut crate::bpf_instance()?, XdpFlags::default())
-            }
-        }
+
+        // Always reload the program of interface and update the txport map
+        // with current net device index. The device can be recreated with
+        // another index by the kernel. This affects the redirect map used
+        // to redirect packets by the program.
+        prog.unload()?;
+        prog.load(&mut crate::bpf_instance()?, XdpFlags::default())
     }
 
     fn write(mut self, cfg: &Config) -> Result<(), anyhow::Error> {
