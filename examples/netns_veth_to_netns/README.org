@@ -34,6 +34,12 @@ Load the configuration [[./zonlb.toml][config]]:
 # ./zon-lb ./zonlb.toml load
 #+end_src
 
+Note that there no need to preload or postload the =zon-lb= program
+on any of the interfaces mentioned in the config file. The user app
+will automatically load or replace the existing program binded to
+the interface. This is done in order to patch the redirect map that
+might not be consistent with current device indexes.
+
 *** Both veth pair sides must have attached an xdp program
 
 Note that the setup script will install a simple xdp program on veth interfaces
