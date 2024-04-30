@@ -533,7 +533,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_TX);
     }
 
-    // NOTE: Try use:
+    // NOTE: the next function uses
     // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
     // in order to compute the source/dest mac + vlan info from IP source,destination
     // before redirecting a packet to the backend. This feature is different from
@@ -556,76 +556,6 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // ifindex used to redirect the packet.
 
     return redirect_ipv4(ctx, ipv4hdr);
-
-    let fib_param = unsafe {
-        BpfFibLookUp::new_inet(
-            (*ipv4hdr).tot_len.to_be(),
-            if_index,
-            (*ipv4hdr).tos as u32,
-            (*ipv4hdr).src_addr,
-            (*ipv4hdr).dst_addr,
-        )
-    };
-    let p_fib_param = &fib_param as *const BpfFibLookUp as *mut bpf_fib_lookup_param_t;
-    let rc = unsafe {
-        bpf_fib_lookup(
-            ctx.as_ptr(),
-            p_fib_param,
-            mem::size_of::<BpfFibLookUp>() as i32,
-            0,
-        )
-    };
-
-    info!(
-        ctx,
-        "[redirect] output, lkp_ret: {}, fw if: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
-        rc,
-        fib_param.ifindex,
-        fib_param.src[0].to_be(),
-        fib_param.dst[0].to_be(),
-        fib_param.dest_mac(),
-        fib_param.src_mac(),
-    );
-
-    if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
-        // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
-
-        let action = unsafe {
-            let eth = ptr_at::<EthHdr>(&ctx, 0)?;
-            fib_param.fill_ethdr_macs(eth.cast_mut());
-
-            // NOTE: aya embeds the bpf_redirect_map in map struct impl
-            match ZLB_TXPORT.redirect(fib_param.ifindex, 0) {
-                Ok(action) => action,
-                Err(e) => {
-                    error!(ctx, "[redirect] No tx port: {}, {}", fib_param.ifindex, e);
-                    bpf_redirect(fib_param.ifindex, 0) as xdp_action::Type
-                }
-            }
-        };
-
-        info!(ctx, "[redirect] action => {}", action);
-
-        update_arp(ctx, fib_param);
-
-        return Ok(action);
-    }
-
-    if rc == BPF_FIB_LKUP_RET_BLACKHOLE as i64
-        || rc == BPF_FIB_LKUP_RET_UNREACHABLE as i64
-        || rc == BPF_FIB_LKUP_RET_PROHIBIT as i64
-    {
-        error!(ctx, "[redirect] can't fw, rc: {}", rc);
-        return Ok(XDP_DROP);
-    }
-    if rc < 0 {
-        error!(ctx, "[redirect] invalid arg, rc: {}", rc);
-    } else {
-        // let it pass to the stack to handle it
-        info!(ctx, "[redirect] packet not fwd, rc: {}", rc);
-    }
-
-    Ok(XDP_PASS)
 }
 
 fn redirect_txport(ctx: &XdpContext, ifindex: u32) -> xdp_action::Type {
