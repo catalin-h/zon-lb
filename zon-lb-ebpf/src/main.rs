@@ -378,7 +378,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     info!(
         ctx,
         "[ctrk] fw be: {:i}:{}",
-        be.address.v4.to_be(),
+        be.address[0].to_be(),
         be.port.to_be()
     );
 
@@ -398,7 +398,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         // NOTE: the LB will use the source port since there can be multiple
         // connection to the same backend and it needs to track all of them.
         let nat4key = NAT4Key {
-            ip_be_src: be.address.v4,
+            ip_be_src: be.address[0],
             ip_lb_dst: lb_addr,
             port_be_src: be.port,
             port_lb_dst: src_port, // use the source port of the endpoint
@@ -453,18 +453,18 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     unsafe {
         let hdr = ipv4hdr.cast_mut();
         (*hdr).src_addr = lb_addr;
-        (*hdr).dst_addr = be.address.v4;
+        (*hdr).dst_addr = be.address[0];
 
         // TODO: check if we can compute delta diff and just apply the delta
         // to the tcp/udp check sum.
         if lb_addr != dst_addr {
-            let csum = csum_update_u32(dst_addr, be.address.v4, check);
+            let csum = csum_update_u32(dst_addr, be.address[0], check);
             let csum = csum_update_u32(src_addr, lb_addr, csum);
             (*hdr).check = !csum_fold_32_to_16(csum);
-        } else if src_addr != be.address.v4 {
+        } else if src_addr != be.address[0] {
             //csum = csum_update_u32(dst_addr, be.address.v4, csum);
             //csum = csum_update_u32(src_addr, dst_addr, csum);
-            let csum = csum_update_u32(src_addr, be.address.v4, check);
+            let csum = csum_update_u32(src_addr, be.address[0], check);
             (*hdr).check = !csum_fold_32_to_16(csum);
         }
     }
@@ -486,10 +486,10 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
             // The source ip is part of the TCP pseudo header
             if lb_addr != dst_addr {
-                tcs = csum_update_u32(dst_addr, be.address.v4, tcs);
+                tcs = csum_update_u32(dst_addr, be.address[0], tcs);
                 tcs = csum_update_u32(src_addr, lb_addr, tcs);
-            } else if src_addr != be.address.v4 {
-                tcs = csum_update_u32(src_addr, be.address.v4, tcs);
+            } else if src_addr != be.address[0] {
+                tcs = csum_update_u32(src_addr, be.address[0], tcs);
             }
 
             // The destination port is part of the TCP header
@@ -514,10 +514,10 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
             // The source ip is part of the pseudo header
             if lb_addr != dst_addr {
-                ucs = csum_update_u32(dst_addr, be.address.v4, ucs);
+                ucs = csum_update_u32(dst_addr, be.address[0], ucs);
                 ucs = csum_update_u32(src_addr, lb_addr, ucs);
-            } else if src_addr != be.address.v4 {
-                ucs = csum_update_u32(src_addr, be.address.v4, ucs);
+            } else if src_addr != be.address[0] {
+                ucs = csum_update_u32(src_addr, be.address[0], ucs);
             }
 
             // The destination port is part of the header

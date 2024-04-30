@@ -187,8 +187,11 @@ unsafe impl aya::Pod for INET {}
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BE {
-    /// Holds both an IPv4 and IPv6 address (big-endian)
-    pub address: INET,
+    /// Holds the IPv4 or IPv6 address (big-endian) of the
+    /// destination backend. Looks like using an array boosts
+    /// the iperf w/ ~0.1 Gbits/sec than separate v4 and v6
+    /// fields.
+    pub address: [u32; 4],
     /// Prefered source ip for this backend instead of the LB ip.
     /// It should be used if it is different than 0.0.0.0 or ::0.
     pub src_ip: [u32; 4],

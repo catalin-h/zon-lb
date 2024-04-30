@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap as StdHashMap};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Shl;
 use std::{fmt, net::IpAddr};
-use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX, INET};
+use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX};
 
 impl ToMapName for EP4 {
     fn map_name() -> &'static str {
@@ -81,10 +81,10 @@ pub trait BackendInfo {
 
 impl BackendInfo for BE {
     fn ipv4(&self) -> IpAddr {
-        IpAddr::from(self.address.v4.to_le_bytes())
+        IpAddr::from(self.address[0].to_le_bytes())
     }
     fn ipv6(&self) -> IpAddr {
-        IpAddr::from(self.address.v6)
+        IpAddr::from(unsafe { *(self.address.as_ptr() as *const [u8; 16]) })
     }
     fn port(&self) -> u16 {
         self.port.to_le()
@@ -218,8 +218,11 @@ impl EndPoint {
 
     fn as_backend(&self, gid: u16) -> BE {
         let (address, flags) = match &self.ipaddr {
-            IpAddr::V4(ip) => (INET::from(u32::from(*ip).to_be()), EPFlags::IPV4),
-            IpAddr::V6(ip) => (INET::from(ip.octets()), EPFlags::IPV6),
+            IpAddr::V4(ip) => ([u32::from(*ip).to_be(), 0, 0, 0], EPFlags::IPV4),
+            IpAddr::V6(ip) => (
+                unsafe { *(ip.octets().as_ptr() as *const [u32; 4]) },
+                EPFlags::IPV6,
+            ),
         };
         let flags = flags | self.options.flags;
         let src_ip = match self.options.props.get(options::SRC_IP) {
