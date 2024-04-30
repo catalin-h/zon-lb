@@ -8,6 +8,7 @@ mod prog;
 mod protocols;
 mod services;
 
+use crate::logging::init_log_with_replace;
 use anyhow::Context;
 use aya::{include_bytes_aligned, programs::XdpFlags, EbpfLoader};
 use aya_log::EbpfLogger;
@@ -301,6 +302,9 @@ struct DebugOpt {
     /// Target net interface name, eg. eth0
     #[clap(default_value = "lo")]
     ifname: String,
+    /// Additional options to debug the program.
+    /// Current options are: replace
+    options: Vec<String>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -476,7 +480,12 @@ fn handle_conntrack(opt: &ConnTrackOpt) -> Result<(), anyhow::Error> {
 }
 
 async fn handle_debug(opt: &DebugOpt) -> Result<(), anyhow::Error> {
-    init_log(&opt.ifname)?;
+    if opt.options.contains(&logging::REPLACE_OPT.to_string()) {
+        init_log_with_replace(&opt.ifname)?;
+    } else {
+        init_log(&opt.ifname)?;
+    }
+
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
     info!("Exiting...");
