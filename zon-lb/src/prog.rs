@@ -172,6 +172,15 @@ impl Prog {
             .attach_to_link(link.try_into()?)
             .context("Failed to attach new program to existing link")?;
 
+        match program.info() {
+            Ok(info) => log::info!(
+                "Pinned link attached to program id: {} binded to {}",
+                info.id(),
+                self.ifname
+            ),
+            Err(e) => log::error!("Failed to get proram info, {}", e),
+        };
+
         TxPorts::init()?;
 
         self.init_info(bpf)
