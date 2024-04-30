@@ -148,7 +148,20 @@ impl Prog {
                 self.link_path_str
             ));
         }
-        // TODO: check if the link exist
+
+        match get_xdp_link_info(&self.ifname) {
+            Some(info) => log::info!(
+                "Found pinned link for program id: {} binded to {}",
+                info.program_id,
+                self.ifname
+            ),
+            None => {
+                return Err(anyhow!(
+                    "No pinned link for {}, try load program",
+                    self.ifname
+                ))
+            }
+        };
 
         let program = Self::load_program(bpf)?;
 
