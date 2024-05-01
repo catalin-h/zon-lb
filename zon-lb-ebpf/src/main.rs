@@ -24,9 +24,13 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4, EP6,
-    MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
+    runvars::*, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4,
+    EP6, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
+
+/// Stores the program instance runtime variables.
+#[map]
+static ZLB_RUNVAR: Array<u64> = Array::with_max_entries(MAX_RUNTIME_VARS, 0);
 
 // TODO: change it to array to add:
 // - packet counters

@@ -10,12 +10,29 @@ pub const MAX_CONNTRACKS: u32 = 10; // tmp dev, actual = 1 << 15;
 // ARP table it should at least the number of supported backends
 pub const MAX_ARP_ENTRIES: u32 = MAX_BACKENDS;
 
+/// Runtime variables allows the user app to dynamically set the
+/// logging level, enable or disable some bpf features like conntrack
+/// or just read statistics. The variable are accessed using the
+/// ZLB_RUNVAR array map where each entry represents variable as
+/// a 64-bit value. The bellow enum values represent the index
+/// where each variable is stored.
+pub mod runvars {
+    /// Set or get the current log level.
+    ///
+    /// The values start from `1` (error) and are the same enum
+    /// values defined by [aya_log_common::Level]. To turn off
+    /// all logging set it to `0`.
+    pub const LOG_LEVEL_IDX: u32 = 1;
+    // TODO: add statistics
+    /// Max size of the runtime variable map
+    pub const MAX_RUNTIME_VARS: u32 = 16;
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ZonInfo {
     pub version: u32,
-    // TODO: add attach mode, skb or driver
-    // TODO: add debug log mode
+    // TODO: log is _fused_ turned off
 }
 
 #[cfg(feature = "user")]
