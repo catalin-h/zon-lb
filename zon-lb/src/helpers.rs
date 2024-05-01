@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use aya::maps::MapInfo;
 use aya::{maps::MapData, Ebpf};
 use aya_obj::generated::{bpf_link_type, BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
 use bitflags;
@@ -208,4 +209,18 @@ pub fn teardown_maps(map_list: &[&str]) -> Result<(), anyhow::Error> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn get_mapdata_by_name(ifname: &str, map_name: &str) -> Option<MapData> {
+    let program_info = crate::get_program_info_by_ifname(ifname).ok()?;
+    let map = program_info
+        .map_ids()
+        .ok()?
+        .iter()
+        .filter_map(|id| MapInfo::from_id(*id).ok())
+        .find(|map_info| match map_info.name_as_str() {
+            Some(name) => name == map_name,
+            None => false,
+        })?;
+    MapData::from_id(map.id()).ok()
 }
