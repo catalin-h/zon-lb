@@ -59,6 +59,9 @@ pub struct EPFlags: u32 {
     const XDP_REDIRECT = 1 << 4;
     /// Disable connection tracking and NAT for the backend connection.
     const NO_CONNTRACK = 1 << 8;
+    /// TODO: Enable logging on this object and dimiss the runvar that controls
+    /// the log level.
+    const ENABLE_LOGGING = 1 << 10;
 }
 }
 
