@@ -243,7 +243,7 @@ impl Prog {
     fn post_load_init(&self) -> Result<(), anyhow::Error> {
         self.init_info();
         match RunVars::new(&self.ifname) {
-            Ok(mut rv) => rv.set_logging_level(),
+            Ok(mut rv) => rv.set_defaults(),
             Err(e) => log::error!("Failed to get run vars accessor, {}", e),
         };
         TxPorts::init()

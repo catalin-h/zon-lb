@@ -1,6 +1,7 @@
 use crate::{helpers::*, ToMapName};
 use anyhow::anyhow;
 use aya::maps::{Array, Map, MapData};
+use log::LevelFilter;
 use zon_lb_common::runvars::LOG_LEVEL_IDX;
 
 pub struct RunVars {
@@ -22,9 +23,14 @@ impl RunVars {
         Ok(Self { rvmap })
     }
 
-    pub fn set(&mut self, rv_idx: u32, value: u64) -> Result<(), anyhow::Error> {
-        self.rvmap.set(rv_idx, &value, 0)?;
-        Ok(())
+    pub fn set(&mut self, rv_idx: u32, value: u64) -> bool {
+        match self.rvmap.set(rv_idx, &value, 0) {
+            Ok(()) => true,
+            Err(e) => {
+                log::error!("Failed to set {} to {}, {}", rv_idx, value, e);
+                false
+            }
+        }
     }
 
     pub fn _get(&mut self, rv_idx: u32) -> Result<u64, anyhow::Error> {
@@ -32,11 +38,13 @@ impl RunVars {
         Ok(value)
     }
 
-    pub fn set_logging_level(&mut self) {
-        let level = log::max_level();
-        match self.set(LOG_LEVEL_IDX, level as u64) {
-            Ok(()) => {}
-            Err(e) => eprintln!("Failed to set log level to {}, {}", level, e),
-        };
+    pub fn set_defaults(&mut self) {
+        self.set_logging_level(log::max_level());
+    }
+
+    fn set_logging_level(&mut self, level: LevelFilter) {
+        if !self.set(LOG_LEVEL_IDX, level as u64) {
+            eprintln!("Failed to set log level to {}", level);
+        }
     }
 }
