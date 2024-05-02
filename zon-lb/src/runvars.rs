@@ -2,7 +2,10 @@ use crate::{helpers::*, ToMapName};
 use anyhow::anyhow;
 use aya::maps::{Array, Map, MapData};
 use log::LevelFilter;
-use zon_lb_common::runvars::LOG_LEVEL_IDX;
+use zon_lb_common::{
+    runvars::{FUSED_VERSION_IDX, LOG_LEVEL_IDX},
+    VERSION,
+};
 
 pub struct RunVars {
     rvmap: Array<MapData, u64>,
@@ -33,12 +36,20 @@ impl RunVars {
         }
     }
 
-    pub fn _get(&mut self, rv_idx: u32) -> Result<u64, anyhow::Error> {
-        let value = self.rvmap.get(&rv_idx, 0)?;
-        Ok(value)
+    pub fn get(&self, rv_idx: u32, def_val: u64) -> u64 {
+        match self.rvmap.get(&rv_idx, 0) {
+            Ok(value) => value,
+            Err(e) => {
+                log::error!("Failed to get {}, {}", rv_idx, e);
+                def_val
+            }
+        }
     }
 
+    // TODO: set feature flags
+
     pub fn set_defaults(&mut self) {
+        self.set(FUSED_VERSION_IDX, VERSION as u64);
         self.set_logging_level(log::max_level());
     }
 
@@ -46,5 +57,9 @@ impl RunVars {
         if !self.set(LOG_LEVEL_IDX, level as u64) {
             eprintln!("Failed to set log level to {}", level);
         }
+    }
+
+    pub fn version(&self) -> u64 {
+        self.get(FUSED_VERSION_IDX, 0)
     }
 }
