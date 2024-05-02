@@ -6,6 +6,7 @@ mod info;
 mod logging;
 mod prog;
 mod protocols;
+mod runvars;
 mod services;
 
 use crate::logging::init_log_with_replace;

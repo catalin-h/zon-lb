@@ -1,4 +1,4 @@
-use crate::{backends, conntrack, helpers::*, ToMapName};
+use crate::{backends, conntrack, helpers::*, runvars::RunVars, ToMapName};
 use anyhow::{anyhow, Context};
 use aya::{
     maps::{Array, DevMap, Map, MapData},
@@ -10,16 +10,7 @@ use aya::{
 };
 use log::info;
 use std::path::PathBuf;
-use zon_lb_common::runvars;
 use zon_lb_common::ZonInfo;
-
-struct RunVar;
-
-impl ToMapName for RunVar {
-    fn map_name() -> &'static str {
-        "ZLB_RUNVAR"
-    }
-}
 
 struct TxPorts;
 
@@ -251,31 +242,10 @@ impl Prog {
 
     fn post_load_init(&self) -> Result<(), anyhow::Error> {
         self.init_info();
-        self.set_logging_level();
-
-        TxPorts::init()
-    }
-
-    fn set_logging_level(&self) {
-        let level = log::max_level();
-        match self.set_runvar(runvars::LOG_LEVEL_IDX, level as u64) {
-            Ok(()) => {}
-            Err(e) => eprintln!("Failed to set log level to {}, {}", level, e),
+        match RunVars::new(&self.ifname) {
+            Ok(mut rv) => rv.set_logging_level(),
+            Err(e) => log::error!("Failed to get run vars accessor, {}", e),
         };
-    }
-
-    // TODO: cache the map for later usage
-    fn runvar_map(&self) -> Result<Array<MapData, u64>, anyhow::Error> {
-        let map = get_mapdata_by_name(&self.ifname, RunVar::map_name())
-            .ok_or(anyhow!("Can't find map {}", RunVar::map_name()))?;
-        let map = Map::Array(map);
-        let map: Array<_, u64> = map.try_into()?;
-        Ok(map)
-    }
-
-    pub fn set_runvar(&self, rv_idx: u32, value: u64) -> Result<(), anyhow::Error> {
-        let mut runvars = self.runvar_map()?;
-        runvars.set(rv_idx, &value, 0)?;
-        Ok(())
+        TxPorts::init()
     }
 }
