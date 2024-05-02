@@ -142,12 +142,30 @@ impl Prog {
         Ok(program)
     }
 
-    /// Initialize program info and start params   
-    fn init_info(&self, bpf: &mut Ebpf) -> Result<(), anyhow::Error> {
-        let mut info: Array<_, ZonInfo> = Array::try_from(bpf.map_mut("ZLB_INFO").unwrap())?;
-        info.set(0, ZonInfo::new(), 0)
-            .context("Failed to set zon info")?;
-        Ok(())
+    /// Initialize program info or fused parameters that don't change at runtime.
+    fn init_info(&self) {
+        let map = match get_mapdata_by_name(&self.ifname, ZonInfo::map_name()) {
+            Some(map) => Map::Array(map),
+            None => {
+                log::error!(
+                    "Can't find map {} for program loaded on {}",
+                    ZonInfo::map_name(),
+                    &self.ifname
+                );
+                return;
+            }
+        };
+        let mut map: Array<MapData, ZonInfo> = match map.try_into() {
+            Ok(map) => map,
+            Err(e) => {
+                log::error!("Failed to match ZonInfo metadata, {}", e);
+                return;
+            }
+        };
+        match map.set(0, ZonInfo::new(), 0) {
+            Ok(()) => {}
+            Err(e) => log::error!("Failed to set ZonInfo, {}", e),
+        };
     }
 
     pub fn replace(&self, bpf: &mut Ebpf) -> Result<(), anyhow::Error> {
@@ -191,7 +209,13 @@ impl Prog {
         };
 
         self.post_load_init()?;
-        self.init_info(bpf)
+
+        info!(
+            "Successfully replace the program on interface {}",
+            self.ifname
+        );
+
+        Ok(())
     }
 
     pub fn load(&self, bpf: &mut Ebpf, flags: XdpFlags) -> Result<(), anyhow::Error> {
@@ -218,7 +242,6 @@ impl Prog {
             .pin(&self.link_path)
             .context("Failed to create pinned link for program")?;
 
-        self.init_info(bpf)?;
         self.post_load_init()?;
 
         info!("Successfully load the program on interface {}", self.ifname);
@@ -227,7 +250,9 @@ impl Prog {
     }
 
     fn post_load_init(&self) -> Result<(), anyhow::Error> {
+        self.init_info();
         self.set_logging_level();
+
         TxPorts::init()
     }
 

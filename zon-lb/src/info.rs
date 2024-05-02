@@ -1,4 +1,4 @@
-use crate::helpers::*;
+use crate::{helpers::*, ToMapName};
 
 use anyhow::anyhow;
 use aya::{
@@ -10,6 +10,12 @@ use chrono::{DateTime, Local};
 use log::warn;
 use std::collections::BTreeMap;
 use zon_lb_common::ZonInfo;
+
+impl ToMapName for ZonInfo {
+    fn map_name() -> &'static str {
+        "ZLB_INFO"
+    }
+}
 
 pub struct InfoTable {
     header: Vec<String>,
