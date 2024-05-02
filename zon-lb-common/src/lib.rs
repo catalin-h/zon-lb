@@ -16,14 +16,29 @@ pub const MAX_ARP_ENTRIES: u32 = MAX_BACKENDS;
 /// ZLB_RUNVAR array map where each entry represents variable as
 /// a 64-bit value. The bellow enum values represent the index
 /// where each variable is stored.
+/// NOTE: some variables are `fused` meaning they represent a
+/// readonly variable that can't be changed at runtime even if
+/// this runvar is changed. This kind of variable can only be
+/// set at program load and
 pub mod runvars {
+    /// Get the current app version.
+    pub const FUSED_VERSION_IDX: u32 = 1;
+    /// Get app feature flags; eg. enable logging or enable ipv6.
+    pub const FUSED_FEATURE_FLAGS: u32 = 2;
+    pub const FUSED_LAST_IDX: u32 = FUSED_FEATURE_FLAGS;
+
     /// Set or get the current log level.
     ///
     /// The values start from `1` (error) and are the same enum
     /// values defined by [aya_log_common::Level]. To turn off
     /// all logging set it to `0`.
-    pub const LOG_LEVEL_IDX: u32 = 1;
+    pub const LOG_LEVEL_IDX: u32 = 4;
+
     // TODO: add statistics
+
+    /// Last used index
+    pub const LAST_IDX: u32 = LOG_LEVEL_IDX;
+
     /// Max size of the runtime variable map
     pub const MAX_RUNTIME_VARS: u32 = 16;
 }

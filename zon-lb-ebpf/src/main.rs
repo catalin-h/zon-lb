@@ -24,20 +24,24 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    runvars::*, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4,
+    runvars, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4,
     EP6, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
-/// Stores the program instance runtime variables.
-#[map]
-static ZLB_RUNVAR: Array<u64> = Array::with_max_entries(MAX_RUNTIME_VARS, 0);
+// Fused variables
 
-// TODO: change it to array to add:
-// - packet counters
-// - enable / disable logging
-/// Keeps runtime config data.
+#[no_mangle]
+static VERSION: u64 = 0;
+
+#[no_mangle]
+static FEATURES: u64 = 1;
+
 #[map]
 static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
+
+/// Stores the program instance runtime (unfused) variables.
+#[map]
+static ZLB_RUNVAR: Array<u64> = Array::with_max_entries(runvars::MAX_RUNTIME_VARS, 0);
 
 /// Maintains the metadata about backend groups and interfaces. It is used only by userspace
 /// application but loaded by the first program - hence the X.
@@ -84,6 +88,18 @@ type HMARP4 = HashMap<u32, ArpEntry>;
 static mut ZLB_ARP4: HMARP4 = HMARP4::pinned(MAX_ARP_ENTRIES, 0);
 
 // TODO: add ipv6 arp table
+
+#[inline(always)]
+fn log_enabled() -> bool {
+    if FEATURES == 0 {
+        return false;
+    }
+
+    match ZLB_RUNVAR.get(runvars::FUSED_FEATURE_FLAGS) {
+        None => false,
+        Some(flags) => *flags != 0,
+    }
+}
 
 #[inline(always)]
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
@@ -146,17 +162,19 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         _ => (0, 0),
     };
 
-    info!(
-        ctx,
-        "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
-        if_index,
-        rx_queue,
-        proto as u8,
-        src_addr.to_be(),
-        src_port.to_be(),
-        dst_addr.to_be(),
-        dst_port.to_be()
-    );
+    if log_enabled() {
+        info!(
+            ctx,
+            "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
+            if_index,
+            rx_queue,
+            proto as u8,
+            src_addr.to_be(),
+            src_port.to_be(),
+            dst_addr.to_be(),
+            dst_port.to_be()
+        );
+    }
 
     // TODO: Check conntrack first for non-connection oriented, eg. icmp.
     // Alternatively add another key element to differentiate between connections
