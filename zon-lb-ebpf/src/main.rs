@@ -14,7 +14,7 @@ use aya_bpf::{
     programs::XdpContext,
     BpfContext,
 };
-use aya_log_ebpf::{error, info};
+use aya_log_ebpf::{error, info, Level};
 use core::mem;
 use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u16, csum_update_u32};
 use network_types::{
@@ -86,15 +86,26 @@ static mut ZLB_ARP4: HMARP4 = HMARP4::pinned(MAX_ARP_ENTRIES, 0);
 
 // TODO: add ipv6 arp table
 
-#[inline(always)]
-fn log_enabled() -> bool {
-    if FEATURES == 0 {
-        return false;
+struct Features {
+    log_level: u64,
+}
+
+impl Features {
+    fn new() -> Self {
+        let log_level = if FEATURES == 0 {
+            0
+        } else {
+            match ZLB_RUNVAR.get(runvars::LOG_LEVEL_IDX) {
+                None => 0,
+                Some(rvlevel) => *rvlevel,
+            }
+        };
+        Self { log_level }
     }
 
-    match ZLB_RUNVAR.get(runvars::FUSED_FEATURE_FLAGS) {
-        None => false,
-        Some(flags) => *flags != 0,
+    #[inline(always)]
+    fn log_enabled(&self, level: Level) -> bool {
+        self.log_level >= level as u64
     }
 }
 
@@ -119,6 +130,7 @@ pub fn zon_lb(ctx: XdpContext) -> u32 {
     }
 }
 
+// TODO: check the feature flags and see if the ipv6 is enabled or not
 fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     let ethhdr: *const EthHdr = ptr_at(&ctx, 0)?;
     match unsafe { (*ethhdr).ether_type } {
@@ -133,6 +145,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
+// TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // TODO: support vlan tags
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, EthHdr::LEN)?;
@@ -144,7 +157,6 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
     let l4hdr_offset = (unsafe { (*ipv4hdr).ihl() as usize } << 2);
-    info!(ctx, "ipv4 hdr size {}", l4hdr_offset);
     let l4hdr_offset = l4hdr_offset + EthHdr::LEN;
 
     let (src_port, dst_port) = match proto {
@@ -158,8 +170,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
         _ => (0, 0),
     };
+    let feat = Features::new();
 
-    if log_enabled() {
+    if feat.log_enabled(Level::Info) {
         info!(
             ctx,
             "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
@@ -187,21 +200,24 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     };
 
     if let Some(&nat) = unsafe { ZLB_CONNTRACK4.get(&nat4) } {
-        info!(
-            ctx,
-            "[out] nat, src: {:i}, lb_port: {}",
-            nat.ip_src.to_be(),
-            (nat.port_lb as u16).to_be()
-        );
-
+        if feat.log_enabled(Level::Info) {
+            info!(
+                ctx,
+                "[out] nat, src: {:i}, lb_port: {}",
+                nat.ip_src.to_be(),
+                (nat.port_lb as u16).to_be()
+            );
+        }
         // Unlikely
         if nat.ip_src == src_addr && src_port == dst_port {
-            error!(
-                ctx,
-                "[out] drop same src {:i}:{}",
-                nat.ip_src.to_be(),
-                src_port.to_be()
-            );
+            if feat.log_enabled(Level::Error) {
+                error!(
+                    ctx,
+                    "[out] drop same src {:i}:{}",
+                    nat.ip_src.to_be(),
+                    src_port.to_be()
+                );
+            }
             return Ok(xdp_action::XDP_DROP);
         }
 
@@ -323,41 +339,50 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 match ZLB_TXPORT.redirect(nat.ifindex, 0) {
                     Ok(action) => action,
                     Err(e) => {
-                        error!(ctx, "No tx port for if key: {}, error: {}", nat.ifindex, e);
+                        if feat.log_enabled(Level::Error) {
+                            error!(ctx, "No tx port for if key: {}, error: {}", nat.ifindex, e);
+                        }
                         bpf_redirect(nat.ifindex, 0) as xdp_action::Type
                     }
                 }
             };
-            info!(
-                ctx,
-                "[out] redirect to {:i}:{} via {}, ret={}",
-                nat.ip_src.to_be(),
-                dst_port.to_be(),
-                nat.ifindex,
-                ret,
-            );
+            if feat.log_enabled(Level::Info) {
+                info!(
+                    ctx,
+                    "[out] redirect to {:i}:{} via {}, ret={}",
+                    nat.ip_src.to_be(),
+                    dst_port.to_be(),
+                    nat.ifindex,
+                    ret,
+                );
+            }
             ret
         } else if nat.flags.contains(EPFlags::XDP_TX) {
-            info!(
-                ctx,
-                "[out] tx to {:i}:{}",
-                nat.ip_src.to_be(),
-                dst_port.to_be(),
-            );
+            if feat.log_enabled(Level::Info) {
+                info!(
+                    ctx,
+                    "[out] tx to {:i}:{}",
+                    nat.ip_src.to_be(),
+                    dst_port.to_be(),
+                );
+            }
             XDP_TX
         } else {
-            info!(
-                ctx,
-                "[out] pass to {:i}:{}",
-                nat.ip_src.to_be(),
-                dst_port.to_be(),
-            );
+            if feat.log_enabled(Level::Info) {
+                info!(
+                    ctx,
+                    "[out] pass to {:i}:{}",
+                    nat.ip_src.to_be(),
+                    dst_port.to_be(),
+                );
+            }
             XDP_PASS
         };
-
         return Ok(ret);
     } else {
-        info!(ctx, "No conntrack entry");
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "No conntrack entry");
+        }
     }
 
     let ep4 = EP4 {
@@ -369,15 +394,21 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let group = match unsafe { ZLB_LB4.get(&ep4) } {
         Some(group) => *group,
         None => {
-            info!(ctx, "No LB4 entry");
+            if feat.log_enabled(Level::Info) {
+                info!(ctx, "No LB4 entry");
+            }
             return Ok(xdp_action::XDP_PASS);
         }
     };
 
-    info!(ctx, "[in] gid: {} match", group.gid);
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "[in] gid: {} match", group.gid);
+    }
 
     if group.becount == 0 {
-        info!(ctx, "[in] gid: {}, no backends", group.gid);
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "[in] gid: {}, no backends", group.gid);
+        }
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -389,18 +420,21 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let be = match unsafe { ZLB_BACKENDS.get(&key) } {
         Some(be) => be,
         None => {
-            info!(ctx, "[in] gid: {}, no BE at: {}", group.gid, key.index);
+            if feat.log_enabled(Level::Info) {
+                info!(ctx, "[in] gid: {}, no BE at: {}", group.gid, key.index);
+            }
             return Ok(xdp_action::XDP_PASS);
         }
     };
 
-    info!(
-        ctx,
-        "[ctrk] fw be: {:i}:{}",
-        be.address[0].to_be(),
-        be.port.to_be()
-    );
-
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "[ctrk] fw be: {:i}:{}",
+            be.address[0].to_be(),
+            be.port.to_be()
+        );
+    }
     let redirect = be.flags.contains(EPFlags::XDP_REDIRECT);
 
     let lb_addr = if redirect && be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
@@ -461,8 +495,16 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // TBD: use lock or atomic update ?
             // TBD: use BPF_F_LOCK ?
             match unsafe { ZLB_CONNTRACK4.insert(&nat4key, &nat4value, 0) } {
-                Ok(()) => info!(ctx, "[ctrk] {:i} added", src_addr.to_be()),
-                Err(ret) => error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr.to_be(), ret),
+                Ok(()) => {
+                    if feat.log_enabled(Level::Info) {
+                        info!(ctx, "[ctrk] {:i} added", src_addr.to_be())
+                    }
+                }
+                Err(ret) => {
+                    if feat.log_enabled(Level::Error) {
+                        error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr.to_be(), ret)
+                    }
+                }
             };
         }
     }
@@ -548,7 +590,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // Send back the packet to the same interface
     if !redirect && be.flags.contains(EPFlags::XDP_TX) {
-        info!(ctx, "in => xdp_tx");
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "in => xdp_tx");
+        }
         return Ok(xdp_action::XDP_TX);
     }
 
@@ -574,21 +618,23 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
     // ifindex used to redirect the packet.
 
-    return redirect_ipv4(ctx, ipv4hdr);
+    return redirect_ipv4(ctx, feat, ipv4hdr);
 }
 
-fn redirect_txport(ctx: &XdpContext, ifindex: u32) -> xdp_action::Type {
+fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_action::Type {
     // NOTE: aya embeds the bpf_redirect_map in map struct impl
     match ZLB_TXPORT.redirect(ifindex, 0) {
         Ok(action) => action,
         Err(e) => {
-            error!(ctx, "[redirect] No tx port: {}, {}", ifindex, e);
+            if feat.log_enabled(Level::Error) {
+                error!(ctx, "[redirect] No tx port: {}, {}", ifindex, e);
+            }
             unsafe { bpf_redirect(ifindex, 0) as xdp_action::Type }
         }
     }
 }
 
-fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
+fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
     let dest_ip = unsafe { (*ipv4hdr).dst_addr };
 
     if let Some(&entry) = unsafe { ZLB_ARP4.get(&dest_ip) } {
@@ -609,12 +655,15 @@ fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
                 (*eth)[2] = entry.macs[2];
             };
 
-            let action = redirect_txport(ctx, entry.ifindex);
+            let action = redirect_txport(ctx, &feat, entry.ifindex);
 
-            info!(
-                ctx,
-                "[redirect] [arp-cache] oif: {} action => {}", entry.ifindex, action
-            );
+            if feat.log_enabled(Level::Info) {
+                info!(
+                    ctx,
+                    "[redirect] [arp-cache] oif: {} action => {}", entry.ifindex, action
+                );
+            }
+
             return Ok(action);
         }
     }
@@ -639,7 +688,8 @@ fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
         )
     };
 
-    info!(
+    if feat.log_enabled(Level::Info) {
+        info!(
         ctx,
         "[redirect] output, lkp_ret: {}, fw if: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
         rc,
@@ -649,6 +699,7 @@ fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
         fib_param.dest_mac(),
         fib_param.src_mac(),
     );
+    }
 
     if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
         // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
@@ -656,12 +707,14 @@ fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
         let action = unsafe {
             let eth = ptr_at::<EthHdr>(&ctx, 0)?;
             fib_param.fill_ethdr_macs(eth.cast_mut());
-            redirect_txport(ctx, fib_param.ifindex)
+            redirect_txport(ctx, &feat, fib_param.ifindex)
         };
 
-        info!(ctx, "[redirect] action => {}", action);
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "[redirect] action => {}", action);
+        }
 
-        update_arp(ctx, fib_param);
+        update_arp(ctx, &feat, fib_param);
 
         return Ok(action);
     }
@@ -670,13 +723,16 @@ fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
         || rc == BPF_FIB_LKUP_RET_UNREACHABLE as i64
         || rc == BPF_FIB_LKUP_RET_PROHIBIT as i64
     {
-        error!(ctx, "[redirect] can't fw, fib rc: {}", rc);
+        if feat.log_enabled(Level::Error) {
+            error!(ctx, "[redirect] can't fw, fib rc: {}", rc);
+        }
         return Ok(XDP_DROP);
     }
 
-    if rc < 0 {
+    if feat.log_enabled(Level::Error) && rc < 0 {
         error!(ctx, "[redirect] invalid arg, fib rc: {}", rc);
-    } else {
+    }
+    if feat.log_enabled(Level::Info) && rc >= 0 {
         // let it pass to the stack to handle it
         info!(ctx, "[redirect] packet not fwd, fib rc: {}", rc);
     }
@@ -684,7 +740,7 @@ fn redirect_ipv4(ctx: &XdpContext, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
     Ok(XDP_PASS)
 }
 
-fn update_arp(ctx: &XdpContext, fib_param: BpfFibLookUp) {
+fn update_arp(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
     let arp = ArpEntry {
         ifindex: fib_param.ifindex,
         macs: fib_param.ethdr_macs(),
@@ -695,16 +751,24 @@ fn update_arp(ctx: &XdpContext, fib_param: BpfFibLookUp) {
     // NOTE: after updating the value or key struct size must remove the pinned map
     // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
     match unsafe { ZLB_ARP4.insert(&fib_param.dst[0], &arp, 0) } {
-        Ok(()) => info!(
-            ctx,
-            "[arp] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
-            fib_param.dst[0].to_be(),
-            fib_param.ifindex,
-            fib_param.src_mac(),
-            fib_param.dest_mac(),
-            fib_param.src[0].to_be(),
-        ),
-        Err(e) => error!(ctx, "[arp] fail to insert entry, err:{}", e),
+        Ok(()) => {
+            if feat.log_enabled(Level::Info) {
+                info!(
+                    ctx,
+                    "[arp] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
+                    fib_param.dst[0].to_be(),
+                    fib_param.ifindex,
+                    fib_param.src_mac(),
+                    fib_param.dest_mac(),
+                    fib_param.src[0].to_be(),
+                )
+            }
+        }
+        Err(e) => {
+            if feat.log_enabled(Level::Error) {
+                error!(ctx, "[arp] fail to insert entry, err:{}", e)
+            }
+        }
     };
 }
 
@@ -794,8 +858,11 @@ const AF_INET: u8 = 2; // Internet IP Protocol
 fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
     let _proto = unsafe { (*ipv6hdr).next_hdr };
+    let feat = Features::new();
 
-    info!(ctx, "received a ipv6 packet");
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "received a ipv6 packet");
+    }
 
     Ok(xdp_action::XDP_PASS)
 }
