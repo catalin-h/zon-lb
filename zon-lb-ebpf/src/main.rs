@@ -24,8 +24,8 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    runvars, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, ZonInfo, BE, EP4,
-    EP6, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
+    runvars, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, BE, EP4, EP6,
+    MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
 // Fused variables
@@ -35,9 +35,6 @@ static VERSION: u64 = 0;
 
 #[no_mangle]
 static FEATURES: u64 = 1;
-
-#[map]
-static ZLB_INFO: Array<ZonInfo> = Array::with_max_entries(1, 0);
 
 /// Stores the program instance runtime (unfused) variables.
 #[map]

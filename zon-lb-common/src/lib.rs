@@ -43,22 +43,6 @@ pub mod runvars {
     pub const MAX_RUNTIME_VARS: u32 = 16;
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ZonInfo {
-    pub version: u32,
-    // TODO: log is _fused_ turned off
-}
-
-#[cfg(feature = "user")]
-unsafe impl aya::Pod for ZonInfo {}
-
-impl ZonInfo {
-    pub fn new() -> Self {
-        Self { version: VERSION }
-    }
-}
-
 bitflags::bitflags! {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EPFlags: u32 {

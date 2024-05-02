@@ -1,21 +1,14 @@
-use crate::{helpers::*, ToMapName};
+use crate::{helpers::*, runvars::RunVars};
 
 use anyhow::anyhow;
 use aya::{
-    maps::{Array, Map, MapData, MapInfo},
+    maps::MapInfo,
     programs::{loaded_links, loaded_programs, ProgramInfo},
 };
 use aya_obj::generated::bpf_prog_type;
 use chrono::{DateTime, Local};
 use log::warn;
 use std::collections::BTreeMap;
-use zon_lb_common::ZonInfo;
-
-impl ToMapName for ZonInfo {
-    fn map_name() -> &'static str {
-        "ZLB_INFO"
-    }
-}
 
 pub struct InfoTable {
     header: Vec<String>,
@@ -78,18 +71,6 @@ impl InfoTable {
 
     pub fn is_empty(&self) -> bool {
         self.table.is_empty()
-    }
-}
-
-// TODO: add struct to set/get ZLB_INFO data
-pub(crate) fn get_zon_info(ifname: &str) -> Result<Array<MapData, ZonInfo>, anyhow::Error> {
-    match mapdata_from_pinned_map(ifname, "ZLB_INFO") {
-        Some(map) => {
-            let map = Map::Array(map);
-            let map: Array<_, ZonInfo> = map.try_into()?;
-            Ok(map)
-        }
-        _ => Err(anyhow!("No ZLB_INFO map")),
     }
 }
 
@@ -198,14 +179,9 @@ pub(crate) fn list_info() -> Result<(), anyhow::Error> {
                         _ => {}
                     }
                 }
-                match get_zon_info(&name) {
-                    Ok(map) => match map.get(&0, 0) {
-                        Ok(info) => {
-                            println!("version: {}", info.version);
-                        }
-                        _ => {}
-                    },
-                    _ => {}
+                match RunVars::new(&name) {
+                    Ok(rv) => println!("version: {}", rv.version()),
+                    _ => println!("version: n/a"),
                 }
             }
             None => {

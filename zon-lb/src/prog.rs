@@ -1,7 +1,7 @@
 use crate::{backends, conntrack, helpers::*, runvars::RunVars, ToMapName};
 use anyhow::{anyhow, Context};
 use aya::{
-    maps::{Array, DevMap, Map, MapData},
+    maps::{DevMap, Map},
     programs::{
         links::{FdLink, PinnedLink},
         Xdp, XdpFlags,
@@ -10,7 +10,6 @@ use aya::{
 };
 use log::info;
 use std::path::PathBuf;
-use zon_lb_common::ZonInfo;
 
 struct TxPorts;
 
@@ -133,32 +132,6 @@ impl Prog {
         Ok(program)
     }
 
-    /// Initialize program info or fused parameters that don't change at runtime.
-    fn init_info(&self) {
-        let map = match get_mapdata_by_name(&self.ifname, ZonInfo::map_name()) {
-            Some(map) => Map::Array(map),
-            None => {
-                log::error!(
-                    "Can't find map {} for program loaded on {}",
-                    ZonInfo::map_name(),
-                    &self.ifname
-                );
-                return;
-            }
-        };
-        let mut map: Array<MapData, ZonInfo> = match map.try_into() {
-            Ok(map) => map,
-            Err(e) => {
-                log::error!("Failed to match ZonInfo metadata, {}", e);
-                return;
-            }
-        };
-        match map.set(0, ZonInfo::new(), 0) {
-            Ok(()) => {}
-            Err(e) => log::error!("Failed to set ZonInfo, {}", e),
-        };
-    }
-
     pub fn replace(&self, bpf: &mut Ebpf) -> Result<(), anyhow::Error> {
         if !self.link_exists {
             return Err(anyhow!(
@@ -241,7 +214,6 @@ impl Prog {
     }
 
     fn post_load_init(&self) -> Result<(), anyhow::Error> {
-        self.init_info();
         match RunVars::new(&self.ifname) {
             Ok(mut rv) => rv.set_defaults(),
             Err(e) => log::error!("Failed to get run vars accessor, {}", e),
