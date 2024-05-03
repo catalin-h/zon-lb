@@ -333,19 +333,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // - https://docs.kernel.org/bpf/map_devmap.html
             // - https://docs.kernel.org/bpf/redirect.html
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
-            let ret = unsafe {
-                *macs = nat.mac_addresses;
-                // NOTE: aya embeds the bpf_redirect_map in map struct impl
-                match ZLB_TXPORT.redirect(nat.ifindex, 0) {
-                    Ok(action) => action,
-                    Err(e) => {
-                        if feat.log_enabled(Level::Error) {
-                            error!(ctx, "No tx port for if key: {}, error: {}", nat.ifindex, e);
-                        }
-                        bpf_redirect(nat.ifindex, 0) as xdp_action::Type
-                    }
-                }
-            };
+            unsafe { *macs = nat.mac_addresses };
+            let ret = redirect_txport(ctx, &feat, nat.ifindex);
+
             if feat.log_enabled(Level::Info) {
                 info!(
                     ctx,
