@@ -141,14 +141,16 @@ Write buffer size: 131072 Byte
 TOS set to 0x0 (Nagle on)
 TCP window size: 85.0 KByte (default)
 ------------------------------------------------------------
-[  1] local 10.0.0.2%veth1 port 38688 connected with 10.0.0.1 port 23 (sock=3) (icwnd/mss/irtt=14/1448/87) (ct=0.15 ms) ...
-[ ID] Interval            Transfer    Bandwidth       Write/Err  Rtry     Cwnd/RTT(var)        NetPwr
-[  1] 0.0000-10.0154 sec  4.09 GBytes  3.51 Gbits/sec  33522/0        145      147K/976(1462) us  449490
+[  1] local 10.0.0.2 port 52254 connected with 10.0.0.1 port 23 (icwnd/mss irtt=14/1448/66)
+[ ID] Interval            Transfer     Bandwidth
+[  1] 0.0000-10.0124 sec  4.88 GBytes  4.19 Gbits/sec
 #+end_src
 
 Note that the above result was obtained on an Ivy Bridge i5 dual core system.
 Also, note that during the benchmark there was no user app reading the aya-log
-as this will slow down the performance significantly.
+as this will slow down the performance significantly. To boost even further
+the iperf performance the aya ebpf program log was turned off. This is done
+by not providing the =RUST_LOG= envar.
 
 ** Debugging ignored TCP SYN packet redirected to veth but received by pair veth driver
 
