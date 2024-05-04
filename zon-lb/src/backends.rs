@@ -87,7 +87,7 @@ impl BackendInfo for BE {
         IpAddr::from(unsafe { *(self.address.as_ptr() as *const [u8; 16]) })
     }
     fn port(&self) -> u16 {
-        self.port.to_le()
+        u16::from_be(self.port)
     }
 }
 
@@ -141,7 +141,7 @@ impl ToEndPoint for BE {
         EndPoint {
             ipaddr,
             proto: self.proto.into(),
-            port: u16::from_be(self.port),
+            port: self.port(),
             options: EpOptions {
                 flags: self.flags,
                 props,
