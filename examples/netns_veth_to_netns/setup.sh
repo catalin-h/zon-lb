@@ -67,6 +67,10 @@ setup_ns() {
   printf "attaching xdp program to $NS/$IF1 ...\n"
   ip -netns $NS link set $IF1 xdp obj xdp_pass.o sec .text
 
+  # Enable forwarding on veth from default netns so the
+  # fib lookup wouldn't fail.
+  sysctl -w net.ipv4.conf.$IF0.forwarding=1
+
   printf "done setup $NS\n"
 }
 
