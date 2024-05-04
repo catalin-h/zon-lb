@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use aya_bpf::{
+use aya_ebpf::{
     bindings::{
         bpf_fib_lookup as bpf_fib_lookup_param_t,
         xdp_action::{self, XDP_DROP, XDP_PASS, XDP_TX},
@@ -12,7 +12,7 @@ use aya_bpf::{
     macros::{map, xdp},
     maps::{Array, DevMap, HashMap, LruHashMap},
     programs::XdpContext,
-    BpfContext,
+    EbpfContext,
 };
 use aya_log_ebpf::{error, info, Level};
 use core::mem;
