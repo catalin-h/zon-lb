@@ -1,4 +1,12 @@
 #!/bin/sh
+
+set -e
+
+if [ "$(id -u)" != "0" ]; then
+  printf "please run script as root\n"
+  exit 1
+fi
+
 NSA=0
 NSB=2
 
