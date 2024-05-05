@@ -180,7 +180,11 @@ pub(crate) fn list_info() -> Result<(), anyhow::Error> {
                     }
                 }
                 match RunVars::new(&name) {
-                    Ok(rv) => println!("version: {}", rv.version()),
+                    Ok(rv) => println!(
+                        "version: {}\nlog_filter: {}",
+                        rv.version(),
+                        rv.get_log_filter()
+                    ),
                     _ => println!("version: n/a"),
                 }
             }

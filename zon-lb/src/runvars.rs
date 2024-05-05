@@ -59,6 +59,16 @@ impl RunVars {
         }
     }
 
+    pub fn get_log_filter(&self) -> LevelFilter {
+        let lf = self.get(LOG_LEVEL_IDX, LevelFilter::Info as u64);
+        for filter in LevelFilter::iter() {
+            if filter as u64 == lf {
+                return filter;
+            }
+        }
+        LevelFilter::Off
+    }
+
     pub fn version(&self) -> u64 {
         self.get(FUSED_VERSION_IDX, 0)
     }
