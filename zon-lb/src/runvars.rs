@@ -3,7 +3,7 @@ use anyhow::anyhow;
 use aya::maps::{Array, Map, MapData};
 use log::LevelFilter;
 use zon_lb_common::{
-    runvars::{FUSED_VERSION_IDX, LOG_LEVEL_IDX},
+    runvars::{FUSED_VERSION_IDX, LOG_FILTER_IDX},
     VERSION,
 };
 
@@ -50,17 +50,17 @@ impl RunVars {
 
     pub fn set_defaults(&mut self) {
         self.set(FUSED_VERSION_IDX, VERSION as u64);
-        self.set_logging_level(log::max_level());
+        self.set_log_filter(log::max_level());
     }
 
-    fn set_logging_level(&mut self, level: LevelFilter) {
-        if !self.set(LOG_LEVEL_IDX, level as u64) {
+    fn set_log_filter(&mut self, level: LevelFilter) {
+        if !self.set(LOG_FILTER_IDX, level as u64) {
             eprintln!("Failed to set log level to {}", level);
         }
     }
 
     pub fn get_log_filter(&self) -> LevelFilter {
-        let lf = self.get(LOG_LEVEL_IDX, LevelFilter::Info as u64);
+        let lf = self.get(LOG_FILTER_IDX, LevelFilter::Info as u64);
         for filter in LevelFilter::iter() {
             if filter as u64 == lf {
                 return filter;

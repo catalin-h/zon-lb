@@ -32,12 +32,12 @@ pub mod runvars {
     /// The values start from `1` (error) and are the same enum
     /// values defined by [aya_log_common::Level]. To turn off
     /// all logging set it to `0`.
-    pub const LOG_LEVEL_IDX: u32 = 4;
+    pub const LOG_FILTER_IDX: u32 = 4;
 
     // TODO: add statistics
 
     /// Last used index
-    pub const LAST_IDX: u32 = LOG_LEVEL_IDX;
+    pub const LAST_IDX: u32 = LOG_FILTER_IDX;
 
     /// Max size of the runtime variable map
     pub const MAX_RUNTIME_VARS: u32 = 16;
