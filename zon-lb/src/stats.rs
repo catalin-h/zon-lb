@@ -39,10 +39,16 @@ impl Stats {
     }
 
     fn get(&self, stat_idx: u32) -> u64 {
-        0
+        match self.smap.get(&stat_idx, 0) {
+            Err(e) => {
+                log::error!("Failed to get {}, {}", Self::as_str(stat_idx), e);
+                0
+            }
+            Ok(pcv) => pcv.iter().map(|cv| *cv).sum(),
+        }
     }
 
-    pub fn _as_str(stat_idx: u32) -> &'static str {
+    pub fn as_str(stat_idx: u32) -> &'static str {
         STATS_NAMES[stat_idx as usize]
     }
 
