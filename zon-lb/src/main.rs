@@ -8,6 +8,7 @@ mod prog;
 mod protocols;
 mod runvars;
 mod services;
+mod stats;
 
 use crate::logging::init_log_with_replace;
 use anyhow::Context;
@@ -23,6 +24,7 @@ use log::{info, warn};
 use logging::init_log;
 use prog::*;
 use protocols::Protocol;
+use stats::Stats;
 use std::{collections::BTreeMap, net::IpAddr};
 use tokio::signal;
 use zon_lb_common::EPFlags;
@@ -326,6 +328,17 @@ struct ConnTrackOpt {
     action: Option<ConnTrackAction>,
 }
 
+#[derive(clap::Args, Debug)]
+struct StatsOpt {
+    /// Target net interface name, eg. eth0
+    #[clap(default_value = "lo")]
+    ifname: String,
+    // TODO:
+    // Filter conntrack entries by id
+    // #[clap(default_value_t = 0)]
+    // gid: u32,
+}
+
 #[derive(clap::Subcommand, Debug)]
 enum Command {
     /// Shows information about loaded programs and the used maps
@@ -342,6 +355,8 @@ enum Command {
     Config(ConfigOpt),
     /// Connection tracking actions: view, remove unused
     Conntrack(ConnTrackOpt),
+    /// Program statistics
+    Stats(StatsOpt),
 }
 
 #[derive(Debug, Parser)]
@@ -493,6 +508,12 @@ async fn handle_debug(opt: &DebugOpt) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+fn handle_stats(opt: &StatsOpt) -> Result<(), anyhow::Error> {
+    let stats = Stats::new(&opt.ifname)?;
+    stats.print_all();
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -507,6 +528,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Config(opt) => handle_config(opt),
         Command::Debug(opt) => handle_debug(opt).await,
         Command::Conntrack(opt) => handle_conntrack(opt),
+        Command::Stats(opt) => handle_stats(opt),
     };
 
     if let Err(e) = res {
