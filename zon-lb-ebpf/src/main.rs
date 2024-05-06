@@ -10,7 +10,7 @@ use aya_ebpf::{
     },
     helpers::{bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect},
     macros::{map, xdp},
-    maps::{Array, DevMap, HashMap, LruHashMap},
+    maps::{Array, DevMap, HashMap, LruHashMap, PerCpuArray},
     programs::XdpContext,
     EbpfContext,
 };
@@ -24,7 +24,7 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    runvars, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, BE, EP4, EP6,
+    runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, BE, EP4, EP6,
     MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
@@ -39,6 +39,10 @@ static FEATURES: u64 = 1;
 /// Stores the program instance runtime (unfused) variables.
 #[map]
 static ZLB_RUNVAR: Array<u64> = Array::with_max_entries(runvars::MAX_RUNTIME_VARS, 0);
+
+/// Stores the program statistics.
+#[map]
+static ZLB_STATS: PerCpuArray<u64> = PerCpuArray::with_max_entries(stats::MAX, 0);
 
 /// Maintains the metadata about backend groups and interfaces. It is used only by userspace
 /// application but loaded by the first program - hence the X.
@@ -106,6 +110,15 @@ impl Features {
     #[inline(always)]
     fn log_enabled(&self, level: Level) -> bool {
         self.log_level >= level as u64
+    }
+}
+
+#[inline(always)]
+fn stats_inc(idx: u32) {
+    if let Some(ctr) = ZLB_STATS.get_ptr_mut(idx) {
+        unsafe {
+            *ctr += 1;
+        }
     }
 }
 
@@ -185,6 +198,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             dst_port.to_be()
         );
     }
+
+    stats_inc(stats::PACKETS);
 
     // TODO: Check conntrack first for non-connection oriented, eg. icmp.
     // Alternatively add another key element to differentiate between connections

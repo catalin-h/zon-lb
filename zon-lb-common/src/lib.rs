@@ -43,6 +43,22 @@ pub mod runvars {
     pub const MAX_RUNTIME_VARS: u32 = 16;
 }
 
+/// Program statistics
+pub mod stats {
+    pub const PACKETS: u32 = 0;
+    pub const XDP_PASS: u32 = 1;
+    pub const XDP_REDIRECT: u32 = 2;
+    pub const XDP_REDIRECT_FULL: u32 = 3;
+    pub const XDP_TX: u32 = 4;
+    pub const XDP_DROP: u32 = 5;
+    pub const XDP_REDIRECT_ERRORS: u32 = 6;
+    pub const FIB_LOOKUPS: u32 = 7;
+    pub const FIB_LOOKUP_FAILS: u32 = 8;
+    pub const MAX: u32 = 9;
+}
+
+// TODO: add per backend statistics
+
 bitflags::bitflags! {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EPFlags: u32 {
