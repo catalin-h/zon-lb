@@ -59,10 +59,14 @@ impl Stats {
     }
 
     pub fn print_all(&self) {
-        let mut sinfo = InfoTable::new(vec![format!("{} stat", self.ifname).as_str(), "count"]);
+        let mut sinfo = InfoTable::new(vec![format!("{} stats counters", self.ifname).as_str()]);
 
         for (idx, name) in STATS_NAMES.iter().enumerate() {
-            sinfo.push_row(vec![name.to_string(), self.get(idx as u32).to_string()]);
+            sinfo.push_row(vec![format!(
+                "{}: {}",
+                name.to_string(),
+                self.get(idx as u32)
+            )]);
         }
 
         sinfo.print("");
