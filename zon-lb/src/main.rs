@@ -328,6 +328,18 @@ struct ConnTrackOpt {
     action: Option<ConnTrackAction>,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum StatsAction {
+    /// List all stats
+    List,
+    /// Reset one or all stats
+    Reset {
+        /// The statistics counter to reset. If none is provided
+        /// all counters will be reset.
+        counter_name: Option<String>,
+    },
+}
+
 #[derive(clap::Args, Debug)]
 struct StatsOpt {
     /// Target net interface name, eg. eth0
@@ -337,6 +349,9 @@ struct StatsOpt {
     // Filter conntrack entries by id
     // #[clap(default_value_t = 0)]
     // gid: u32,
+    /// Stattistics actions
+    #[clap(subcommand)]
+    action: Option<StatsAction>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -509,8 +524,16 @@ async fn handle_debug(opt: &DebugOpt) -> Result<(), anyhow::Error> {
 }
 
 fn handle_stats(opt: &StatsOpt) -> Result<(), anyhow::Error> {
-    let stats = Stats::new(&opt.ifname)?;
-    stats.print_all();
+    let mut stats = Stats::new(&opt.ifname)?;
+    let action = opt.action.as_ref().unwrap_or(&StatsAction::List);
+
+    match action {
+        StatsAction::List => stats.print_all(),
+        StatsAction::Reset { counter_name } => {
+            stats.reset_counter(counter_name.as_ref().map(|cname| cname.as_str()))
+        }
+    };
+
     Ok(())
 }
 

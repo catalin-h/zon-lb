@@ -1,6 +1,6 @@
 use crate::{helpers::get_mapdata_by_name, InfoTable, ToMapName};
 use anyhow::anyhow;
-use aya::maps::{Map, MapData, PerCpuArray};
+use aya::maps::{Map, MapData, PerCpuArray, PerCpuValues};
 use zon_lb_common::stats;
 
 static STATS_NAMES: [&str; stats::MAX as usize] = [
@@ -44,6 +44,36 @@ impl Stats {
         })
     }
 
+    fn reset(&mut self, stat_idx: u32) {
+        let pcv = match self.smap.get(&stat_idx, 0) {
+            Err(e) => {
+                log::error!(
+                    "[{}] Failed to get {}, {}",
+                    self.ifname,
+                    Self::as_str(stat_idx),
+                    e
+                );
+                return;
+            }
+            Ok(pcv) => pcv,
+        };
+        let pcv = match PerCpuValues::try_from(vec![0; pcv.len()]) {
+            Err(e) => {
+                log::error!("[{}] Failed to create per cpu value, {}", self.ifname, e);
+                return;
+            }
+            Ok(v) => v,
+        };
+        if let Err(e) = self.smap.set(stat_idx, pcv, 0) {
+            log::error!(
+                "[{}] Failed to reset counter: {}, {}",
+                self.ifname,
+                Self::as_str(stat_idx),
+                e
+            );
+        }
+    }
+
     fn get(&self, stat_idx: u32) -> u64 {
         match self.smap.get(&stat_idx, 0) {
             Err(e) => {
@@ -70,5 +100,24 @@ impl Stats {
         }
 
         sinfo.print("");
+    }
+
+    pub fn reset_counter(&mut self, ctr_name: Option<&str>) {
+        match ctr_name {
+            Some(name) => {
+                for (index, id) in STATS_NAMES.iter().enumerate() {
+                    if id.eq_ignore_ascii_case(name) {
+                        log::info!("[{}] Resetting counter: {} ..", self.ifname, id);
+                        self.reset(index as u32);
+                        return;
+                    }
+                }
+                log::error!("No counter {}", name)
+            }
+            None => {
+                log::info!("[{}] Resetting all counters ..", self.ifname);
+                (0..stats::MAX).for_each(|idx| self.reset(idx as u32))
+            }
+        };
     }
 }
