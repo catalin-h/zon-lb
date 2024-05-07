@@ -3,10 +3,9 @@
 
 use aya_ebpf::{
     bindings::{
-        bpf_fib_lookup as bpf_fib_lookup_param_t,
-        xdp_action::{self, XDP_DROP, XDP_PASS, XDP_REDIRECT, XDP_TX},
-        BPF_FIB_LKUP_RET_BLACKHOLE, BPF_FIB_LKUP_RET_PROHIBIT, BPF_FIB_LKUP_RET_SUCCESS,
-        BPF_FIB_LKUP_RET_UNREACHABLE, BPF_F_NO_COMMON_LRU,
+        bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_FIB_LKUP_RET_BLACKHOLE,
+        BPF_FIB_LKUP_RET_PROHIBIT, BPF_FIB_LKUP_RET_SUCCESS, BPF_FIB_LKUP_RET_UNREACHABLE,
+        BPF_F_NO_COMMON_LRU,
     },
     helpers::{bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect},
     macros::{map, xdp},
@@ -358,7 +357,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             unsafe { *macs = nat.mac_addresses };
             let ret = redirect_txport(ctx, &feat, nat.ifindex);
 
-            if full_nat && ret == XDP_REDIRECT {
+            if full_nat && ret == xdp_action::XDP_REDIRECT {
                 stats_inc(stats::XDP_REDIRECT_FULL_NAT);
             }
 
@@ -383,7 +382,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 );
             }
             stats_inc(stats::XDP_TX);
-            XDP_TX
+            xdp_action::XDP_TX
         } else {
             if feat.log_enabled(Level::Info) {
                 info!(
@@ -394,7 +393,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 );
             }
             stats_inc(stats::XDP_PASS);
-            XDP_PASS
+            xdp_action::XDP_PASS
         };
         return Ok(ret);
     } else {
@@ -669,7 +668,7 @@ fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_actio
             }
             stats_inc(stats::XDP_REDIRECT_ERRORS);
             let rda = unsafe { bpf_redirect(ifindex, 0) as xdp_action::Type };
-            if rda == XDP_REDIRECT {
+            if rda == xdp_action::XDP_REDIRECT {
                 stats_inc(stats::XDP_REDIRECT_ERRORS);
             }
             rda
@@ -776,7 +775,7 @@ fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: *const Ipv4Hdr) -> R
         }
 
         stats_inc(stats::XDP_DROP);
-        return Ok(XDP_DROP);
+        return Ok(xdp_action::XDP_DROP);
     }
 
     if feat.log_enabled(Level::Error) && rc < 0 {
@@ -788,7 +787,7 @@ fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: *const Ipv4Hdr) -> R
     }
 
     stats_inc(stats::XDP_PASS);
-    Ok(XDP_PASS)
+    Ok(xdp_action::XDP_PASS)
 }
 
 fn update_arp(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
