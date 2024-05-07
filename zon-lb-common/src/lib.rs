@@ -49,20 +49,21 @@ pub mod stats {
     pub const XDP_PASS: u32 = 1;
     pub const XDP_REDIRECT: u32 = 2;
     pub const XDP_REDIRECT_MAP: u32 = 3;
-    pub const XDP_REDIRECT_FULL: u32 = 3;
-    pub const XDP_REDIRECT_FULL_NAT: u32 = 3;
-    pub const XDP_TX: u32 = 4;
-    pub const XDP_DROP: u32 = 5;
-    pub const XDP_REDIRECT_ERRORS: u32 = 6;
-    pub const FIB_LOOKUPS: u32 = 7;
-    pub const FIB_LOOKUP_FAILS: u32 = 8;
-    pub const RT_ERRORS: u32 = 9;
-    pub const LB_ERROR_NO_BE: u32 = 10;
-    pub const LB_ERROR_BAD_BE: u32 = 11;
-    pub const CT_ERROR_UPDATE: u32 = 12;
-    pub const ARP_ERROR_UPDATE: u32 = 13;
+    pub const XDP_REDIRECT_FULL_NAT: u32 = 4;
+    pub const XDP_REDIRECT_ERRORS: u32 = 5;
+    pub const XDP_TX: u32 = 6;
+    pub const XDP_DROP: u32 = 7;
 
-    pub const MAX: u32 = 9;
+    pub const FIB_LOOKUPS: u32 = 8;
+    pub const FIB_LOOKUP_FAILS: u32 = 9;
+
+    pub const RT_ERRORS: u32 = 10;
+    pub const LB_ERROR_NO_BE: u32 = 11;
+    pub const LB_ERROR_BAD_BE: u32 = 12;
+    pub const CT_ERROR_UPDATE: u32 = 13;
+    pub const ARP_ERROR_UPDATE: u32 = 14;
+
+    pub const MAX: u32 = 15;
 }
 
 // TODO: add per backend statistics

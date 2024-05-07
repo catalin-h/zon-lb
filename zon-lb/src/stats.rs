@@ -7,12 +7,18 @@ static STATS_NAMES: [&str; stats::MAX as usize] = [
     "packets",
     "xdp_pass",
     "xdp_redirect",
-    "xdp_redirect_full",
+    "xdp_redirect_map",
+    "xdp_redirect_full_nat",
+    "xdp_redirect_errors",
     "xdp_tx",
     "xdp_drop",
-    "xdp_redirect_errors",
     "fib_lookups",
     "fib_lookup_fails",
+    "runtime_errors",
+    "lb_error_no_backends",
+    "lb_error_bad_backend",
+    "conntrack_error_update",
+    "arp_error_update",
 ];
 
 pub struct Stats {
