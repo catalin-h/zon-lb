@@ -88,10 +88,25 @@ impl Stats {
         STATS_NAMES[stat_idx as usize]
     }
 
-    pub fn print_all(&self) {
-        let mut sinfo = InfoTable::new(vec![format!("{} stats counters", self.ifname).as_str()]);
+    pub fn print_all(&self, pattern: Option<&str>) {
+        let mut sinfo = InfoTable::new(vec![format!(
+            "{} stats {}counters",
+            self.ifname,
+            if let Some(p) = pattern {
+                format!("*{}* ", p)
+            } else {
+                String::new()
+            }
+        )
+        .as_str()]);
 
         for (idx, name) in STATS_NAMES.iter().enumerate() {
+            if let Some(p) = pattern {
+                if !name.contains(p) {
+                    continue;
+                }
+            }
+
             sinfo.push_row(vec![format!(
                 "{}: {}",
                 name.to_string(),

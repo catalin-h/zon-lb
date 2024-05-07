@@ -329,9 +329,14 @@ struct ConnTrackOpt {
 }
 
 #[derive(clap::Subcommand, Debug)]
+#[command(flatten_help = true, disable_help_flag = false)]
 enum StatsAction {
     /// List all stats
-    List,
+    List {
+        /// If provided shows all counters containing the pattern (case sensitive).
+        /// Otherwise, all counters will be printed.
+        counter_pattern: Option<String>,
+    },
     /// Reset one or all stats
     Reset {
         /// The statistics counter to reset. If none is provided
@@ -525,10 +530,14 @@ async fn handle_debug(opt: &DebugOpt) -> Result<(), anyhow::Error> {
 
 fn handle_stats(opt: &StatsOpt) -> Result<(), anyhow::Error> {
     let mut stats = Stats::new(&opt.ifname)?;
-    let action = opt.action.as_ref().unwrap_or(&StatsAction::List);
+    let action = opt.action.as_ref().unwrap_or(&StatsAction::List {
+        counter_pattern: None,
+    });
 
     match action {
-        StatsAction::List => stats.print_all(),
+        StatsAction::List { counter_pattern } => {
+            stats.print_all(counter_pattern.as_ref().map(|cname| cname.as_str()))
+        }
         StatsAction::Reset { counter_name } => {
             stats.reset_counter(counter_name.as_ref().map(|cname| cname.as_str()))
         }
