@@ -4,7 +4,7 @@ use crate::helpers::{
 };
 use crate::info::InfoTable;
 use crate::protocols::Protocol;
-use crate::{options, EpOptions, ToMapName};
+use crate::{options, Options, ToMapName};
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{HashMap, Map, MapData};
 use log::{error, info, warn};
@@ -44,7 +44,7 @@ pub struct EndPoint {
     pub ipaddr: IpAddr,
     pub proto: Protocol,
     pub port: u16,
-    pub options: EpOptions,
+    pub options: Options,
 }
 
 impl From<&EP4> for EndPoint {
@@ -142,7 +142,7 @@ impl ToEndPoint for BE {
             ipaddr,
             proto: self.proto.into(),
             port: self.port(),
-            options: EpOptions {
+            options: Options {
                 flags: self.flags,
                 props,
             },
@@ -156,7 +156,7 @@ impl Default for EndPoint {
             ipaddr: IpAddr::from([0; 4]),
             proto: Protocol::None,
             port: 0,
-            options: EpOptions::default(),
+            options: Options::default(),
         }
     }
 }
@@ -180,7 +180,7 @@ impl EndPoint {
         ip_address: &str,
         proto: Protocol,
         port: Option<u16>,
-        options: Option<EpOptions>,
+        options: Option<Options>,
     ) -> Result<Self, anyhow::Error> {
         Ok(Self {
             ipaddr: ip_address.parse().map_err(|e| e)?,
@@ -389,7 +389,7 @@ impl Group {
                 g.gid.to_string(),
                 ep.to_string(),
                 if_index_to_name(g.ifindex).unwrap_or(g.ifindex.to_string()),
-                EpOptions::new(g.flags).to_string(),
+                Options::new(g.flags).to_string(),
                 g.becount.to_string(),
             ])
         };
@@ -696,7 +696,7 @@ impl Backend {
             gid.to_string(),
             gmap.info.key.as_endpoint().to_string(),
             if_name_or_default(beg.ifindex),
-            EpOptions::new(beg.flags).to_string(),
+            Options::new(beg.flags).to_string(),
             beg.becount.to_string(),
         ]);
 

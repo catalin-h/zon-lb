@@ -3,7 +3,7 @@ use crate::{
     helpers::if_index_to_name,
     prog::Prog,
     protocols::Protocol,
-    EpOptions,
+    Options,
 };
 use anyhow::{anyhow, Context};
 use aya::programs::XdpFlags;
@@ -34,7 +34,7 @@ impl Into<EndPoint> for &EP {
             ipaddr: self.ip,
             proto: Protocol::from(self.proto),
             port: self.port,
-            options: EpOptions::from_option_args(&self.options),
+            options: Options::from_option_args(&self.options),
         }
     }
 }

@@ -4,6 +4,7 @@ mod conntrack;
 mod helpers;
 mod info;
 mod logging;
+mod options;
 mod prog;
 mod protocols;
 mod runvars;
@@ -18,16 +19,15 @@ use backends::{Backend, EndPoint, ToEndPoint};
 use clap::{Parser, ValueEnum};
 use config::ConfigFile;
 use conntrack::conntrack_list;
-use core::fmt;
 use info::*;
 use log::{info, warn};
 use logging::init_log;
+use options::Options;
 use prog::*;
 use protocols::Protocol;
 use stats::Stats;
-use std::{collections::BTreeMap, net::IpAddr, str::FromStr};
+use std::str::FromStr;
 use tokio::signal;
-use zon_lb_common::EPFlags;
 
 pub(crate) trait ToMapName {
     fn map_name() -> &'static str;
@@ -82,117 +82,6 @@ struct ProgOpt {
     ifname: String,
     #[clap(subcommand)]
     action: ProgAction,
-}
-
-// TODO: move options to own source
-mod options {
-    pub const DISABLE: &str = "disable";
-    pub const REDIRECT: &str = "redirect";
-    pub const TX: &str = "tx";
-    pub const NO_NAT: &str = "no_nat";
-    pub const SRC_IP: &str = "src_ip";
-    pub const REPLACE: &str = "replace";
-    pub const LOG_FILTER: &str = "log_filter";
-}
-
-#[derive(Clone)]
-pub struct EpOptions {
-    pub props: BTreeMap<String, String>,
-    pub flags: EPFlags,
-}
-
-impl Default for EpOptions {
-    fn default() -> Self {
-        Self {
-            props: BTreeMap::default(),
-            flags: EPFlags::default(),
-        }
-    }
-}
-
-impl fmt::Display for EpOptions {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for opt in self.to_options() {
-            write!(f, "{} ", opt)?
-        }
-        Ok(())
-    }
-}
-
-impl EpOptions {
-    pub fn to_options(&self) -> Vec<String> {
-        let mut opt = vec![];
-        for flag in self.flags {
-            let name = match flag {
-                EPFlags::DISABLE => options::DISABLE,
-                EPFlags::XDP_TX => options::TX,
-                EPFlags::XDP_REDIRECT => options::REDIRECT,
-                EPFlags::NO_CONNTRACK => options::NO_NAT,
-                _ => continue,
-            };
-            opt.push(name.to_string());
-        }
-        for (k, v) in &self.props {
-            opt.push(format!("{}={}", k, v));
-        }
-        opt
-    }
-
-    pub fn new(flags: EPFlags) -> Self {
-        Self {
-            props: BTreeMap::new(),
-            flags,
-        }
-    }
-
-    pub fn from_option_args(args: &Vec<String>) -> Self {
-        let mut props = BTreeMap::new();
-        let mut flags = EPFlags::empty();
-
-        for arg in args {
-            let kv = arg.split_once('=');
-            let (key, value) = match kv {
-                None => {
-                    match arg.as_str() {
-                        options::DISABLE => flags.insert(EPFlags::DISABLE),
-                        options::TX => flags.insert(EPFlags::XDP_TX),
-                        options::NO_NAT | "no_conntrack" | "no_ct" => {
-                            flags.insert(EPFlags::NO_CONNTRACK)
-                        }
-                        options::REDIRECT => flags.insert(EPFlags::XDP_REDIRECT),
-                        options::REPLACE => {
-                            props.insert(arg.to_string(), String::new());
-                        }
-                        _ => log::error!("Unknown flag '{}' ", arg),
-                    }
-                    continue;
-                }
-                Some(kv) => kv,
-            };
-            match key {
-                options::REDIRECT => match helpers::ifindex(value) {
-                    Ok(_) => {
-                        flags.insert(EPFlags::XDP_REDIRECT);
-                        props.insert(key.to_string(), value.to_string());
-                    }
-                    Err(_) => {
-                        log::error!("No '{}' interface, see option '{}'", value, arg)
-                    }
-                },
-                options::SRC_IP => match value.parse::<IpAddr>() {
-                    Ok(_) => {
-                        props.insert(key.to_string(), value.to_string());
-                    }
-                    Err(e) => log::error!("Invalid src_ip '{}', {}", value, e),
-                },
-                options::LOG_FILTER => {
-                    props.insert(key.to_string(), value.to_string());
-                }
-                _ => log::error!("Unknown key '{}' in option '{}'", key, arg),
-            };
-        }
-        Self { props, flags }
-    }
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -454,7 +343,7 @@ fn handler_add_ep(opt: &AddEpOpt) -> Result<EndPoint, anyhow::Error> {
         }
         ProtocolInfo::Proto { protocol, options } => (*protocol, None, options.clone()),
     };
-    let options = EpOptions::from_option_args(&options);
+    let options = Options::from_option_args(&options);
     let ep = EndPoint::new(&opt.ip_address, proto, port, Some(options))?;
 
     Ok(ep)
@@ -528,7 +417,7 @@ fn handle_conntrack(opt: &ConnTrackOpt) -> Result<(), anyhow::Error> {
 }
 
 async fn handle_debug(opt: &DebugOpt) -> Result<(), anyhow::Error> {
-    let options = EpOptions::from_option_args(&opt.options);
+    let options = Options::from_option_args(&opt.options);
 
     if options.props.contains_key(&options::REPLACE.to_string()) {
         init_log_with_replace(&opt.ifname)?;
