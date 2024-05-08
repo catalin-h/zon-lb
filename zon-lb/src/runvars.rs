@@ -47,6 +47,11 @@ impl RunVars {
     }
 
     // TODO: set feature flags
+    pub fn print_all(&self, pattern: Option<&str>) {}
+
+    pub fn bulk_set(&mut self, pairs: &Vec<String>) -> Result<(), anyhow::Error> {
+        Ok(())
+    }
 
     pub fn set_defaults(&mut self) {
         self.set(FUSED_VERSION_IDX, VERSION as u64);

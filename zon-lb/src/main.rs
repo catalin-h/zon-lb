@@ -260,6 +260,38 @@ struct StatsOpt {
 }
 
 #[derive(clap::Subcommand, Debug)]
+#[command(flatten_help = true, disable_help_flag = false)]
+enum RunVarAction {
+    /// List all runtime variables and features
+    List {
+        /// If provided shows all variables containing the pattern (case sensitive).
+        /// Otherwise, all variables will be printed.
+        #[clap(verbatim_doc_comment)]
+        var_pattern: Option<String>,
+    },
+    /// Sets a runtime variable and enables or disables a runtime feature.
+    Set {
+        /// Key-value pairs of variable or feature names and values.
+        /// For e.g. `log_filter=info`.
+        /// For features accepted values are `on|off`: `ipv6=on`
+        /// The following variables and features can be modified:
+        /// * `log_filter=<OFF|ERROR|INFO|DEBUG|TRACE>`
+        #[clap(verbatim_doc_comment)]
+        key_value_pairs: Vec<String>,
+    },
+}
+
+#[derive(clap::Args, Debug)]
+struct RunVarOpt {
+    /// Target net interface name, eg. eth0
+    #[clap(default_value = "lo")]
+    ifname: String,
+    /// Runtime variable actions
+    #[clap(subcommand)]
+    action: Option<RunVarAction>,
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum Command {
     /// Shows information about loaded programs and the used maps
     Info,
@@ -277,7 +309,8 @@ enum Command {
     Conntrack(ConnTrackOpt),
     /// Program statistics
     Stats(StatsOpt),
-    // TODO: add var cmd to handler set/get variables
+    /// Allows to set or get runtime variables and enable or disable runtime features
+    Runvar(RunVarOpt),
 }
 
 #[derive(Debug, Parser)]
@@ -455,6 +488,23 @@ fn handle_stats(opt: &StatsOpt) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+fn handle_runvar(opt: &RunVarOpt) -> Result<(), anyhow::Error> {
+    let mut rv = RunVars::new(&opt.ifname)?;
+    let action = opt
+        .action
+        .as_ref()
+        .unwrap_or(&RunVarAction::List { var_pattern: None });
+
+    match action {
+        RunVarAction::List { var_pattern } => {
+            rv.print_all(var_pattern.as_ref().map(|cname| cname.as_str()))
+        }
+        RunVarAction::Set { key_value_pairs } => rv.bulk_set(key_value_pairs)?,
+    };
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -470,6 +520,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Debug(opt) => handle_debug(opt).await,
         Command::Conntrack(opt) => handle_conntrack(opt),
         Command::Stats(opt) => handle_stats(opt),
+        Command::Runvar(opt) => handle_runvar(opt),
     };
 
     if let Err(e) = res {
