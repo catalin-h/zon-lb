@@ -100,7 +100,7 @@ impl Features {
         let log_level = if FEATURES == 0 {
             0
         } else {
-            match ZLB_RUNVAR.get(runvars::LOG_FILTER_IDX) {
+            match ZLB_RUNVAR.get(runvars::LOG_FILTER) {
                 None => 0,
                 Some(rvlevel) => *rvlevel,
             }

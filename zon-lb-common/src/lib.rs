@@ -22,23 +22,16 @@ pub const MAX_ARP_ENTRIES: u32 = MAX_BACKENDS;
 /// set at program load and
 pub mod runvars {
     /// Get the current app version.
-    pub const FUSED_VERSION_IDX: u32 = 1;
+    pub const VERSION: u32 = 0;
     /// Get app feature flags; eg. enable logging or enable ipv6.
-    pub const FUSED_FEATURE_FLAGS: u32 = 2;
-    pub const FUSED_LAST_IDX: u32 = FUSED_FEATURE_FLAGS;
-
+    pub const FEATURES: u32 = 1;
     /// Set or get the current log level.
     ///
     /// The values start from `1` (error) and are the same enum
     /// values defined by [aya_log_common::Level]. To turn off
     /// all logging set it to `0`.
-    pub const LOG_FILTER_IDX: u32 = 4;
-
-    // TODO: add statistics
-
-    /// Last used index
-    pub const LAST_IDX: u32 = LOG_FILTER_IDX;
-
+    pub const LOG_FILTER: u32 = 2;
+    pub const MAX: u32 = 3;
     /// Max size of the runtime variable map
     pub const MAX_RUNTIME_VARS: u32 = 16;
 }
