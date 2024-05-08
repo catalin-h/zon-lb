@@ -3,10 +3,6 @@ use crate::info;
 use anyhow::anyhow;
 use aya_log::EbpfLogger;
 
-pub const REPLACE_OPT: &str = "replace";
-
-// TODO: add class to init and set log level
-
 /// Enables the xdp program logging by attaching the default logger
 /// to the log map loaded along the ebpf program.
 pub fn init_log(ifname: &str) -> Result<(), anyhow::Error> {

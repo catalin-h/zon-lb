@@ -10,7 +10,7 @@ mod runvars;
 mod services;
 mod stats;
 
-use crate::logging::init_log_with_replace;
+use crate::{logging::init_log_with_replace, runvars::RunVars};
 use anyhow::Context;
 use aya::{include_bytes_aligned, programs::XdpFlags, EbpfLoader};
 use aya_log::EbpfLogger;
@@ -25,7 +25,7 @@ use logging::init_log;
 use prog::*;
 use protocols::Protocol;
 use stats::Stats;
-use std::{collections::BTreeMap, net::IpAddr};
+use std::{collections::BTreeMap, net::IpAddr, str::FromStr};
 use tokio::signal;
 use zon_lb_common::EPFlags;
 
@@ -91,6 +91,8 @@ mod options {
     pub const TX: &str = "tx";
     pub const NO_NAT: &str = "no_nat";
     pub const SRC_IP: &str = "src_ip";
+    pub const REPLACE: &str = "replace";
+    pub const LOG_FILTER: &str = "log_filter";
 }
 
 #[derive(Clone)]
@@ -158,6 +160,9 @@ impl EpOptions {
                             flags.insert(EPFlags::NO_CONNTRACK)
                         }
                         options::REDIRECT => flags.insert(EPFlags::XDP_REDIRECT),
+                        options::REPLACE => {
+                            props.insert(arg.to_string(), String::new());
+                        }
                         _ => log::error!("Unknown flag '{}' ", arg),
                     }
                     continue;
@@ -180,6 +185,9 @@ impl EpOptions {
                     }
                     Err(e) => log::error!("Invalid src_ip '{}', {}", value, e),
                 },
+                options::LOG_FILTER => {
+                    props.insert(key.to_string(), value.to_string());
+                }
                 _ => log::error!("Unknown key '{}' in option '{}'", key, arg),
             };
         }
@@ -306,7 +314,10 @@ struct DebugOpt {
     #[clap(default_value = "lo")]
     ifname: String,
     /// Additional options to debug the program.
-    /// Current options are: replace
+    /// Current options are:
+    /// * `replace`  starts reading the log after replacing current program
+    /// * `log_filter=<arg>`  Sets the log filter to `arg`. Possible values are `OFF|ERROR|INFO|DEBUG|TRACE`.
+    #[clap(verbatim_doc_comment)]
     options: Vec<String>,
 }
 
@@ -377,6 +388,7 @@ enum Command {
     Conntrack(ConnTrackOpt),
     /// Program statistics
     Stats(StatsOpt),
+    // TODO: add var cmd to handler set/get variables
 }
 
 #[derive(Debug, Parser)]
@@ -516,15 +528,23 @@ fn handle_conntrack(opt: &ConnTrackOpt) -> Result<(), anyhow::Error> {
 }
 
 async fn handle_debug(opt: &DebugOpt) -> Result<(), anyhow::Error> {
-    if opt.options.contains(&logging::REPLACE_OPT.to_string()) {
+    let options = EpOptions::from_option_args(&opt.options);
+
+    if options.props.contains_key(&options::REPLACE.to_string()) {
         init_log_with_replace(&opt.ifname)?;
     } else {
         init_log(&opt.ifname)?;
     }
 
+    if let Some(v) = options.props.get(&options::LOG_FILTER.to_string()) {
+        RunVars::new(&opt.ifname)?.set_log_filter(log::LevelFilter::from_str(v)?);
+        info!("Set log filter {} to {}", v, opt.ifname);
+    }
+
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
     info!("Exiting...");
+
     Ok(())
 }
 

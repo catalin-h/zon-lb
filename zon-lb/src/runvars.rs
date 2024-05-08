@@ -53,7 +53,7 @@ impl RunVars {
         self.set_log_filter(log::max_level());
     }
 
-    fn set_log_filter(&mut self, level: LevelFilter) {
+    pub fn set_log_filter(&mut self, level: LevelFilter) {
         if !self.set(LOG_FILTER_IDX, level as u64) {
             eprintln!("Failed to set log level to {}", level);
         }
