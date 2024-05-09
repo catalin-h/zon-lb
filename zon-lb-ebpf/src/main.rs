@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+mod ipv6;
+
 use aya_ebpf::{
     bindings::{
         bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_FIB_LKUP_RET_BLACKHOLE,
@@ -16,18 +18,24 @@ use aya_ebpf::{
 use aya_log_ebpf::{error, info, Level};
 use core::mem;
 use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u16, csum_update_u32};
+use ipv6::ipv6_lb;
 use network_types::{
     eth::{EthHdr, EtherType},
-    ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
+    ip::{IpProto, Ipv4Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, BE, EP4, EP6,
+    runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, BE, EP4,
     MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
-// Fused variables
+const ETH_ALEN: usize = 6;
+// Address families
+const AF_INET: u8 = 2; // Internet IP Protocol
+
+// TODO: ipv6
+//const AF_INET6: u8 = 10; // Internet IP Protocol// Fused variables
 
 #[no_mangle]
 static VERSION: u64 = 0;
@@ -60,10 +68,6 @@ static ZLB_BACKENDS: HashMap<BEKey, BE> = HashMap::<BEKey, BE>::pinned(MAX_BACKE
 /// backend from the pool allocated to the group.
 #[map]
 static ZLB_LB4: HashMap<EP4, BEGroup> = HashMap::<EP4, BEGroup>::pinned(MAX_GROUPS, 0);
-
-/// Same as ZLB_LB4 but for IPv6 packets.
-#[map]
-static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROUPS, 0);
 
 /// Used to boost performance when redirecting the packets as the kernel will batch
 /// process them. This array map is just a one-2-one with the current created interfaces.
@@ -896,24 +900,4 @@ impl BpfFibLookUp {
     fn src_mac(&self) -> [u8; ETH_ALEN] {
         unsafe { *(self.macs.as_ptr() as *const [u8; ETH_ALEN]) }
     }
-}
-
-const ETH_ALEN: usize = 6;
-
-// Address families
-const AF_INET: u8 = 2; // Internet IP Protocol
-
-// TODO: ipv6
-//const AF_INET6: u8 = 10; // Internet IP Protocol
-
-fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
-    let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
-    let _proto = unsafe { (*ipv6hdr).next_hdr };
-    let feat = Features::new();
-
-    if feat.log_enabled(Level::Info) {
-        info!(ctx, "received a ipv6 packet");
-    }
-
-    Ok(xdp_action::XDP_PASS)
 }
