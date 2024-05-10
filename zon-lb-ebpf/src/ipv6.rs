@@ -38,9 +38,9 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?;
             unsafe { ((*udphdr).source, (*udphdr).dest) }
         }
-        // TODO: drop extention headers or fragments because unlike with IPv4,
-        // routers never fragment a packet. This LB works like a router so it
-        // should drop any IPv6 fragments.
+        // TODO: handle extention headers or at least fragments as they may contain
+        // actual valid tcp or udp packets.
+        // NOTE: unlike with IPv4, routers never fragment a packet.
         // NOTE: unlike IPv4, fragmentation in IPv6 is performed only by source
         // nodes, not by routers along a packet's delivery path. Must handle ipv6
         // fragments in case the source decides to fragment the packet due to MTU.

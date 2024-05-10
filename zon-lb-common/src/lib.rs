@@ -323,3 +323,9 @@ pub struct ArpEntry {
 unsafe impl aya::Pod for ArpEntry {}
 
 // TODO: add hasher function
+
+// TODO: use IPv6 header Flow label in order to track connections.
+// The usage of the 3-tuple of the Flow Label, Source Address, and
+// Destination Address fields enables efficient IPv6 flow classification,
+//  where only IPv6 main header fields in fixed positions are used.
+// See: https://www.rfc-editor.org/rfc/rfc6437
