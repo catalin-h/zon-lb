@@ -25,6 +25,10 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // there are no extensions or fragments.
     let l4hdr_offset = Ipv6Hdr::LEN + EthHdr::LEN;
 
+    // TODO: For IPv6 there can be only 6 linked header types: Hop-by-Hop Options,
+    // Fragment, Destination Options, Routing, Authentication and Encapsulating
+    // Security Payload. I makes sense to make make 6 calls until reaching a
+    // next header we can handle.
     let (_src_port, dst_port) = match next_hdr {
         IpProto::Tcp => {
             let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?;
@@ -34,9 +38,19 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?;
             unsafe { ((*udphdr).source, (*udphdr).dest) }
         }
-        // TODO: drop extention headers or fragments because unlike with
-        // IPv4, routers never fragment a packet. This LB works like a
-        // router so it should drop any IPv6 fragments.
+        // TODO: drop extention headers or fragments because unlike with IPv4,
+        // routers never fragment a packet. This LB works like a router so it
+        // should drop any IPv6 fragments.
+        // NOTE: unlike IPv4, fragmentation in IPv6 is performed only by source
+        // nodes, not by routers along a packet's delivery path. Must handle ipv6
+        // fragments in case the source decides to fragment the packet due to MTU.
+        // NOTE: IPv6 requires that every link in the Internet have an MTU of 1280
+        // octets or greater. This is known as the IPv6 minimum link MTU.
+        // On any link that cannot convey a 1280-octet packet in one piece,
+        // link-specific fragmentation and reassembly must be provided at a layer
+        // below IPv6.
+        // See: https://www.rfc-editor.org/rfc/rfc8200.html#page-25
+        // TODO: handle No Next Header => pass
         _ => (0, 0),
     };
 
