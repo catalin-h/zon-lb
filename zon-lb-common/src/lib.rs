@@ -150,12 +150,22 @@ impl EPX {
     }
 }
 
+// NOTE: looks like if the union fields have the same size
+// the bpf verifier does not complain about the code generate
+// by aya.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union Inet6U {
+    pub addr8: [u8; 16usize],
+    pub addr32: [u32; 4usize],
+}
+
 // TODO: add 32-bit hash for generic hashing for different ip protocols
 // TODO: add ifindex field to search per interface
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy)]
 pub struct EP6 {
-    pub address: [u8; 16],
+    pub address: Inet6U,
     pub port: u16,
     pub proto: u16,
 }
@@ -193,33 +203,15 @@ impl From<u32> for BEKey {
     }
 }
 
-// The aya bpf translator does not know about unions and the verifier
+// NOTE: the aya bpf translator does not know about unions and the verifier
 // will throw an error for using invalid stack access as the union is
 // 16 bytes but we use only 4 for the IPv4 address.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct INET {
-    pub v4: u32,
-    pub v6: [u8; 16],
-}
-
-impl From<u32> for INET {
-    fn from(value: u32) -> Self {
-        Self {
-            v4: value,
-            v6: [0; 16],
-        }
-    }
-}
-
-impl From<[u8; 16]> for INET {
-    fn from(value: [u8; 16]) -> Self {
-        Self { v6: value, v4: 0 }
-    }
-}
-
-#[cfg(feature = "user")]
-unsafe impl aya::Pod for INET {}
+// #[repr(C)]
+// #[derive(Clone, Copy)]
+// pub struct INET {
+//    pub v4: u32,
+//    pub v6: [u8; 16],
+// }
 
 #[repr(C)]
 #[derive(Clone, Copy)]

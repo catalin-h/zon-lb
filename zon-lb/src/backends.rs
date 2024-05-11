@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap as StdHashMap};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Shl;
 use std::{fmt, net::IpAddr};
-use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, BE, EP4, EP6, EPX};
+use zon_lb_common::{BEGroup, BEKey, EPFlags, GroupInfo, Inet6U, BE, EP4, EP6, EPX};
 
 impl ToMapName for EP4 {
     fn map_name() -> &'static str {
@@ -61,7 +61,7 @@ impl From<&EP4> for EndPoint {
 impl From<&EP6> for EndPoint {
     fn from(value: &EP6) -> Self {
         Self {
-            ipaddr: IpAddr::from(value.address),
+            ipaddr: unsafe { IpAddr::from(value.address.addr8) },
             proto: Protocol::from(value.proto.to_le() as u8),
             port: value.port.to_le(),
             ..Default::default()
@@ -106,7 +106,7 @@ impl ToEndPoint for EP4 {
 impl ToEndPoint for EP6 {
     fn as_endpoint(&self) -> EndPoint {
         EndPoint {
-            ipaddr: IpAddr::from(self.address),
+            ipaddr: IpAddr::from(unsafe { self.address.addr8 }),
             // protocol is a single byte and the value is not byte-swapped
             proto: Protocol::from(self.proto as u8),
             port: u16::from_be(self.port),
@@ -202,7 +202,7 @@ impl EndPoint {
                 proto,
             }),
             IpAddr::V6(ip) => EPX::V6(EP6 {
-                address: ip.octets(),
+                address: Inet6U { addr8: ip.octets() },
                 port,
                 proto,
             }),

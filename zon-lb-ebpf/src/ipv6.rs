@@ -7,7 +7,7 @@ use network_types::{
     tcp::TcpHdr,
     udp::UdpHdr,
 };
-use zon_lb_common::{stats, BEGroup, EP6, MAX_GROUPS};
+use zon_lb_common::{stats, BEGroup, Inet6U, EP6, MAX_GROUPS};
 
 /// Same as ZLB_LB4 but for IPv6 packets.
 #[map]
@@ -15,8 +15,8 @@ static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROU
 
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
-    let _src_addr = unsafe { (*ipv6hdr).src_addr };
-    let dst_addr = unsafe { (*ipv6hdr).dst_addr.in6_u.u6_addr8 };
+    let _src_addr = unsafe { (*ipv6hdr).src_addr.in6_u.u6_addr32 };
+    let dst_addr = unsafe { (*ipv6hdr).dst_addr.in6_u.u6_addr32 };
     let next_hdr = unsafe { (*ipv6hdr).next_hdr };
 
     // NOTE: IPv6 header isn't fixed and the L4 header offset can
@@ -61,7 +61,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     let ep6 = EP6 {
         // TODO: copy the 32-bit array instead
-        address: dst_addr,
+        address: Inet6U { addr32: dst_addr },
         port: dst_port,
         proto: next_hdr as u16,
     };
