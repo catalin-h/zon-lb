@@ -15,8 +15,8 @@ static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROU
 
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
-    let _src_addr = unsafe { (*ipv6hdr).src_addr.in6_u.u6_addr32 };
-    let dst_addr = unsafe { (*ipv6hdr).dst_addr.in6_u.u6_addr32 };
+    let src_addr = unsafe { Inet6U::from((*ipv6hdr).src_addr.in6_u.u6_addr32) };
+    let dst_addr = unsafe { Inet6U::from((*ipv6hdr).dst_addr.in6_u.u6_addr32) };
     let next_hdr = unsafe { (*ipv6hdr).next_hdr };
 
     // NOTE: IPv6 header isn't fixed and the L4 header offset can
@@ -29,7 +29,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // Fragment, Destination Options, Routing, Authentication and Encapsulating
     // Security Payload. I makes sense to make make 6 calls until reaching a
     // next header we can handle.
-    let (_src_port, dst_port) = match next_hdr {
+    let (src_port, dst_port) = match next_hdr {
         IpProto::Tcp => {
             let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?;
             unsafe { ((*tcphdr).source, (*tcphdr).dest) }
@@ -56,17 +56,29 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     let feat = Features::new();
     if feat.log_enabled(Level::Info) {
-        info!(ctx, "received a ipv6 packet");
+        let (if_index, rx_queue) =
+            unsafe { ((*ctx.ctx).ingress_ifindex, (*ctx.ctx).rx_queue_index) };
+        info!(
+            ctx,
+            "[i:{}, rx:{}] [p:{}] [{:i}]:{} -> *[{:i}]:{}",
+            if_index,
+            rx_queue,
+            next_hdr as u8,
+            unsafe { src_addr.addr8 },
+            src_port.to_be(),
+            unsafe { dst_addr.addr8 },
+            dst_port.to_be()
+        );
     }
 
     let ep6 = EP6 {
         // TODO: copy the 32-bit array instead
-        address: Inet6U { addr32: dst_addr },
+        address: dst_addr,
         port: dst_port,
         proto: next_hdr as u16,
     };
 
-    let _group = match unsafe { ZLB_LB6.get(&ep6) } {
+    let group = match unsafe { ZLB_LB6.get(&ep6) } {
         Some(group) => *group,
         None => {
             if feat.log_enabled(Level::Info) {
@@ -81,8 +93,24 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     };
 
-    // Update the total processed packets when they are destined to a known backend group
+    // Update the total processed packets when they are destined
+    // to a known backend group.
     stats_inc(stats::PACKETS);
+
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "[in] gid: {} match", group.gid);
+    }
+
+    if group.becount == 0 {
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "[in] gid: {}, no backends", group.gid);
+        }
+
+        stats_inc(stats::XDP_PASS);
+        stats_inc(stats::LB_ERROR_NO_BE);
+
+        return Ok(xdp_action::XDP_PASS);
+    }
 
     Ok(xdp_action::XDP_PASS)
 }
