@@ -219,17 +219,14 @@ impl EndPoint {
     fn as_backend(&self, gid: u16) -> BE {
         let (address, flags) = match &self.ipaddr {
             IpAddr::V4(ip) => ([u32::from(*ip).to_be(), 0, 0, 0], EPFlags::IPV4),
-            IpAddr::V6(ip) => (
-                unsafe { *(ip.octets().as_ptr() as *const [u32; 4]) },
-                EPFlags::IPV6,
-            ),
+            IpAddr::V6(ip) => (unsafe { Inet6U::from(ip.octets()).addr32 }, EPFlags::IPV6),
         };
         let flags = flags | self.options.flags;
         let src_ip = match self.options.props.get(options::SRC_IP) {
             Some(ips) => match ips.parse::<IpAddr>() {
                 Ok(ip) => match ip {
                     IpAddr::V4(ip) => [u32::from(ip).to_be(), 0, 0, 0],
-                    IpAddr::V6(ipv6) => unsafe { *(ipv6.octets().as_ptr() as *const [u32; 4]) },
+                    IpAddr::V6(ipv6) => unsafe { Inet6U::from(ipv6.octets()).addr32 },
                 },
                 Err(e) => {
                     error!("[backend] invalid source ip '{}', {}", ips, e);

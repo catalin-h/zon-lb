@@ -150,14 +150,23 @@ impl EPX {
     }
 }
 
-// NOTE: looks like if the union fields have the same size
-// the bpf verifier does not complain about the code generate
-// by aya.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union Inet6U {
     pub addr8: [u8; 16usize],
     pub addr32: [u32; 4usize],
+}
+
+impl From<[u8; 16usize]> for Inet6U {
+    fn from(value: [u8; 16usize]) -> Self {
+        Self { addr8: value }
+    }
+}
+
+impl From<[u32; 4usize]> for Inet6U {
+    fn from(value: [u32; 4usize]) -> Self {
+        Self { addr32: value }
+    }
 }
 
 // TODO: add 32-bit hash for generic hashing for different ip protocols
