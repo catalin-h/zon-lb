@@ -5,7 +5,7 @@ use aya_ebpf::{
     maps::{HashMap, LruHashMap},
     programs::XdpContext,
 };
-use aya_log_ebpf::{info, Level};
+use aya_log_ebpf::{error, info, Level};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16};
 use network_types::{
     eth::EthHdr,
@@ -172,6 +172,93 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             unsafe { be_addr.addr8 },
             be.port.to_be()
         );
+    }
+
+    let redirect = be.flags.contains(EPFlags::XDP_REDIRECT);
+    let lb_addr = if redirect && be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
+        // TODO: check the arp table and update or insert
+        // smac/dmac and derived ip src and redirect ifindex
+        &be.src_ip
+    } else {
+        unsafe { &dst_addr.addr32 }
+    };
+
+    // NOTE: Don't insert entry if no connection tracking is enabled for this backend.
+    // For e.g. if the backend can reply directly to the source endpoint.
+    // if !be.flags.contains(EPFlags::NO_CONNTRACK) {
+    // NOTE: the LB will use the source port since there can be multiple
+    // connection to the same backend and it needs to track all of them.
+    // BUG: can't copy ipv6 addresses as [u32; 4] directly because aya
+    // generates code that the verifier rejects.
+    let nat6key = NAT6Key {
+        //ip_be_src: [be.address[0], be.address[1], be.address[2], be.address[3]],
+        ip_be_src: be_addr,
+        ip_lb_dst: Inet6U::from(lb_addr),
+        port_be_src: be.port as u32,
+        port_lb_dst: src_port as u32, // use the source port of the endpoint
+        next_hdr: next_hdr as u32,
+    };
+
+    // NOTE: Always use 64-bits values for faster data transfer and
+    // fewer instructions during initialization
+    let mac_addresses = if redirect {
+        let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
+        let macs = unsafe { macs.as_ref() }.ok_or(())?;
+        let macs = [
+            (macs[1] & 0xffff_ffff) << 16 | macs[0] >> 48 | macs[0] << 48,
+            macs[0] >> 16,
+        ];
+        unsafe { *(macs.as_ptr() as *const [u32; 3]) }
+    } else {
+        [0; 3]
+    };
+
+    let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
+
+    // Update the nat entry only if the source details changes.
+    // This will boost performance and less error prone on tests like iperf.
+    let do_insert = if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
+        nat.ifindex != if_index || nat.ip_src != src_addr || nat.mac_addresses != mac_addresses
+    } else {
+        true
+    };
+
+    if do_insert {
+        let nat6value = NAT6Value {
+            ip_src: src_addr,
+            port_lb: dst_port as u32,
+            ifindex: if_index,
+            mac_addresses,
+            flags: be.flags,
+            lb_ip: dst_addr, // save the original LB IP
+        };
+
+        // TBD: use lock or atomic update ?
+        // TBD: use BPF_F_LOCK ?
+        match unsafe { ZLB_CONNTRACK6.insert(&nat6key, &nat6value, 0) } {
+            Ok(()) => {
+                if feat.log_enabled(Level::Info) {
+                    info!(
+                        ctx,
+                        "[ctrk] [{:i}]:{} added",
+                        unsafe { src_addr.addr8 },
+                        src_port,
+                    )
+                }
+            }
+            Err(ret) => {
+                if feat.log_enabled(Level::Error) {
+                    error!(
+                        ctx,
+                        "[ctrk] [{:i}]:{} not added, err: {}",
+                        unsafe { src_addr.addr8 },
+                        src_port,
+                        ret
+                    )
+                }
+                stats_inc(stats::CT_ERROR_UPDATE);
+            }
+        };
     }
 
     Ok(xdp_action::XDP_PASS)
