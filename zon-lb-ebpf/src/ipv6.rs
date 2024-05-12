@@ -1,17 +1,32 @@
-use crate::{ptr_at, stats_inc, Features};
+use crate::{ptr_at, stats_inc, Features, ZLB_BACKENDS};
 use aya_ebpf::{bindings::xdp_action, macros::map, maps::HashMap, programs::XdpContext};
 use aya_log_ebpf::{info, Level};
+use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16};
 use network_types::{
     eth::EthHdr,
     ip::{IpProto, Ipv6Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
-use zon_lb_common::{stats, BEGroup, Inet6U, EP6, MAX_GROUPS};
+use zon_lb_common::{stats, BEGroup, BEKey, Inet6U, EP6, MAX_GROUPS};
 
 /// Same as ZLB_LB4 but for IPv6 packets.
 #[map]
 static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROUPS, 0);
+
+#[inline(always)]
+fn inet6_hash32(addr: &Inet6U) -> u32 {
+    let addr = unsafe { &addr.addr32 };
+    let csum = csum_add_u32(addr[0], 0);
+    let csum = csum_add_u32(addr[1], csum);
+    let csum = csum_add_u32(addr[2], csum);
+    csum_add_u32(addr[3], csum)
+}
+
+#[inline(always)]
+fn inet6_hash16(addr: &Inet6U) -> u16 {
+    csum_fold_32_to_16(inet6_hash32(addr))
+}
 
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
@@ -72,7 +87,6 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     }
 
     let ep6 = EP6 {
-        // TODO: copy the 32-bit array instead
         address: dst_addr,
         port: dst_port,
         proto: next_hdr as u16,
@@ -110,6 +124,34 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         stats_inc(stats::LB_ERROR_NO_BE);
 
         return Ok(xdp_action::XDP_PASS);
+    }
+
+    let key = BEKey {
+        gid: group.gid,
+        index: (inet6_hash16(&src_addr) ^ src_port) % group.becount,
+    };
+
+    let be = match unsafe { ZLB_BACKENDS.get(&key) } {
+        Some(be) => be,
+        None => {
+            if feat.log_enabled(Level::Info) {
+                info!(ctx, "[in] gid: {}, no BE at: {}", group.gid, key.index);
+            }
+
+            stats_inc(stats::XDP_PASS);
+            stats_inc(stats::LB_ERROR_BAD_BE);
+
+            return Ok(xdp_action::XDP_PASS);
+        }
+    };
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "[ctrk] fw be: [{:i}]:{}",
+            unsafe { Inet6U::from(be.address).addr8 },
+            be.port.to_be()
+        );
     }
 
     Ok(xdp_action::XDP_PASS)
