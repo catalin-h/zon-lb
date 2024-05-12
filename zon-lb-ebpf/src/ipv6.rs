@@ -1,5 +1,10 @@
 use crate::{ptr_at, stats_inc, Features, ZLB_BACKENDS};
-use aya_ebpf::{bindings::xdp_action, macros::map, maps::HashMap, programs::XdpContext};
+use aya_ebpf::{
+    bindings::{xdp_action, BPF_F_NO_COMMON_LRU},
+    macros::map,
+    maps::{HashMap, LruHashMap},
+    programs::XdpContext,
+};
 use aya_log_ebpf::{info, Level};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16};
 use network_types::{
@@ -8,11 +13,23 @@ use network_types::{
     tcp::TcpHdr,
     udp::UdpHdr,
 };
-use zon_lb_common::{stats, BEGroup, BEKey, Inet6U, EP6, MAX_GROUPS};
+use zon_lb_common::{
+    stats, BEGroup, BEKey, EPFlags, Inet6U, NAT6Key, NAT6Value, EP6, MAX_CONNTRACKS, MAX_GROUPS,
+};
 
 /// Same as ZLB_LB4 but for IPv6 packets.
 #[map]
 static ZLB_LB6: HashMap<EP6, BEGroup> = HashMap::<EP6, BEGroup>::pinned(MAX_GROUPS, 0);
+
+type LHM6 = LruHashMap<NAT6Key, NAT6Value>;
+/// Used for IPv6 connection tracking and NAT between backend and source endpoint.
+/// This map will be updated upon forwarding the packet to backend and searched
+/// upon returning the backend reply.
+/// NOTE: BPF_F_NO_COMMON_LRU will increase the performance but in the user space
+/// the conntrack listing will be affected as there are different LRU lists per CPU.
+/// TODO: The key can change an replaced by ipv6 src, dst and flow label.
+#[map]
+static mut ZLB_CONNTRACK6: LHM6 = LHM6::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
 #[inline(always)]
 fn inet6_hash32(addr: &Inet6U) -> u32 {

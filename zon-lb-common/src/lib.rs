@@ -331,6 +331,62 @@ pub struct NAT4Value {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for NAT4Value {}
 
+/// IPv6 connection tracking map key.
+///
+/// TODO: The key can change an replaced by ipv6 src, dst and flow label.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NAT6Key {
+    /// The backend will respond with this address
+    pub ip_be_src: Inet6U,
+    /// The backend will respond to this address
+    pub ip_lb_dst: Inet6U,
+    /// The backend will respond with this port
+    pub port_be_src: u32,
+    /// The backend will respond to this port
+    pub port_lb_dst: u32,
+    /// The used IP protocol. The field is 8-bits wide
+    /// but we need to be 32-bit for performance reasons
+    /// (fewer instructions)
+    pub next_hdr: u32,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for NAT6Key {}
+
+/// IPV4 connection tracking map value.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NAT6Value {
+    /// The source address
+    pub ip_src: Inet6U,
+    /// The saved lb port. Use a 32-bit value in order to
+    /// align to 32-bit and avoid bpf verifier error.
+    pub port_lb: u32,
+    /// The interface index to redirect the reply packet from
+    /// the backend. This is the interface index that the
+    /// request packet was received by the LB.
+    /// See `EPFlags::XDP_REDIRECT`.
+    pub ifindex: u32,
+    /// Destination and source MAC addresses. The MAC addresses
+    /// are stored so they are just copied in the reply Ethernet
+    /// frame. It is used only on redirect the flow and is computed
+    /// from the request frame.
+    /// See `EPFlags::XDP_REDIRECT`.
+    pub mac_addresses: [u32; 3],
+    /// Flags that control the way to forward the packet,
+    /// for e.g. pass to net stack to redirect it to
+    /// another interface.
+    pub flags: EPFlags,
+    /// The original LB IP when the NAT changed this address also.
+    /// On reply flow the destination IP must be replaced with this
+    /// address if it's different than the current destination ip.
+    pub lb_ip: Inet6U,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for NAT6Value {}
+
 /// Arp table entry
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
