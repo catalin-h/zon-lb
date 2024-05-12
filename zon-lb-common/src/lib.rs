@@ -160,6 +160,17 @@ pub union Inet6U {
     // pub addr64: [u64; 2usize],
 }
 
+impl PartialEq for Inet6U {
+    fn eq(&self, other: &Self) -> bool {
+        unsafe {
+            self.addr32[3] == other.addr32[3]
+                && self.addr32[2] == other.addr32[2]
+                && self.addr32[1] == other.addr32[1]
+                && self.addr32[0] == other.addr32[0]
+        }
+    }
+}
+
 impl From<&[u8; 16usize]> for Inet6U {
     fn from(value: &[u8; 16usize]) -> Self {
         Self { addr8: *value }
