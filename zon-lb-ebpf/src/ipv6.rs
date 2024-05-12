@@ -30,10 +30,11 @@ fn inet6_hash16(addr: &Inet6U) -> u16 {
 
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
-    let src_addr = unsafe { Inet6U::from((*ipv6hdr).src_addr.in6_u.u6_addr32) };
-    let dst_addr = unsafe { Inet6U::from((*ipv6hdr).dst_addr.in6_u.u6_addr32) };
+    let src_addr = unsafe { Inet6U::from(&(*ipv6hdr).src_addr.in6_u.u6_addr32) };
+    let dst_addr = unsafe { Inet6U::from(&(*ipv6hdr).dst_addr.in6_u.u6_addr32) };
     let next_hdr = unsafe { (*ipv6hdr).next_hdr };
 
+    // TODO: consider the VLAN offset
     // NOTE: IPv6 header isn't fixed and the L4 header offset can
     // be computed iterating over the extension headers until we
     // reach a non-extension next_hdr value. For now we assume
@@ -145,11 +146,13 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     };
 
+    let be_addr = Inet6U::from(&be.address);
+
     if feat.log_enabled(Level::Info) {
         info!(
             ctx,
             "[ctrk] fw be: [{:i}]:{}",
-            unsafe { Inet6U::from(be.address).addr8 },
+            unsafe { be_addr.addr8 },
             be.port.to_be()
         );
     }

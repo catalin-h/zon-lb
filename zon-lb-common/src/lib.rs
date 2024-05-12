@@ -155,6 +155,15 @@ impl EPX {
 pub union Inet6U {
     pub addr8: [u8; 16usize],
     pub addr32: [u32; 4usize],
+    // BUG: for some reason aya generates code that is rejected by verifier
+    // when using 2 x 64bit array.
+    // pub addr64: [u64; 2usize],
+}
+
+impl From<&[u8; 16usize]> for Inet6U {
+    fn from(value: &[u8; 16usize]) -> Self {
+        Self { addr8: *value }
+    }
 }
 
 impl From<[u8; 16usize]> for Inet6U {
@@ -163,9 +172,14 @@ impl From<[u8; 16usize]> for Inet6U {
     }
 }
 
-impl From<[u32; 4usize]> for Inet6U {
-    fn from(value: [u32; 4usize]) -> Self {
-        Self { addr32: value }
+impl From<&[u32; 4usize]> for Inet6U {
+    fn from(value: &[u32; 4usize]) -> Self {
+        Self {
+            // BUG: can't copy the array directly because there are some cases
+            // where aya generates code that bpf verifier rejects.
+            // The workaround is manually copy each array item:
+            addr32: [value[0], value[1], value[2], value[3]],
+        }
     }
 }
 
@@ -252,7 +266,7 @@ pub struct BE {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for BE {}
 
-/// IPV4 connection tracking map key.
+/// IPv4 connection tracking map key.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NAT4Key {
@@ -273,7 +287,7 @@ pub struct NAT4Key {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for NAT4Key {}
 
-/// IPV4 connection tracking map value.
+/// IPv4 connection tracking map value.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NAT4Value {
