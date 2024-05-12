@@ -9,11 +9,17 @@ use anyhow::anyhow;
 use aya::maps::{HashMap, Map, MapData};
 use log::info;
 use std::net::IpAddr;
-use zon_lb_common::{NAT4Key, NAT4Value};
+use zon_lb_common::{NAT4Key, NAT4Value, NAT6Key};
 
 impl ToMapName for NAT4Key {
     fn map_name() -> &'static str {
         "ZLB_CONNTRACK4"
+    }
+}
+
+impl ToMapName for NAT6Key {
+    fn map_name() -> &'static str {
+        "ZLB_CONNTRACK6"
     }
 }
 
@@ -64,7 +70,7 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
 }
 
 pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
-    teardown_maps(&[NAT4Key::map_name()])
+    teardown_maps(&[NAT4Key::map_name(), NAT6Key::map_name()])
 }
 
 pub fn remove_all() -> Result<(), anyhow::Error> {
