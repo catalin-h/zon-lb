@@ -1,6 +1,6 @@
-use crate::{ptr_at, stats_inc, BpfFibLookUp, Features, ZLB_BACKENDS};
+use crate::{ptr_at, redirect_txport, stats_inc, BpfFibLookUp, Features, ZLB_BACKENDS};
 use aya_ebpf::{
-    bindings::{bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
+    bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
     helpers::bpf_fib_lookup,
     macros::map,
     maps::{HashMap, LruHashMap},
@@ -265,6 +265,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     }
 
     // TODO: compute TCP or UDP csum
+    // TODO: compute ICMPv6 checksum
 
     // TODO: reduce hop limit by one on xmit and redirect
     // The IPv6 header does not have a csum field that needs to be
@@ -337,6 +338,47 @@ fn redirect_ipv6(
             fib_param.dest_mac(),
             fib_param.src_mac(),
         );
+    }
+
+    if rc == bindings::BPF_FIB_LKUP_RET_SUCCESS as i64 {
+        let action = unsafe {
+            let eth = ptr_at::<EthHdr>(&ctx, 0)?;
+            fib_param.fill_ethdr_macs(eth.cast_mut());
+            redirect_txport(ctx, &feat, fib_param.ifindex)
+        };
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "[redirect] action => {}", action);
+        }
+
+        // TODO:
+        // update_arp(ctx, &feat, fib_param);
+
+        return Ok(action);
+    }
+
+    // All other result codes represent a fib loopup fail,
+    // even though the packet is eventually XDP_PASS-ed
+    stats_inc(stats::FIB_LOOKUP_FAILS);
+
+    if rc == bindings::BPF_FIB_LKUP_RET_BLACKHOLE as i64
+        || rc == bindings::BPF_FIB_LKUP_RET_UNREACHABLE as i64
+        || rc == bindings::BPF_FIB_LKUP_RET_PROHIBIT as i64
+    {
+        if feat.log_enabled(Level::Error) {
+            error!(ctx, "[redirect] can't fw, fib rc: {}", rc);
+        }
+
+        stats_inc(stats::XDP_DROP);
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    if feat.log_enabled(Level::Error) && rc < 0 {
+        error!(ctx, "[redirect] invalid arg, fib rc: {}", rc);
+    }
+    if feat.log_enabled(Level::Info) && rc >= 0 {
+        // let it pass to the stack to handle it
+        info!(ctx, "[redirect] packet not fwd, fib rc: {}", rc);
     }
 
     stats_inc(stats::XDP_PASS);
