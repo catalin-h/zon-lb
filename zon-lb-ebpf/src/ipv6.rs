@@ -1,11 +1,14 @@
-use crate::{ptr_at, stats_inc, Features, ZLB_BACKENDS};
+use crate::{ptr_at, stats_inc, BpfFibLookUp, Features, ZLB_BACKENDS};
 use aya_ebpf::{
-    bindings::{xdp_action, BPF_F_NO_COMMON_LRU},
+    bindings::{bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
+    helpers::bpf_fib_lookup,
     macros::map,
     maps::{HashMap, LruHashMap},
     programs::XdpContext,
+    EbpfContext,
 };
 use aya_log_ebpf::{error, info, Level};
+use core::mem;
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16};
 use network_types::{
     eth::EthHdr,
@@ -293,5 +296,49 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
+    return redirect_ipv6(ctx, feat, ipv6hdr, Inet6U::from(lb_addr), be_addr);
+}
+
+fn redirect_ipv6(
+    ctx: &XdpContext,
+    feat: Features,
+    ipv6hdr: *const Ipv6Hdr,
+    src_ip: Inet6U,
+    dst_ip: Inet6U,
+) -> Result<u32, ()> {
+    let fib_param = BpfFibLookUp::new_inet6(
+        unsafe { (*ipv6hdr).payload_len.to_be() },
+        unsafe { (*ctx.ctx).ingress_ifindex },
+        unsafe { (*ipv6hdr).priority() as u32 },
+        &src_ip,
+        &dst_ip,
+    );
+    let p_fib_param = &fib_param as *const BpfFibLookUp as *mut bpf_fib_lookup_param_t;
+    let rc = unsafe {
+        bpf_fib_lookup(
+            ctx.as_ptr(),
+            p_fib_param,
+            mem::size_of::<BpfFibLookUp>() as i32,
+            0,
+        )
+    };
+
+    stats_inc(stats::FIB_LOOKUPS);
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "[redirect] output, lkp_ret: {}, fw if: {}, src: {:i}, \
+            gw: {:i}, dmac: {:mac}, smac: {:mac}",
+            rc,
+            fib_param.ifindex,
+            unsafe { Inet6U::from(&fib_param.src).addr8 },
+            unsafe { Inet6U::from(&fib_param.dst).addr8 },
+            fib_param.dest_mac(),
+            fib_param.src_mac(),
+        );
+    }
+
+    stats_inc(stats::XDP_PASS);
     Ok(xdp_action::XDP_PASS)
 }

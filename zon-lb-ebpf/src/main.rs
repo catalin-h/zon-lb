@@ -26,16 +26,14 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, BE, EP4,
-    MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
+    runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, Inet6U, NAT4Key, NAT4Value, BE,
+    EP4, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
 const ETH_ALEN: usize = 6;
 // Address families
 const AF_INET: u8 = 2; // Internet IP Protocol
-
-// TODO: ipv6
-//const AF_INET6: u8 = 10; // Internet IP Protocol// Fused variables
+const AF_INET6: u8 = 10; // Internet IP Protocol// Fused variables
 
 #[no_mangle]
 static VERSION: u64 = 0;
@@ -631,7 +629,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             if feat.log_enabled(Level::Info) {
                 info!(ctx, "in => xdp_tx");
             }
+
             stats_inc(stats::XDP_TX);
+
             return Ok(xdp_action::XDP_TX);
         }
 
@@ -885,6 +885,17 @@ impl BpfFibLookUp {
         fib.tos = tos;
         fib.src[0] = src;
         fib.dst[0] = dst;
+        fib
+    }
+
+    fn new_inet6(paylod_len: u16, ifindex: u32, tc: u32, src: &Inet6U, dst: &Inet6U) -> Self {
+        let mut fib: BpfFibLookUp = unsafe { core::mem::zeroed() };
+        fib.family = AF_INET6;
+        fib.tot_len = paylod_len;
+        fib.ifindex = ifindex;
+        fib.tos = tc;
+        fib.src = unsafe { src.addr32 };
+        fib.dst = unsafe { dst.addr32 };
         fib
     }
 
