@@ -625,13 +625,23 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         _ => {}
     };
 
-    // Send back the packet to the same interface
-    if !redirect && be.flags.contains(EPFlags::XDP_TX) {
-        if feat.log_enabled(Level::Info) {
-            info!(ctx, "in => xdp_tx");
+    if !redirect {
+        // Send back the packet to the same interface
+        if be.flags.contains(EPFlags::XDP_TX) {
+            if feat.log_enabled(Level::Info) {
+                info!(ctx, "in => xdp_tx");
+            }
+            stats_inc(stats::XDP_TX);
+            return Ok(xdp_action::XDP_TX);
         }
-        stats_inc(stats::XDP_TX);
-        return Ok(xdp_action::XDP_TX);
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "in => xdp_pass");
+        }
+
+        stats_inc(stats::XDP_PASS);
+
+        return Ok(xdp_action::XDP_PASS);
     }
 
     // NOTE: the next function uses

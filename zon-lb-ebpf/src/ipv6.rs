@@ -261,5 +261,37 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         };
     }
 
+    // TODO: compute TCP or UDP csum
+
+    // TODO: reduce hop limit by one on xmit and redirect
+    // The IPv6 header does not have a csum field that needs to be
+    // recalculated everytime the hop limit is decreased as it happens
+    // when the TTL from IPv4 header is reduced by one.
+
+    // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
+    // on Link and Transport layer for assuring packet integrity. That's
+    // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
+
+    if !redirect {
+        // Send back the packet to the same interface
+        if be.flags.contains(EPFlags::XDP_TX) {
+            if feat.log_enabled(Level::Info) {
+                info!(ctx, "in => xdp_tx");
+            }
+
+            stats_inc(stats::XDP_TX);
+
+            return Ok(xdp_action::XDP_TX);
+        }
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "in => xdp_pass");
+        }
+
+        stats_inc(stats::XDP_PASS);
+
+        return Ok(xdp_action::XDP_PASS);
+    }
+
     Ok(xdp_action::XDP_PASS)
 }
