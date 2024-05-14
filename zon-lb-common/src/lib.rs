@@ -395,7 +395,7 @@ pub struct ArpEntry {
     pub ifindex: u32,
     /// The dmac and smac combo
     pub macs: [u32; 3],
-    /// Derived source IP combo for both IPv4/v6.
+    /// TBD: Derived source IP combo for both IPv4/v6.
     pub ip_src: [u32; 4],
     /// The expiry timestamp
     pub expiry: u32,

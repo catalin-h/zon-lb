@@ -1,7 +1,7 @@
 use crate::{ptr_at, redirect_txport, stats_inc, BpfFibLookUp, Features, ZLB_BACKENDS};
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
-    helpers::bpf_fib_lookup,
+    helpers::{bpf_fib_lookup, bpf_ktime_get_ns},
     macros::map,
     maps::{HashMap, LruHashMap},
     programs::XdpContext,
@@ -17,7 +17,8 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    stats, BEGroup, BEKey, EPFlags, Inet6U, NAT6Key, NAT6Value, EP6, MAX_CONNTRACKS, MAX_GROUPS,
+    stats, ArpEntry, BEGroup, BEKey, EPFlags, Inet6U, NAT6Key, NAT6Value, EP6, MAX_ARP_ENTRIES,
+    MAX_CONNTRACKS, MAX_GROUPS,
 };
 
 /// Same as ZLB_LB4 but for IPv6 packets.
@@ -33,6 +34,13 @@ type LHM6 = LruHashMap<NAT6Key, NAT6Value>;
 /// TODO: The key can change an replaced by ipv6 src, dst and flow label.
 #[map]
 static mut ZLB_CONNTRACK6: LHM6 = LHM6::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
+
+type HMARP6 = LruHashMap<[u32; 4usize], ArpEntry>;
+/// ARP table for caching destination ip to smac/dmac and derived source ip.
+/// The derived source ip is the address used as source when redirecting the
+/// the packet.
+#[map]
+static mut ZLB_ARP6: HMARP6 = HMARP6::pinned(MAX_ARP_ENTRIES, 0);
 
 #[inline(always)]
 fn inet6_hash32(addr: &Inet6U) -> u32 {
@@ -301,17 +309,47 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 }
 
 fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: *const Ipv6Hdr) -> Result<u32, ()> {
-    let src_ip = unsafe { &(*ipv6hdr).src_addr.in6_u.u6_addr32 };
     let dst_ip = unsafe { &(*ipv6hdr).dst_addr.in6_u.u6_addr32 };
+
+    if let Some(&entry) = unsafe { ZLB_ARP6.get(dst_ip) } {
+        // NOTE: check expiry before using this entry
+        let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
+
+        if now - entry.expiry < 600 {
+            let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+
+            // NOTE: look like aya can't convert the '*eth = entry.macs' into
+            // a 3 load instructions block that doesn't panic the bpf verifier
+            // with 'invalid access to packet'. The same statement when modifying
+            // stack data passes the verifier check.
+            unsafe {
+                (*eth)[0] = entry.macs[0];
+                (*eth)[1] = entry.macs[1];
+                (*eth)[2] = entry.macs[2];
+            };
+
+            let action = redirect_txport(ctx, &feat, entry.ifindex);
+
+            if feat.log_enabled(Level::Info) {
+                info!(
+                    ctx,
+                    "[redirect] [arp-cache] oif: {} action => {}", entry.ifindex, action
+                );
+            }
+
+            return Ok(action);
+        }
+    }
 
     let fib_param = BpfFibLookUp::new_inet6(
         unsafe { (*ipv6hdr).payload_len.to_be() },
         unsafe { (*ctx.ctx).ingress_ifindex },
         unsafe { (*ipv6hdr).priority() as u32 },
-        &src_ip,
-        &dst_ip,
+        unsafe { &(*ipv6hdr).src_addr.in6_u.u6_addr32 },
+        dst_ip,
     );
     let p_fib_param = &fib_param as *const BpfFibLookUp as *mut bpf_fib_lookup_param_t;
+
     let rc = unsafe {
         bpf_fib_lookup(
             ctx.as_ptr(),
@@ -330,8 +368,8 @@ fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: *const Ipv6Hdr) -> R
             gw: {:i}, dmac: {:mac}, smac: {:mac}",
             rc,
             fib_param.ifindex,
-            unsafe { Inet6U::from(src_ip).addr8 },
-            unsafe { Inet6U::from(dst_ip).addr8 },
+            unsafe { Inet6U::from(&fib_param.src).addr8 },
+            unsafe { Inet6U::from(&fib_param.dst).addr8 },
             fib_param.dest_mac(),
             fib_param.src_mac(),
         );
@@ -348,8 +386,7 @@ fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: *const Ipv6Hdr) -> R
             info!(ctx, "[redirect] action => {}", action);
         }
 
-        // TODO:
-        // update_arp(ctx, &feat, fib_param);
+        update_arp6(ctx, &feat, fib_param);
 
         return Ok(action);
     }
@@ -380,4 +417,38 @@ fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: *const Ipv6Hdr) -> R
 
     stats_inc(stats::XDP_PASS);
     Ok(xdp_action::XDP_PASS)
+}
+
+fn update_arp6(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
+    let arp = ArpEntry {
+        ifindex: fib_param.ifindex,
+        macs: fib_param.ethdr_macs(),
+        ip_src: fib_param.src, // not used for now
+        // TODO: make the expiry time a runvar
+        expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32,
+    };
+
+    // NOTE: after updating the value or key struct size must remove the pinned map
+    // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
+    match unsafe { ZLB_ARP6.insert(&fib_param.dst, &arp, 0) } {
+        Ok(()) => {
+            if feat.log_enabled(Level::Info) {
+                info!(
+                    ctx,
+                    "[arp6] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
+                    unsafe { Inet6U::from(&fib_param.dst).addr8 },
+                    fib_param.ifindex,
+                    fib_param.src_mac(),
+                    fib_param.dest_mac(),
+                    unsafe { Inet6U::from(&fib_param.src).addr8 },
+                )
+            }
+        }
+        Err(e) => {
+            if feat.log_enabled(Level::Error) {
+                error!(ctx, "[arp6] fail to insert entry, err:{}", e)
+            }
+            stats_inc(stats::ARP_ERROR_UPDATE);
+        }
+    };
 }
