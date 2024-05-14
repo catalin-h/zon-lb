@@ -26,8 +26,8 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, Inet6U, NAT4Key, NAT4Value, BE,
-    EP4, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
+    runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, BE, EP4,
+    MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
 const ETH_ALEN: usize = 6;
@@ -888,14 +888,14 @@ impl BpfFibLookUp {
         fib
     }
 
-    fn new_inet6(paylod_len: u16, ifindex: u32, tc: u32, src: &Inet6U, dst: &Inet6U) -> Self {
+    fn new_inet6(paylod_len: u16, ifindex: u32, tc: u32, src: &[u32; 4], dst: &[u32; 4]) -> Self {
         let mut fib: BpfFibLookUp = unsafe { core::mem::zeroed() };
         fib.family = AF_INET6;
         fib.tot_len = paylod_len;
         fib.ifindex = ifindex;
         fib.tos = tc;
-        fib.src = unsafe { src.addr32 };
-        fib.dst = unsafe { dst.addr32 };
+        fib.src = *src;
+        fib.dst = *dst;
         fib
     }
 

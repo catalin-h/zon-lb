@@ -297,16 +297,13 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    return redirect_ipv6(ctx, feat, ipv6hdr, Inet6U::from(lb_addr), be_addr);
+    return redirect_ipv6(ctx, feat, ipv6hdr);
 }
 
-fn redirect_ipv6(
-    ctx: &XdpContext,
-    feat: Features,
-    ipv6hdr: *const Ipv6Hdr,
-    src_ip: Inet6U,
-    dst_ip: Inet6U,
-) -> Result<u32, ()> {
+fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: *const Ipv6Hdr) -> Result<u32, ()> {
+    let src_ip = unsafe { &(*ipv6hdr).src_addr.in6_u.u6_addr32 };
+    let dst_ip = unsafe { &(*ipv6hdr).dst_addr.in6_u.u6_addr32 };
+
     let fib_param = BpfFibLookUp::new_inet6(
         unsafe { (*ipv6hdr).payload_len.to_be() },
         unsafe { (*ctx.ctx).ingress_ifindex },
@@ -333,8 +330,8 @@ fn redirect_ipv6(
             gw: {:i}, dmac: {:mac}, smac: {:mac}",
             rc,
             fib_param.ifindex,
-            unsafe { Inet6U::from(&fib_param.src).addr8 },
-            unsafe { Inet6U::from(&fib_param.dst).addr8 },
+            unsafe { Inet6U::from(src_ip).addr8 },
+            unsafe { Inet6U::from(dst_ip).addr8 },
             fib_param.dest_mac(),
             fib_param.src_mac(),
         );
