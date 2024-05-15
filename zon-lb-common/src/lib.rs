@@ -333,14 +333,24 @@ unsafe impl aya::Pod for NAT4Value {}
 
 /// IPv6 connection tracking map key.
 ///
-/// TODO: The key can change an replaced by ipv6 src, dst and flow label.
-#[repr(C)]
+/// TODO: The key can change an replaced by ipv6 src, dst and flow label
+/// NOTE: align this struct to 8Bytes in order to:
+/// 1. allocated it on stack at this bound
+/// 2. allow optimized copy of the first two ipv6 addresses
+/// using 4 x 8B copy operations.
+/// NOTE: the verifier will check if the address to read is aligned to the
+/// data type.
+#[repr(C, align(8))]
 #[derive(Clone, Copy)]
 pub struct NAT6Key {
-    /// The backend will respond with this address
-    pub ip_be_src: Inet6U,
+    /// NOTE: the order of addresses should match
+    /// the one in the IPv6 packet on reply flow
+    /// in order to optimize copying the addresses
+    /// to the actual packet as 4 x 64-bit moves.
     /// The backend will respond to this address
     pub ip_lb_dst: Inet6U,
+    /// The backend will respond with this address
+    pub ip_be_src: Inet6U,
     /// The backend will respond with this port
     pub port_be_src: u32,
     /// The backend will respond to this port

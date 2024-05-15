@@ -12,7 +12,7 @@ use core::mem;
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16};
 use network_types::{
     eth::EthHdr,
-    ip::{IpProto, Ipv6Hdr},
+    ip::{in6_addr, IpProto, Ipv6Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
@@ -174,6 +174,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     };
 
+    // TODO: use only nat6key so to not duplicate be_addr
     let be_addr = Inet6U::from(&be.address);
 
     if feat.log_enabled(Level::Info) {
@@ -272,9 +273,6 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         };
     }
 
-    // TODO: compute TCP or UDP csum
-    // TODO: compute ICMPv6 checksum
-
     // TODO: reduce hop limit by one on xmit and redirect
     // The IPv6 header does not have a csum field that needs to be
     // recalculated everytime the hop limit is decreased as it happens
@@ -283,6 +281,19 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
     // on Link and Transport layer for assuring packet integrity. That's
     // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
+
+    // TODO: compute TCP or UDP csum
+    // TODO: compute ICMPv6 checksum
+
+    unsafe {
+        //let to = ptr_at::<[u64; 4usize]>(&ctx, EthHdr::LEN + 8)?.cast_mut();
+        let to = (&mut ((*ipv6hdr.cast_mut()).src_addr)) as *mut in6_addr;
+        let to = to as *mut [u64; 4usize];
+        let from = &nat6key.ip_lb_dst as *const Inet6U as *const [u64; 4usize];
+        for i in 0..4 {
+            (*to)[i] = (*from)[i];
+        }
+    }
 
     if !redirect {
         // Send back the packet to the same interface
