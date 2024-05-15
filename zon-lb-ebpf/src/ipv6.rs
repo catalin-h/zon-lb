@@ -174,18 +174,6 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     };
 
-    // TODO: use only nat6key so to not duplicate be_addr
-    let be_addr = Inet6U::from(&be.address);
-
-    if feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "[ctrk] fw be: [{:i}]:{}",
-            unsafe { be_addr.addr8 },
-            be.port.to_be()
-        );
-    }
-
     let redirect = be.flags.contains(EPFlags::XDP_REDIRECT);
     let lb_addr = if redirect && be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
         // TODO: check the arp table and update or insert
@@ -200,16 +188,28 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // if !be.flags.contains(EPFlags::NO_CONNTRACK) {
     // NOTE: the LB will use the source port since there can be multiple
     // connection to the same backend and it needs to track all of them.
-    // BUG: can't copy ipv6 addresses as [u32; 4] directly because aya
-    // generates code that the verifier rejects.
+    // TBD: BUG: can't copy ipv6 addresses as [u32; 4] directly because aya
+    // generates code that the verifier rejects. Maybe the address is not
+    // aligned to 8B (see comment from Inet6U) ?
+    // NOTE: don't care if 2 ipv6 addresses (16B) are copied because they
+    // required to created the key to query the connection tracking map.
     let nat6key = NAT6Key {
         //ip_be_src: [be.address[0], be.address[1], be.address[2], be.address[3]],
-        ip_be_src: be_addr,
         ip_lb_dst: Inet6U::from(lb_addr),
+        ip_be_src: Inet6U::from(&be.address),
         port_be_src: be.port as u32,
         port_lb_dst: src_port as u32, // use the source port of the endpoint
         next_hdr: next_hdr as u32,
     };
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "[ctrk] fw be: [{:i}]:{}",
+            unsafe { nat6key.ip_be_src.addr8 },
+            be.port.to_be()
+        );
+    }
 
     // NOTE: Always use 64-bits values for faster data transfer and
     // fewer instructions during initialization
@@ -230,6 +230,8 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // Update the nat entry only if the source details changes.
     // This will boost performance and less error prone on tests like iperf.
     let do_insert = if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
+        // TODO: use a inet 32-bit hash instead of
+        // the 3 comparations or 32B/32B total matching bytes ?
         nat.ifindex != if_index || nat.ip_src != src_addr || nat.mac_addresses != mac_addresses
     } else {
         true
