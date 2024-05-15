@@ -150,24 +150,22 @@ impl EPX {
     }
 }
 
-#[repr(C)]
+// NOTE: explicitly align this struct to 8B
+// in order to use the 64-bit operations.
+#[repr(C, align(8))]
 #[derive(Clone, Copy)]
 pub union Inet6U {
     pub addr8: [u8; 16usize],
     pub addr32: [u32; 4usize],
-    // BUG: for some reason aya generates code that is rejected by verifier
-    // when using 2 x 64bit array.
-    // pub addr64: [u64; 2usize],
+    // NOTE: for some reason aya generates code that is rejected
+    // by verifier when using 2 x 64bit array because the struct
+    // is not aligned to 8B (64bit).
+    pub addr64: [u64; 2usize],
 }
 
 impl PartialEq for Inet6U {
     fn eq(&self, other: &Self) -> bool {
-        unsafe {
-            self.addr32[3] == other.addr32[3]
-                && self.addr32[2] == other.addr32[2]
-                && self.addr32[1] == other.addr32[1]
-                && self.addr32[0] == other.addr32[0]
-        }
+        unsafe { self.addr64[1] == other.addr64[1] && self.addr64[0] == other.addr64[0] }
     }
 }
 
