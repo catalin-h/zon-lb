@@ -107,16 +107,19 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     if feat.log_enabled(Level::Info) {
         let (if_index, rx_queue) =
             unsafe { ((*ctx.ctx).ingress_ifindex, (*ctx.ctx).rx_queue_index) };
+        let flow = &unsafe { (*ipv6hdr).flow_label };
+        let flow = u32::from_be_bytes([0, flow[0], flow[1], flow[2]]);
         info!(
             ctx,
-            "[i:{}, rx:{}] [p:{}] [{:i}]:{} -> *[{:i}]:{}",
+            "[i:{}, rx:{}] [p:{}] [{:i}]:{} -> *[{:i}]:{}, flow: {:x}",
             if_index,
             rx_queue,
             next_hdr as u8,
             unsafe { src_addr.addr8 },
             src_port.to_be(),
             unsafe { dst_addr.addr8 },
-            dst_port.to_be()
+            dst_port.to_be(),
+            flow
         );
     }
 
