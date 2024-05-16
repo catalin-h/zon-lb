@@ -12,6 +12,7 @@ use core::mem;
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16};
 use network_types::{
     eth::EthHdr,
+    icmp::IcmpHdr,
     ip::{in6_addr, IpProto, Ipv6Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
@@ -73,14 +74,18 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // Fragment, Destination Options, Routing, Authentication and Encapsulating
     // Security Payload. I makes sense to make make 6 calls until reaching a
     // next header we can handle.
-    let (src_port, dst_port) = match next_hdr {
+    let (src_port, dst_port, check) = match next_hdr {
         IpProto::Tcp => {
             let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*tcphdr).source, (*tcphdr).dest) }
+            unsafe { ((*tcphdr).source, (*tcphdr).dest, (*tcphdr).check) }
         }
         IpProto::Udp => {
             let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*udphdr).source, (*udphdr).dest) }
+            unsafe { ((*udphdr).source, (*udphdr).dest, (*udphdr).check) }
+        }
+        IpProto::Ipv6Icmp => {
+            let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4hdr_offset)?;
+            unsafe { (0, 0, (*icmphdr).checksum) }
         }
         // TODO: handle extention headers or at least fragments as they may contain
         // actual valid tcp or udp packets.
@@ -95,7 +100,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         // below IPv6.
         // See: https://www.rfc-editor.org/rfc/rfc8200.html#page-25
         // TODO: handle No Next Header => pass
-        _ => (0, 0),
+        _ => (0, 0, 0),
     };
 
     let feat = Features::new();
@@ -280,20 +285,43 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // recalculated everytime the hop limit is decreased as it happens
     // when the TTL from IPv4 header is reduced by one.
 
-    // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
-    // on Link and Transport layer for assuring packet integrity. That's
-    // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
-
     // TODO: compute TCP or UDP csum
     // TODO: compute ICMPv6 checksum
 
-    unsafe {
+    let check = unsafe {
         //let to = ptr_at::<[u64; 4usize]>(&ctx, EthHdr::LEN + 8)?.cast_mut();
         let to = (&mut ((*ipv6hdr.cast_mut()).src_addr)) as *mut in6_addr;
-        let to = to as *mut [u64; 4usize];
-        let from = &nat6key.ip_lb_dst as *const Inet6U as *const [u64; 4usize];
-        for i in 0..4 {
-            (*to)[i] = (*from)[i];
+        let to = to as *mut [u32; 8usize];
+        let from = &nat6key.ip_lb_dst as *const Inet6U as *const [u32; 8usize];
+        let mut csum = check as u32;
+
+        // NOTE: optimization: use parallel scan over 8 x 32-bit values:
+        // * cache friendly
+        // * compute csum and copy address using the same 32-bit to/from values
+        // * compute csum and copy `only` if the values at the same index are
+        // different; for 16B IPv6 with many zeros this will reduce the csum
+        // and copy to minimum.
+        for i in 0..8 {
+            if (*to)[i] != (*from)[i] {
+                csum = csum_add_u32((*to)[i], csum);
+                csum = csum_add_u32(!(*from)[i], csum);
+                (*to)[i] = (*from)[i];
+            }
+        }
+
+        csum
+    };
+
+    match next_hdr {
+        IpProto::Ipv6Icmp => {
+            // NOTE: ICMPv6 header has the same fields as ICMP for IPv4.
+            let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4hdr_offset)?.cast_mut();
+            unsafe { (*icmphdr).checksum = csum_fold_32_to_16(check) };
+        }
+        _ => {
+            // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
+            // on Link and Transport layer for assuring packet integrity. That's
+            // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
         }
     }
 
