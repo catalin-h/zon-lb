@@ -338,13 +338,13 @@ unsafe impl aya::Pod for NAT4Value {}
 /// using 4 x 8B copy operations.
 /// NOTE: the verifier will check if the address to read is aligned to the
 /// data type.
+/// NOTE: the order of addresses should match
+/// the one in the IPv6 packet on reply flow
+/// in order to optimize copying the addresses
+/// to the actual packet as 4 x 64-bit moves.
 #[repr(C, align(8))]
 #[derive(Clone, Copy)]
 pub struct NAT6Key {
-    /// NOTE: the order of addresses should match
-    /// the one in the IPv6 packet on reply flow
-    /// in order to optimize copying the addresses
-    /// to the actual packet as 4 x 64-bit moves.
     /// The backend will respond to this address
     pub ip_lb_dst: Inet6U,
     /// The backend will respond with this address

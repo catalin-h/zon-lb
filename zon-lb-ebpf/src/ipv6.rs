@@ -201,8 +201,9 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // aligned to 8B (see comment from Inet6U) ?
     // NOTE: don't care if 2 ipv6 addresses (16B) are copied because they
     // required to created the key to query the connection tracking map.
+    // TBD: NOTE: can't use the same key as above because the verifier will
+    // complain about stack size above 512.
     let nat6key = NAT6Key {
-        //ip_be_src: [be.address[0], be.address[1], be.address[2], be.address[3]],
         ip_lb_dst: Inet6U::from(lb_addr),
         ip_be_src: Inet6U::from(&be.address),
         port_be_src: be.port as u32,
