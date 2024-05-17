@@ -116,9 +116,9 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 (*ipv6hdr).next_hdr as u32,
                 src_addr.addr8,
                 src_port.to_be(),
-                // BUG: changing to dst_addr.addr8 will generate code
-                // tha overflows the stack.
-                (*ipv6hdr).dst_addr.in6_u.u6_addr8,
+                // BUG: depending on current stack usage changing to dst_addr.addr8
+                // will generate code that overflows the bpf program 512B stack
+                dst_addr.addr8,
                 dst_port.to_be(),
                 {
                     let flow = &(*ipv6hdr).flow_label;
