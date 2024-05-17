@@ -128,14 +128,18 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     }
 
-    let ep6 = EP6 {
-        address: dst_addr,
-        port: dst_port,
-        proto: next_hdr as u16,
     };
 
-    let group = match unsafe { ZLB_LB6.get(&ep6) } {
-        Some(group) => *group,
+    // === request ===
+
+    let group = match unsafe {
+        ZLB_LB6.get(&EP6 {
+            address: dst_addr,
+            port: dst_port,
+            proto: next_hdr as u16,
+        })
+    } {
+        Some(group) => group,
         None => {
             if feat.log_enabled(Level::Info) {
                 info!(ctx, "No LB6 entry");
