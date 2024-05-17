@@ -172,22 +172,25 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    let key = BEKey {
-        gid: group.gid,
-        index: (inet6_hash16(&src_addr) ^ src_port) % group.becount,
-    };
+    let be = {
+        let index = (inet6_hash16(&src_addr) ^ src_port) % group.becount;
+        match unsafe {
+            ZLB_BACKENDS.get(&BEKey {
+                gid: group.gid,
+                index,
+            })
+        } {
+            Some(be) => be,
+            None => {
+                if feat.log_enabled(Level::Error) {
+                    error!(ctx, "[in] gid: {}, no BE at: {}", group.gid, index);
+                }
 
-    let be = match unsafe { ZLB_BACKENDS.get(&key) } {
-        Some(be) => be,
-        None => {
-            if feat.log_enabled(Level::Info) {
-                info!(ctx, "[in] gid: {}, no BE at: {}", group.gid, key.index);
+                stats_inc(stats::XDP_PASS);
+                stats_inc(stats::LB_ERROR_BAD_BE);
+
+                return Ok(xdp_action::XDP_PASS);
             }
-
-            stats_inc(stats::XDP_PASS);
-            stats_inc(stats::LB_ERROR_BAD_BE);
-
-            return Ok(xdp_action::XDP_PASS);
         }
     };
 
@@ -314,6 +317,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         // * compute csum and copy `only` if the values at the same index are
         // different; for 16B IPv6 with many zeros this will reduce the csum
         // and copy to minimum.
+        // NOTE: looks like loop unroll requires some stack allocation.
         for i in 0..8 {
             if (*to)[i] != (*from)[i] {
                 csum = csum_add_u32((*to)[i], csum);
@@ -321,7 +325,6 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 (*to)[i] = (*from)[i];
             }
         }
-
         csum
     };
 
