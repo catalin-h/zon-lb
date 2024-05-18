@@ -128,8 +128,6 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     }
 
-    };
-
     // === request ===
 
     let group = match unsafe {
