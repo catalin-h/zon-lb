@@ -59,6 +59,7 @@ fn inet6_hash16(addr: &Inet6U) -> u16 {
 
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
+    // TBD: maybe change to &[u32;4] or just in6_u ?
     let src_addr = unsafe { Inet6U::from(&(*ipv6hdr).src_addr.in6_u.u6_addr32) };
     let dst_addr = unsafe { Inet6U::from(&(*ipv6hdr).dst_addr.in6_u.u6_addr32) };
     let next_hdr = unsafe { (*ipv6hdr).next_hdr };
