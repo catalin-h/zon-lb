@@ -128,6 +128,53 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     }
 
+    // === reply ===
+
+    // NOTE: looks like the 512bye stack can be exhausted pretty rapidly
+    // for 1pv6 lb due to larger structs. One way to avoid the verifier error
+    // `combined stack size of 2 calls is 544. Too large` is to:
+    // * use temp variables during map searches: e.g. ZLB_CONNTRACK6.get(&NAT6Key {..
+    // * use variables inside scopes { .. } so the vars are releases from stack
+    // * use per cpu array maps
+    // * try remove some log prints
+
+    let nat6 = NAT6Key {
+        ip_lb_dst: Inet6U::from(dst_addr),
+        ip_be_src: Inet6U::from(src_addr),
+        port_be_src: src_port as u32,
+        port_lb_dst: dst_port as u32,
+        next_hdr: next_hdr as u32,
+    };
+    if let Some(&nat) = unsafe { ZLB_CONNTRACK6.get(&nat6) } {
+        // Update the total processed packets when they are from a tracked connection
+        stats_inc(stats::PACKETS);
+
+        if feat.log_enabled(Level::Info) {
+            info!(
+                ctx,
+                "[out] nat, src: {:i}, lb_port: {}",
+                unsafe { nat.ip_src.addr8 },
+                (nat.port_lb as u16).to_be()
+            );
+        }
+
+        // Unlikely
+        if nat.ip_src == src_addr && src_port == dst_port {
+            if feat.log_enabled(Level::Error) {
+                error!(
+                    ctx,
+                    "[out] drop same src {:i}:{}",
+                    unsafe { nat.ip_src.addr8 },
+                    src_port.to_be()
+                );
+            }
+            stats_inc(stats::XDP_DROP);
+            return Ok(xdp_action::XDP_DROP);
+        }
+
+        return Ok(xdp_action::XDP_PASS);
+    }
+
     // === request ===
 
     let group = match unsafe {
