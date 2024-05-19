@@ -57,6 +57,41 @@ fn inet6_hash16(addr: &Inet6U) -> u16 {
     csum_fold_32_to_16(inet6_hash32(addr))
 }
 
+unsafe fn compute_checksum_in6(check: u32, from: &[u32; 4usize], to: &mut in6_addr) -> u32 {
+    let to = &mut to.in6_u.u6_addr32;
+    let mut csum = check;
+
+    // NOTE: optimization: use parallel scan over 4 x 32-bit values:
+    // * cache friendly
+    // * compute csum and copy address using the same 32-bit to/from values
+    // * compute csum and copy `only` if the values at the same index are
+    // different; for 16B IPv6 with many zeros this will reduce the csum
+    // and copy to minimum.
+    // NOTE: looks like loop unroll requires some stack allocation.
+    for i in 0..4 {
+        if to[i] != from[i] {
+            csum = csum_add_u32(to[i], csum);
+            csum = csum_add_u32(!from[i], csum);
+            to[i] = from[i];
+        }
+    }
+
+    csum
+}
+
+unsafe fn update_ipv6hdr(
+    ipv6hdr: *const Ipv6Hdr,
+    check: u32,
+    src: &[u32; 4usize],
+    dst: &[u32; 4usize],
+) -> u32 {
+    // NOTE: optimization: cache friendly parallel scan over 8 x 32-bit values.
+    // NOTE: looks like loop unroll requires some stack allocation.
+    let hdr = &mut (*ipv6hdr.cast_mut());
+    let csum = compute_checksum_in6(check, src, &mut hdr.src_addr);
+    compute_checksum_in6(csum, dst, &mut hdr.dst_addr)
+}
+
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
     // TBD: maybe change to &[u32;4] or just in6_u ?
@@ -78,15 +113,15 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let (src_port, dst_port, check) = match next_hdr {
         IpProto::Tcp => {
             let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*tcphdr).source, (*tcphdr).dest, (*tcphdr).check) }
+            unsafe { ((*tcphdr).source, (*tcphdr).dest, (*tcphdr).check as u32) }
         }
         IpProto::Udp => {
             let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*udphdr).source, (*udphdr).dest, (*udphdr).check) }
+            unsafe { ((*udphdr).source, (*udphdr).dest, (*udphdr).check as u32) }
         }
         IpProto::Ipv6Icmp => {
             let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { (0, 0, (*icmphdr).checksum) }
+            unsafe { (0, 0, (*icmphdr).checksum as u32) }
         }
         // TODO: handle extention headers or at least fragments as they may contain
         // actual valid tcp or udp packets.
@@ -174,6 +209,9 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_DROP);
         }
 
+        let check =
+            unsafe { update_ipv6hdr(ipv6hdr, check, &nat.lb_ip.addr32, &nat.ip_src.addr32) };
+
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -242,6 +280,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     };
 
     let redirect = be.flags.contains(EPFlags::XDP_REDIRECT);
+    // TBD: need to check BE.src_ip == 0 ?
     let lb_addr = if redirect && be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
         // TODO: check the arp table and update or insert
         // smac/dmac and derived ip src and redirect ifindex
@@ -306,6 +345,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     };
 
     if do_insert {
+        // TODO: use as temp value at insert point
         let nat6value = NAT6Value {
             ip_src: src_addr,
             port_lb: dst_port as u32,
@@ -349,30 +389,14 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // when the TTL from IPv4 header is reduced by one.
 
     // TODO: compute TCP or UDP csum
-    // TODO: compute ICMPv6 checksum
 
     let check = unsafe {
-        //let to = ptr_at::<[u64; 4usize]>(&ctx, EthHdr::LEN + 8)?.cast_mut();
-        let to = (&mut ((*ipv6hdr.cast_mut()).src_addr)) as *mut in6_addr;
-        let to = to as *mut [u32; 8usize];
-        let from = &nat6key.ip_lb_dst as *const Inet6U as *const [u32; 8usize];
-        let mut csum = check as u32;
-
-        // NOTE: optimization: use parallel scan over 8 x 32-bit values:
-        // * cache friendly
-        // * compute csum and copy address using the same 32-bit to/from values
-        // * compute csum and copy `only` if the values at the same index are
-        // different; for 16B IPv6 with many zeros this will reduce the csum
-        // and copy to minimum.
-        // NOTE: looks like loop unroll requires some stack allocation.
-        for i in 0..8 {
-            if (*to)[i] != (*from)[i] {
-                csum = csum_add_u32((*to)[i], csum);
-                csum = csum_add_u32(!(*from)[i], csum);
-                (*to)[i] = (*from)[i];
-            }
-        }
-        csum
+        update_ipv6hdr(
+            ipv6hdr,
+            check,
+            &nat6key.ip_lb_dst.addr32,
+            &nat6key.ip_be_src.addr32,
+        )
     };
 
     match next_hdr {
