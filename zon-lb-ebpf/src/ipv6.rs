@@ -139,14 +139,15 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // * use per cpu array maps
     // * try remove some log prints
 
-    let nat6 = NAT6Key {
-        ip_lb_dst: Inet6U::from(dst_addr),
-        ip_be_src: Inet6U::from(src_addr),
-        port_be_src: src_port as u32,
-        port_lb_dst: dst_port as u32,
-        next_hdr: next_hdr as u32,
-    };
-    if let Some(&nat) = unsafe { ZLB_CONNTRACK6.get(&nat6) } {
+    if let Some(&nat) = unsafe {
+        ZLB_CONNTRACK6.get(&NAT6Key {
+            ip_lb_dst: Inet6U::from(dst_addr),
+            ip_be_src: Inet6U::from(src_addr),
+            port_be_src: src_port as u32,
+            port_lb_dst: dst_port as u32,
+            next_hdr: next_hdr as u32,
+        })
+    } {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
