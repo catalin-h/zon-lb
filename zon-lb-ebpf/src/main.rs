@@ -253,12 +253,11 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         unsafe {
             let hdr = ipv4hdr.cast_mut();
             (*hdr).dst_addr = nat.ip_src;
+            // TODO: both path mut set the src_addr to current LB
 
             if full_nat {
                 // NOTE: both src and dest IPs must be translated
-
                 (*hdr).src_addr = nat.lb_ip;
-                (*hdr).dst_addr = nat.ip_src;
 
                 let csum = csum_update_u32(src_addr, nat.lb_ip, check);
                 let csum = csum_update_u32(dst_addr, nat.ip_src, csum);
