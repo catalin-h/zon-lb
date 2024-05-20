@@ -8,7 +8,7 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::{error, info, Level};
-use core::mem;
+use core::mem::{self, offset_of};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16};
 use network_types::{
     eth::EthHdr,
@@ -110,19 +110,16 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // Fragment, Destination Options, Routing, Authentication and Encapsulating
     // Security Payload. I makes sense to make make 6 calls until reaching a
     // next header we can handle.
-    let (src_port, dst_port, check) = match next_hdr {
+    let (src_port, dst_port, check_off) = match next_hdr {
         IpProto::Tcp => {
             let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*tcphdr).source, (*tcphdr).dest, (*tcphdr).check as u32) }
+            unsafe { ((*tcphdr).source, (*tcphdr).dest, offset_of!(TcpHdr, check)) }
         }
         IpProto::Udp => {
             let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*udphdr).source, (*udphdr).dest, (*udphdr).check as u32) }
+            unsafe { ((*udphdr).source, (*udphdr).dest, offset_of!(UdpHdr, check)) }
         }
-        IpProto::Ipv6Icmp => {
-            let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { (0, 0, (*icmphdr).checksum as u32) }
-        }
+        IpProto::Ipv6Icmp => (0, 0, offset_of!(IcmpHdr, checksum)),
         // TODO: handle extention headers or at least fragments as they may contain
         // actual valid tcp or udp packets.
         // NOTE: unlike with IPv4, routers never fragment a packet.
@@ -209,8 +206,30 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_DROP);
         }
 
-        let check =
-            unsafe { update_ipv6hdr(ipv6hdr, check, &nat.lb_ip.addr32, &nat.ip_src.addr32) };
+        // TBD: for crc32 use crc32_off
+
+        // Compute l4 inet checksum and connection ports
+        if check_off != 0 {
+            let check = ptr_at::<u16>(ctx, l4hdr_offset + check_off)?.cast_mut();
+            unsafe {
+                let csum = update_ipv6hdr(
+                    ipv6hdr,
+                    *check as u32,
+                    &nat.lb_ip.addr32,
+                    &nat.ip_src.addr32,
+                );
+
+                // TODO: to update the ports on TCP and UDP just exploit the fact that
+                // both headers start with [src_port:u16][dst_port:u16] and/ just set
+                // a single u32 combo value as the begining of the L4 header:
+                // port_combo = dst_port << 16 | src_port;
+
+                // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
+                // on Link and Transport layer for assuring packet integrity. That's
+                // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
+                *check = csum_fold_32_to_16(csum);
+            };
+        }
 
         return Ok(xdp_action::XDP_PASS);
     }
@@ -390,26 +409,21 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // TODO: compute TCP or UDP csum
 
-    let check = unsafe {
-        update_ipv6hdr(
-            ipv6hdr,
-            check,
-            &nat6key.ip_lb_dst.addr32,
-            &nat6key.ip_be_src.addr32,
-        )
-    };
+    if check_off != 0 {
+        let check = ptr_at::<u16>(ctx, l4hdr_offset + check_off)?.cast_mut();
+        unsafe {
+            let csum = update_ipv6hdr(
+                ipv6hdr,
+                *check as u32,
+                &nat6key.ip_lb_dst.addr32,
+                &nat6key.ip_be_src.addr32,
+            );
 
-    match next_hdr {
-        IpProto::Ipv6Icmp => {
-            // NOTE: ICMPv6 header has the same fields as ICMP for IPv4.
-            let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4hdr_offset)?.cast_mut();
-            unsafe { (*icmphdr).checksum = csum_fold_32_to_16(check) };
-        }
-        _ => {
             // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
             // on Link and Transport layer for assuring packet integrity. That's
             // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
-        }
+            *check = csum_fold_32_to_16(csum);
+        };
     }
 
     if !redirect {
