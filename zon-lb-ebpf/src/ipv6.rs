@@ -194,14 +194,14 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
         // Unlikely
         if nat.ip_src == src_addr && src_port == dst_port {
-            if feat.log_enabled(Level::Error) {
-                error!(
-                    ctx,
-                    "[out] drop same src {:i}:{}",
-                    unsafe { nat.ip_src.addr8 },
-                    src_port.to_be()
-                );
-            }
+            // if feat.log_enabled(Level::Error) {
+            //     error!(
+            //         ctx,
+            //         "[out] drop same src {:i}:{}",
+            //         unsafe { nat.ip_src.addr8 },
+            //         src_port.to_be()
+            //     );
+            // }
             stats_inc(stats::XDP_DROP);
             return Ok(xdp_action::XDP_DROP);
         }
