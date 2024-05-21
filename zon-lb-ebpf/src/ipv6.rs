@@ -383,7 +383,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                         ctx,
                         "[ctrk] [{:i}]:{} added",
                         unsafe { src_addr.addr8 },
-                        src_port,
+                        src_port.to_be(),
                     )
                 }
             }
@@ -393,7 +393,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                         ctx,
                         "[ctrk] [{:i}]:{} not added, err: {}",
                         unsafe { src_addr.addr8 },
-                        src_port,
+                        src_port.to_be(),
                         ret
                     )
                 }
