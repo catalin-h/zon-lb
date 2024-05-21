@@ -219,10 +219,15 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                     &nat.ip_src.addr32,
                 );
 
-                // TODO: to update the ports on TCP and UDP just exploit the fact that
+                // NOTE: to update the ports on TCP and UDP just exploit the fact that
                 // both headers start with [src_port:u16][dst_port:u16] and/ just set
                 // a single u32 combo value as the begining of the L4 header:
                 // port_combo = dst_port << 16 | src_port;
+                // NOTE: the destination port remains the same.
+                let port_combo = (dst_port as u32) << 16 | nat.port_lb;
+                if port_combo != 0 {
+                    *(check.byte_sub(check_off) as *mut u32) = port_combo;
+                }
 
                 // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
                 // on Link and Transport layer for assuring packet integrity. That's
@@ -418,6 +423,16 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 &nat6key.ip_lb_dst.addr32,
                 &nat6key.ip_be_src.addr32,
             );
+
+            // NOTE: to update the ports on TCP and UDP just exploit the fact that
+            // both headers start with [src_port:u16][dst_port:u16] and/ just set
+            // a single u32 combo value as the begining of the L4 header:
+            // port_combo = dst_port << 16 | src_port;
+            // NOTE: the source port remains the same.
+            let port_combo = (be.port as u32) << 16 | src_port as u32;
+            if port_combo != 0 {
+                *(check.byte_sub(check_off) as *mut u32) = port_combo;
+            }
 
             // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
             // on Link and Transport layer for assuring packet integrity. That's
