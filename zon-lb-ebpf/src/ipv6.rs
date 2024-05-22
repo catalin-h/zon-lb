@@ -92,6 +92,55 @@ unsafe fn update_ipv6hdr(
     compute_checksum_in6(csum, dst, &mut hdr.dst_addr)
 }
 
+// NOTE: Log some details inside functions in order to avoid
+// program rejection from bpf verifier due to stack overflow.
+// The AYA logger seems to require a lot of stack variables
+// and this prevents other program stack allocations.
+// NOTE: Use attribute inline(never) to contain allocations
+// inside the function.
+#[inline(never)]
+fn log_nat6(ctx: &XdpContext, nat: &NAT6Value, feat: &Features) {
+    if !feat.log_enabled(Level::Info) {
+        return;
+    }
+
+    info!(
+        ctx,
+        "[out] nat, src:{:i}, lb_port: {}",
+        unsafe { nat.ip_src.addr8 },
+        (nat.port_lb as u16).to_be()
+    );
+}
+
+// NOTE: It is important to pass args by ref and not as
+// pointers in order to contain the aya log stack allocations
+// inside the function. For eg. passing the Ipv6Hdr as pointer
+// will prevent the function from containing aya allocations.
+#[inline(never)]
+fn log_ipv6_packet(ctx: &XdpContext, feat: &Features, ipv6hdr: &Ipv6Hdr) {
+    if !feat.log_enabled(Level::Info) {
+        return;
+    }
+
+    // NOTE: Looks like the log macro occupies a lot of stack
+    // TBD: maybe remove this log ?
+    info!(
+        ctx,
+        "[i:{}, rx:{}] [p:{}] {:i} -> {:i}, flow: {:x}",
+        unsafe { (*ctx.ctx).ingress_ifindex },
+        unsafe { (*ctx.ctx).rx_queue_index },
+        ipv6hdr.next_hdr as u32,
+        unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
+        // BUG: depending on current stack usage changing to dst_addr.addr8
+        // will generate code that overflows the bpf program 512B stack
+        unsafe { ipv6hdr.dst_addr.in6_u.u6_addr8 },
+        {
+            let flow = ipv6hdr.flow_label;
+            u32::from_be_bytes([0, flow[0], flow[1], flow[2]])
+        }
+    );
+}
+
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
     // TBD: maybe change to &[u32;4] or just in6_u ?
@@ -137,29 +186,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     };
 
     let feat = Features::new();
-    if feat.log_enabled(Level::Info) {
-        unsafe {
-            // NOTE: Looks like the log macro occupies a lot of stack
-            // TBD: maybe remove this log ?
-            info!(
-                ctx,
-                "[i:{}, rx:{}] [p:{}] [{:i}]:{} -> *[{:i}]:{}, flow: {:x}",
-                (*ctx.ctx).ingress_ifindex,
-                (*ctx.ctx).rx_queue_index,
-                (*ipv6hdr).next_hdr as u32,
-                src_addr.addr8,
-                src_port.to_be(),
-                // BUG: depending on current stack usage changing to dst_addr.addr8
-                // will generate code that overflows the bpf program 512B stack
-                dst_addr.addr8,
-                dst_port.to_be(),
-                {
-                    let flow = &(*ipv6hdr).flow_label;
-                    u32::from_be_bytes([0, flow[0], flow[1], flow[2]])
-                }
-            );
-        }
-    }
+    log_ipv6_packet(ctx, &feat, &unsafe { *ipv6hdr });
 
     // === reply ===
 
@@ -183,28 +210,21 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
-        if feat.log_enabled(Level::Info) {
-            info!(
-                ctx,
-                "[out] nat, src: {:i}, lb_port: {}",
-                unsafe { nat.ip_src.addr8 },
-                (nat.port_lb as u16).to_be()
-            );
-        }
-
         // Unlikely
         if nat.ip_src == src_addr && src_port == dst_port {
-            // if feat.log_enabled(Level::Error) {
-            //     error!(
-            //         ctx,
-            //         "[out] drop same src {:i}:{}",
-            //         unsafe { nat.ip_src.addr8 },
-            //         src_port.to_be()
-            //     );
-            // }
+            if feat.log_enabled(Level::Error) {
+                error!(
+                    ctx,
+                    "[out] drop same src {:i}:{}",
+                    unsafe { nat.ip_src.addr8 },
+                    src_port.to_be()
+                );
+            }
             stats_inc(stats::XDP_DROP);
             return Ok(xdp_action::XDP_DROP);
         }
+
+        log_nat6(ctx, &nat, &feat);
 
         // TBD: for crc32 use crc32_off
 
