@@ -230,7 +230,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             unsafe {
                 let csum = update_ipv6hdr(
                     ipv6hdr,
-                    *check as u32,
+                    !(*check) as u32,
                     &nat.lb_ip.addr32,
                     &nat.ip_src.addr32,
                 );
@@ -248,7 +248,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
                 // on Link and Transport layer for assuring packet integrity. That's
                 // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
-                *check = csum_fold_32_to_16(csum);
+                *check = !csum_fold_32_to_16(csum);
             };
         }
 
@@ -435,7 +435,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         unsafe {
             let csum = update_ipv6hdr(
                 ipv6hdr,
-                *check as u32,
+                !(*check) as u32,
                 &nat6key.ip_lb_dst.addr32,
                 &nat6key.ip_be_src.addr32,
             );
