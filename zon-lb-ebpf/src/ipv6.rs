@@ -252,7 +252,30 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             };
         }
 
-        return Ok(xdp_action::XDP_PASS);
+        let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
+            let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+            unsafe { *macs = nat.mac_addresses };
+
+            let ret = redirect_txport(ctx, &feat, nat.ifindex);
+
+            if nat.flags.contains(EPFlags::XDP_TX) && ret == xdp_action::XDP_REDIRECT {
+                stats_inc(stats::XDP_REDIRECT_FULL_NAT);
+            }
+
+            ret as xdp_action::Type
+        } else if nat.flags.contains(EPFlags::XDP_TX) {
+            stats_inc(stats::XDP_TX);
+            xdp_action::XDP_TX
+        } else {
+            stats_inc(stats::XDP_PASS);
+            xdp_action::XDP_PASS
+        };
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "[out] action: {}", action);
+        }
+
+        return Ok(action);
     }
 
     // === request ===
