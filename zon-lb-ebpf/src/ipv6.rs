@@ -9,11 +9,11 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::{error, info, Level};
 use core::mem::{self, offset_of};
-use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16};
+use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u32};
 use network_types::{
     eth::EthHdr,
     icmp::IcmpHdr,
-    ip::{in6_addr, IpProto, Ipv6Hdr},
+    ip::{IpProto, Ipv6Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
@@ -57,10 +57,7 @@ fn inet6_hash16(addr: &Inet6U) -> u16 {
     csum_fold_32_to_16(inet6_hash32(addr))
 }
 
-unsafe fn compute_checksum_in6(check: u32, from: &[u32; 4usize], to: &mut in6_addr) -> u32 {
-    let to = &mut to.in6_u.u6_addr32;
-    let mut csum = check;
-
+unsafe fn compute_checksum_in6(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize]) -> u32 {
     // NOTE: optimization: use parallel scan over 4 x 32-bit values:
     // * cache friendly
     // * compute csum and copy address using the same 32-bit to/from values
@@ -70,9 +67,8 @@ unsafe fn compute_checksum_in6(check: u32, from: &[u32; 4usize], to: &mut in6_ad
     // NOTE: looks like loop unroll requires some stack allocation.
     for i in 0..4 {
         if to[i] != from[i] {
-            csum = csum_add_u32(to[i], csum);
-            csum = csum_add_u32(!from[i], csum);
-            to[i] = from[i];
+            csum = csum_update_u32(from[i], to[i], csum);
+            from[i] = to[i];
         }
     }
 
@@ -88,8 +84,8 @@ unsafe fn update_ipv6hdr(
     // NOTE: optimization: cache friendly parallel scan over 8 x 32-bit values.
     // NOTE: looks like loop unroll requires some stack allocation.
     let hdr = &mut (*ipv6hdr.cast_mut());
-    let csum = compute_checksum_in6(check, src, &mut hdr.src_addr);
-    compute_checksum_in6(csum, dst, &mut hdr.dst_addr)
+    let csum = compute_checksum_in6(check, &mut hdr.src_addr.in6_u.u6_addr32, src);
+    compute_checksum_in6(csum, &mut hdr.dst_addr.in6_u.u6_addr32, dst)
 }
 
 // NOTE: Log some details inside functions in order to avoid
