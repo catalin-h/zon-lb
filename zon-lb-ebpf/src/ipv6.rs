@@ -57,7 +57,7 @@ fn inet6_hash16(addr: &Inet6U) -> u16 {
     csum_fold_32_to_16(inet6_hash32(addr))
 }
 
-unsafe fn compute_checksum_in6(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize]) -> u32 {
+fn compute_checksum(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize]) -> u32 {
     // NOTE: optimization: use parallel scan over 4 x 32-bit values:
     // * cache friendly
     // * compute csum and copy address using the same 32-bit to/from values
@@ -75,17 +75,16 @@ unsafe fn compute_checksum_in6(mut csum: u32, from: &mut [u32; 4usize], to: &[u3
     csum
 }
 
-unsafe fn update_ipv6hdr(
-    ipv6hdr: *const Ipv6Hdr,
-    check: u32,
-    src: &[u32; 4usize],
-    dst: &[u32; 4usize],
-) -> u32 {
+fn update_ipv6hdr(ipv6hdr: *const Ipv6Hdr, check: u32, src: &Inet6U, dst: &Inet6U) -> u32 {
     // NOTE: optimization: cache friendly parallel scan over 8 x 32-bit values.
     // NOTE: looks like loop unroll requires some stack allocation.
-    let hdr = &mut (*ipv6hdr.cast_mut());
-    let csum = compute_checksum_in6(check, &mut hdr.src_addr.in6_u.u6_addr32, src);
-    compute_checksum_in6(csum, &mut hdr.dst_addr.in6_u.u6_addr32, dst)
+    // NOTE: Don't use this statement to get the mutable reference from ptr as it
+    // is going to create a temp value:
+    // let hdr = &mut unsafe { *ipv6hdr.cast_mut() };
+    // To correctly get the mutable ref place the &mut inside the unsafe {}:
+    let hdr = unsafe { &mut (*ipv6hdr.cast_mut()) };
+    let csum = unsafe { compute_checksum(check, &mut hdr.src_addr.in6_u.u6_addr32, &src.addr32) };
+    unsafe { compute_checksum(csum, &mut hdr.dst_addr.in6_u.u6_addr32, &dst.addr32) }
 }
 
 // NOTE: Log some details inside functions in order to avoid
@@ -228,12 +227,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         if check_off != 0 {
             let check = ptr_at::<u16>(ctx, l4hdr_offset + check_off)?.cast_mut();
             unsafe {
-                let mut csum = update_ipv6hdr(
-                    ipv6hdr,
-                    !(*check) as u32,
-                    &nat.lb_ip.addr32,
-                    &nat.ip_src.addr32,
-                );
+                let mut csum = update_ipv6hdr(ipv6hdr, !(*check) as u32, &nat.lb_ip, &nat.ip_src);
 
                 // NOTE: to update the ports on TCP and UDP just exploit the fact that
                 // both headers start with [src_port:u16][dst_port:u16] and/ just set
@@ -461,8 +455,8 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             let mut csum = update_ipv6hdr(
                 ipv6hdr,
                 !(*check) as u32,
-                &nat6key.ip_lb_dst.addr32,
-                &nat6key.ip_be_src.addr32,
+                &nat6key.ip_lb_dst,
+                &nat6key.ip_be_src,
             );
 
             // NOTE: to update the ports on TCP and UDP just exploit the fact that
