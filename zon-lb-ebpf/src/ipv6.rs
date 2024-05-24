@@ -136,6 +136,19 @@ fn log_ipv6_packet(ctx: &XdpContext, feat: &Features, ipv6hdr: &Ipv6Hdr) {
     );
 }
 
+struct L4Context {
+    offset: usize,
+    check_off: usize,
+    src_port: u32,
+    dst_port: u32,
+}
+
+impl L4Context {
+    fn check_pkt_off(&self) -> usize {
+        self.offset + self.check_off
+    }
+}
+
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
     // TBD: maybe change to &[u32;4] or just in6_u ?
@@ -148,20 +161,33 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // be computed iterating over the extension headers until we
     // reach a non-extension next_hdr value. For now we assume
     // there are no extensions or fragments.
-    let l4hdr_offset = Ipv6Hdr::LEN + EthHdr::LEN;
+    let mut l4ctx = L4Context {
+        offset: Ipv6Hdr::LEN + EthHdr::LEN,
+        check_off: 0,
+        src_port: 0,
+        dst_port: 0,
+    };
 
     // TODO: For IPv6 there can be only 6 linked header types: Hop-by-Hop Options,
     // Fragment, Destination Options, Routing, Authentication and Encapsulating
     // Security Payload. I makes sense to make make 6 calls until reaching a
     // next header we can handle.
-    let (src_port, dst_port, check_off) = match next_hdr {
+    (l4ctx.src_port, l4ctx.dst_port, l4ctx.check_off) = match next_hdr {
         IpProto::Tcp => {
-            let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*tcphdr).source, (*tcphdr).dest, offset_of!(TcpHdr, check)) }
+            let tcphdr = ptr_at::<TcpHdr>(&ctx, l4ctx.offset)?;
+            (
+                unsafe { (*tcphdr).source as u32 },
+                unsafe { (*tcphdr).dest as u32 },
+                offset_of!(TcpHdr, check),
+            )
         }
         IpProto::Udp => {
-            let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*udphdr).source, (*udphdr).dest, offset_of!(UdpHdr, check)) }
+            let udphdr = ptr_at::<UdpHdr>(&ctx, l4ctx.offset)?;
+            (
+                unsafe { (*udphdr).source as u32 },
+                unsafe { (*udphdr).dest as u32 },
+                offset_of!(UdpHdr, check),
+            )
         }
         IpProto::Ipv6Icmp => (0, 0, offset_of!(IcmpHdr, checksum)),
         // TODO: handle extention headers or at least fragments as they may contain
@@ -197,8 +223,8 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         ZLB_CONNTRACK6.get(&NAT6Key {
             ip_lb_dst: Inet6U::from(dst_addr),
             ip_be_src: Inet6U::from(src_addr),
-            port_be_src: src_port as u32,
-            port_lb_dst: dst_port as u32,
+            port_be_src: l4ctx.src_port,
+            port_lb_dst: l4ctx.dst_port,
             next_hdr: next_hdr as u32,
         })
     } {
@@ -206,13 +232,13 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         stats_inc(stats::PACKETS);
 
         // Unlikely
-        if nat.ip_src == src_addr && src_port == dst_port {
+        if nat.ip_src == src_addr && l4ctx.src_port == l4ctx.dst_port {
             if feat.log_enabled(Level::Error) {
                 error!(
                     ctx,
                     "[out] drop same src {:i}:{}",
                     unsafe { nat.ip_src.addr8 },
-                    src_port.to_be()
+                    (l4ctx.src_port as u16).to_be()
                 );
             }
             stats_inc(stats::XDP_DROP);
@@ -224,8 +250,8 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         // TBD: for crc32 use crc32_off
 
         // Compute l4 inet checksum and connection ports
-        if check_off != 0 {
-            let check = ptr_at::<u16>(ctx, l4hdr_offset + check_off)?.cast_mut();
+        if l4ctx.check_off != 0 {
+            let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
             unsafe {
                 let mut csum = update_ipv6hdr(ipv6hdr, !(*check) as u32, &nat.lb_ip, &nat.ip_src);
 
@@ -234,9 +260,9 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 // a single u32 combo value as the begining of the L4 header:
                 // port_combo = dst_port << 16 | src_port;
                 // NOTE: the destination port remains the same.
-                let port_combo = (dst_port as u32) << 16 | nat.port_lb;
+                let port_combo = l4ctx.dst_port << 16 | nat.port_lb;
                 if port_combo != 0 {
-                    let pcombo = check.byte_sub(check_off) as *mut u32;
+                    let pcombo = check.byte_sub(l4ctx.check_off) as *mut u32;
                     csum = csum_update_u32(*pcombo, port_combo, csum);
                     *pcombo = port_combo;
                 }
@@ -279,7 +305,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let group = match unsafe {
         ZLB_LB6.get(&EP6 {
             address: dst_addr,
-            port: dst_port,
+            port: l4ctx.dst_port as u16,
             proto: next_hdr as u16,
         })
     } {
@@ -317,7 +343,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     }
 
     let be = {
-        let index = (inet6_hash16(&src_addr) ^ src_port) % group.becount;
+        let index = (inet6_hash16(&src_addr) ^ l4ctx.src_port as u16) % group.becount;
         match unsafe {
             ZLB_BACKENDS.get(&BEKey {
                 gid: group.gid,
@@ -364,7 +390,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         ip_lb_dst: Inet6U::from(lb_addr),
         ip_be_src: Inet6U::from(&be.address),
         port_be_src: be.port as u32,
-        port_lb_dst: src_port as u32, // use the source port of the endpoint
+        port_lb_dst: l4ctx.src_port, // use the source port of the endpoint
         next_hdr: next_hdr as u32,
     };
 
@@ -407,7 +433,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         // TODO: use as temp value at insert point
         let nat6value = NAT6Value {
             ip_src: src_addr,
-            port_lb: dst_port as u32,
+            port_lb: l4ctx.dst_port,
             ifindex: if_index,
             mac_addresses,
             flags: be.flags,
@@ -423,7 +449,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                         ctx,
                         "[ctrk] [{:i}]:{} added",
                         unsafe { src_addr.addr8 },
-                        src_port.to_be(),
+                        (l4ctx.src_port as u16).to_be(),
                     )
                 }
             }
@@ -433,7 +459,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                         ctx,
                         "[ctrk] [{:i}]:{} not added, err: {}",
                         unsafe { src_addr.addr8 },
-                        src_port.to_be(),
+                        (l4ctx.src_port as u16).to_be(),
                         ret
                     )
                 }
@@ -449,8 +475,8 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // TODO: compute TCP or UDP csum
 
-    if check_off != 0 {
-        let check = ptr_at::<u16>(ctx, l4hdr_offset + check_off)?.cast_mut();
+    if l4ctx.check_off != 0 {
+        let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
         unsafe {
             let mut csum = update_ipv6hdr(
                 ipv6hdr,
@@ -464,9 +490,9 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             // a single u32 combo value as the begining of the L4 header:
             // port_combo = dst_port << 16 | src_port;
             // NOTE: the source port remains the same.
-            let port_combo = (be.port as u32) << 16 | src_port as u32;
+            let port_combo = (be.port as u32) << 16 | l4ctx.src_port;
             if port_combo != 0 {
-                let pcombo = check.byte_sub(check_off) as *mut u32;
+                let pcombo = check.byte_sub(l4ctx.check_off) as *mut u32;
                 csum = csum_update_u32(*pcombo, port_combo, csum);
                 *pcombo = port_combo;
             }
