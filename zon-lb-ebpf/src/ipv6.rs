@@ -75,6 +75,7 @@ fn compute_checksum(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize])
     csum
 }
 
+#[inline(never)]
 fn update_ipv6hdr(ipv6hdr: *const Ipv6Hdr, check: u32, src: &Inet6U, dst: &Inet6U) -> u32 {
     // NOTE: optimization: cache friendly parallel scan over 8 x 32-bit values.
     // NOTE: looks like loop unroll requires some stack allocation.
@@ -85,6 +86,54 @@ fn update_ipv6hdr(ipv6hdr: *const Ipv6Hdr, check: u32, src: &Inet6U, dst: &Inet6
     let hdr = unsafe { &mut (*ipv6hdr.cast_mut()) };
     let csum = unsafe { compute_checksum(check, &mut hdr.src_addr.in6_u.u6_addr32, &src.addr32) };
     unsafe { compute_checksum(csum, &mut hdr.dst_addr.in6_u.u6_addr32, &dst.addr32) }
+}
+
+/// Compute and update the L4 inet checksum while also updating the IPv6 header
+/// src/dst addresses and L4 src/dst ports.
+///
+/// BUG: can't use #[inline(never)] for now because of the bpf_linker
+/// NOTE: Support only inet protocols that rely on inet checksum
+fn update_inet_csum(
+    ctx: &XdpContext,
+    ipv6hdr: &mut Ipv6Hdr,
+    l4ctx: &L4Context,
+    src: &Inet6U,
+    dst: &Inet6U,
+    port_combo: u32,
+) -> Result<(), ()> {
+    if l4ctx.check_off == 0 {
+        return Ok(());
+    }
+
+    let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
+    let mut csum = unsafe { !(*check) } as u32;
+
+    csum = update_ipv6hdr(ipv6hdr, csum, src, dst);
+
+    // TODO: reduce hop limit by one on xmit and redirect
+    // The IPv6 header does not have a csum field that needs to be
+    // recalculated every time the hop limit is decreased as it happens
+    // when the TTL from IPv4 header is reduced by one.
+
+    // NOTE: to update the ports on TCP and UDP just exploit the fact that
+    // both headers start with [src_port:u16][dst_port:u16] and/ just set
+    // a single u32 combo value as the begining of the L4 header:
+    // port_combo = dst_port << 16 | src_port;
+    // NOTE: the destination port remains the same.
+    if port_combo != 0 {
+        if let Ok(ptr) = ptr_at::<u32>(ctx, l4ctx.offset) {
+            csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
+            unsafe { *(ptr.cast_mut()) = port_combo };
+        }
+    }
+
+    // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
+    // on Link and Transport layer for assuring packet integrity. That's
+    // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
+
+    unsafe { *check = !csum_fold_32_to_16(csum) };
+
+    Ok(())
 }
 
 // NOTE: Log some details inside functions in order to avoid
@@ -468,41 +517,14 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         };
     }
 
-    // TODO: reduce hop limit by one on xmit and redirect
-    // The IPv6 header does not have a csum field that needs to be
-    // recalculated everytime the hop limit is decreased as it happens
-    // when the TTL from IPv4 header is reduced by one.
-
-    // TODO: compute TCP or UDP csum
-
-    if l4ctx.check_off != 0 {
-        let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
-        unsafe {
-            let mut csum = update_ipv6hdr(
-                ipv6hdr,
-                !(*check) as u32,
-                &nat6key.ip_lb_dst,
-                &nat6key.ip_be_src,
-            );
-
-            // NOTE: to update the ports on TCP and UDP just exploit the fact that
-            // both headers start with [src_port:u16][dst_port:u16] and/ just set
-            // a single u32 combo value as the begining of the L4 header:
-            // port_combo = dst_port << 16 | src_port;
-            // NOTE: the source port remains the same.
-            let port_combo = (be.port as u32) << 16 | l4ctx.src_port;
-            if port_combo != 0 {
-                let pcombo = check.byte_sub(l4ctx.check_off) as *mut u32;
-                csum = csum_update_u32(*pcombo, port_combo, csum);
-                *pcombo = port_combo;
-            }
-
-            // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
-            // on Link and Transport layer for assuring packet integrity. That's
-            // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
-            *check = !csum_fold_32_to_16(csum);
-        };
-    }
+    update_inet_csum(
+        ctx,
+        unsafe { &mut (*ipv6hdr.cast_mut()) },
+        &l4ctx,
+        &nat6key.ip_lb_dst,
+        &nat6key.ip_be_src,
+        (be.port as u32) << 16 | l4ctx.src_port,
+    )?;
 
     if !redirect {
         // Send back the packet to the same interface
