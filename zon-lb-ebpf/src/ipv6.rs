@@ -298,30 +298,14 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
         // TBD: for crc32 use crc32_off
 
-        // Compute l4 inet checksum and connection ports
-        if l4ctx.check_off != 0 {
-            let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
-            unsafe {
-                let mut csum = update_ipv6hdr(ipv6hdr, !(*check) as u32, &nat.lb_ip, &nat.ip_src);
-
-                // NOTE: to update the ports on TCP and UDP just exploit the fact that
-                // both headers start with [src_port:u16][dst_port:u16] and/ just set
-                // a single u32 combo value as the begining of the L4 header:
-                // port_combo = dst_port << 16 | src_port;
-                // NOTE: the destination port remains the same.
-                let port_combo = l4ctx.dst_port << 16 | nat.port_lb;
-                if port_combo != 0 {
-                    let pcombo = check.byte_sub(l4ctx.check_off) as *mut u32;
-                    csum = csum_update_u32(*pcombo, port_combo, csum);
-                    *pcombo = port_combo;
-                }
-
-                // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
-                // on Link and Transport layer for assuring packet integrity. That's
-                // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
-                *check = !csum_fold_32_to_16(csum);
-            };
-        }
+        update_inet_csum(
+            ctx,
+            ipv6hdr,
+            &l4ctx,
+            &nat.lb_ip,
+            &nat.ip_src,
+            l4ctx.dst_port << 16 | nat.port_lb,
+        )?;
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
