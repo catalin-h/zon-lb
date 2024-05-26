@@ -396,6 +396,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     };
 
     let redirect = be.flags.contains(EPFlags::XDP_REDIRECT);
+
     // TBD: need to check BE.src_ip == 0 ?
     let lb_addr = if redirect && be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
         // TODO: check the arp table and update or insert
