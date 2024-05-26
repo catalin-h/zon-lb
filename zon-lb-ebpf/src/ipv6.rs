@@ -44,8 +44,7 @@ type HMARP6 = LruHashMap<[u32; 4usize], ArpEntry>;
 static mut ZLB_ARP6: HMARP6 = HMARP6::pinned(MAX_ARP_ENTRIES, 0);
 
 #[inline(always)]
-fn inet6_hash32(addr: &Inet6U) -> u32 {
-    let addr = unsafe { &addr.addr32 };
+fn inet6_hash32(addr: &[u32; 4usize]) -> u32 {
     let csum = csum_add_u32(addr[0], 0);
     let csum = csum_add_u32(addr[1], csum);
     let csum = csum_add_u32(addr[2], csum);
@@ -53,7 +52,7 @@ fn inet6_hash32(addr: &Inet6U) -> u32 {
 }
 
 #[inline(always)]
-fn inet6_hash16(addr: &Inet6U) -> u16 {
+fn inet6_hash16(addr: &[u32; 4usize]) -> u16 {
     csum_fold_32_to_16(inet6_hash32(addr))
 }
 
@@ -199,13 +198,12 @@ impl L4Context {
 }
 
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
+    // TODO: consider the VLAN offset
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
-    // TBD: maybe change to &[u32;4] or just in6_u ?
-    let src_addr = unsafe { Inet6U::from(&ipv6hdr.src_addr.in6_u.u6_addr32) };
-    let dst_addr = unsafe { Inet6U::from(&ipv6hdr.dst_addr.in6_u.u6_addr32) };
+    let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
+    let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
 
-    // TODO: consider the VLAN offset
     // NOTE: IPv6 header isn't fixed and the L4 header offset can
     // be computed iterating over the extension headers until we
     // reach a non-extension next_hdr value. For now we assume
@@ -281,7 +279,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         stats_inc(stats::PACKETS);
 
         // Unlikely
-        if nat.ip_src == src_addr && l4ctx.src_port == l4ctx.dst_port {
+        if nat.ip_src.eq32(src_addr) && l4ctx.src_port == l4ctx.dst_port {
             if feat.log_enabled(Level::Error) {
                 error!(
                     ctx,
@@ -337,7 +335,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     let group = match unsafe {
         ZLB_LB6.get(&EP6 {
-            address: dst_addr,
+            address: Inet6U::from(dst_addr),
             port: l4ctx.dst_port as u16,
             proto: ipv6hdr.next_hdr as u16,
         })
@@ -404,7 +402,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         // smac/dmac and derived ip src and redirect ifindex
         &be.src_ip
     } else {
-        unsafe { &dst_addr.addr32 }
+        dst_addr
     };
 
     // NOTE: Don't insert entry if no connection tracking is enabled for this backend.
@@ -457,7 +455,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let do_insert = if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
         // TODO: use a inet 32-bit hash instead of
         // the 3 comparations or 32B/32B total matching bytes ?
-        nat.ifindex != if_index || nat.ip_src != src_addr || nat.mac_addresses != mac_addresses
+        nat.ifindex != if_index || !nat.ip_src.eq32(src_addr) || nat.mac_addresses != mac_addresses
     } else {
         true
     };
@@ -465,12 +463,12 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     if do_insert {
         // TODO: use as temp value at insert point
         let nat6value = NAT6Value {
-            ip_src: src_addr,
+            ip_src: Inet6U::from(src_addr),
             port_lb: l4ctx.dst_port,
             ifindex: if_index,
             mac_addresses,
             flags: be.flags,
-            lb_ip: dst_addr, // save the original LB IP
+            lb_ip: Inet6U::from(dst_addr), // save the original LB IP
         };
 
         // TBD: use lock or atomic update ?
@@ -481,7 +479,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                     info!(
                         ctx,
                         "[ctrk] [{:i}]:{} added",
-                        unsafe { src_addr.addr8 },
+                        unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
                         (l4ctx.src_port as u16).to_be(),
                     )
                 }
@@ -491,7 +489,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
                     error!(
                         ctx,
                         "[ctrk] [{:i}]:{} not added, err: {}",
-                        unsafe { src_addr.addr8 },
+                        unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
                         (l4ctx.src_port as u16).to_be(),
                         ret
                     )
@@ -535,9 +533,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 }
 
 fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: &Ipv6Hdr) -> Result<u32, ()> {
-    let dst_ip = unsafe { &(*ipv6hdr).dst_addr.in6_u.u6_addr32 };
-
-    if let Some(&entry) = unsafe { ZLB_ARP6.get(dst_ip) } {
+    if let Some(&entry) = unsafe { ZLB_ARP6.get(&ipv6hdr.dst_addr.in6_u.u6_addr32) } {
         // NOTE: check expiry before using this entry
         let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
 
@@ -571,8 +567,8 @@ fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: &Ipv6Hdr) -> Result<
         ipv6hdr.payload_len.to_be(),
         unsafe { (*ctx.ctx).ingress_ifindex },
         ipv6hdr.priority() as u32,
-        unsafe { &(*ipv6hdr).src_addr.in6_u.u6_addr32 },
-        dst_ip,
+        unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 },
+        unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 },
     );
     let p_fib_param = &fib_param as *const BpfFibLookUp as *mut bpf_fib_lookup_param_t;
 

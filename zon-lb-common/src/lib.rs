@@ -178,6 +178,17 @@ impl PartialEq for Inet6U {
     }
 }
 
+impl Inet6U {
+    pub fn eq32(&self, other: &[u32; 4usize]) -> bool {
+        unsafe {
+            self.addr32[3] == other[3]
+                && self.addr32[2] == other[2]
+                && self.addr32[1] == other[1]
+                && self.addr32[0] == other[0]
+        }
+    }
+}
+
 impl From<&[u8; 16usize]> for Inet6U {
     fn from(value: &[u8; 16usize]) -> Self {
         Self { addr8: *value }
