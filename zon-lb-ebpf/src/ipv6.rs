@@ -74,7 +74,7 @@ fn compute_checksum(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize])
     csum
 }
 
-#[inline(never)]
+#[inline(always)]
 fn update_ipv6hdr(hdr: &mut Ipv6Hdr, check: u32, src: &Inet6U, dst: &Inet6U) -> u32 {
     // NOTE: optimization: cache friendly parallel scan over 8 x 32-bit values.
     // NOTE: looks like loop unroll requires some stack allocation.
