@@ -76,14 +76,14 @@ fn compute_checksum(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize])
 }
 
 #[inline(never)]
-fn update_ipv6hdr(ipv6hdr: *const Ipv6Hdr, check: u32, src: &Inet6U, dst: &Inet6U) -> u32 {
+fn update_ipv6hdr(hdr: &mut Ipv6Hdr, check: u32, src: &Inet6U, dst: &Inet6U) -> u32 {
     // NOTE: optimization: cache friendly parallel scan over 8 x 32-bit values.
     // NOTE: looks like loop unroll requires some stack allocation.
     // NOTE: Don't use this statement to get the mutable reference from ptr as it
     // is going to create a temp value:
     // let hdr = &mut unsafe { *ipv6hdr.cast_mut() };
     // To correctly get the mutable ref place the &mut inside the unsafe {}:
-    let hdr = unsafe { &mut (*ipv6hdr.cast_mut()) };
+    // let hdr = unsafe { &mut (*ipv6hdr.cast_mut()) };
     let csum = unsafe { compute_checksum(check, &mut hdr.src_addr.in6_u.u6_addr32, &src.addr32) };
     unsafe { compute_checksum(csum, &mut hdr.dst_addr.in6_u.u6_addr32, &dst.addr32) }
 }
@@ -200,10 +200,10 @@ impl L4Context {
 
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
+    let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
     // TBD: maybe change to &[u32;4] or just in6_u ?
-    let src_addr = unsafe { Inet6U::from(&(*ipv6hdr).src_addr.in6_u.u6_addr32) };
-    let dst_addr = unsafe { Inet6U::from(&(*ipv6hdr).dst_addr.in6_u.u6_addr32) };
-    let next_hdr = unsafe { (*ipv6hdr).next_hdr };
+    let src_addr = unsafe { Inet6U::from(&ipv6hdr.src_addr.in6_u.u6_addr32) };
+    let dst_addr = unsafe { Inet6U::from(&ipv6hdr.dst_addr.in6_u.u6_addr32) };
 
     // TODO: consider the VLAN offset
     // NOTE: IPv6 header isn't fixed and the L4 header offset can
@@ -221,7 +221,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // Fragment, Destination Options, Routing, Authentication and Encapsulating
     // Security Payload. I makes sense to make make 6 calls until reaching a
     // next header we can handle.
-    (l4ctx.src_port, l4ctx.dst_port, l4ctx.check_off) = match next_hdr {
+    (l4ctx.src_port, l4ctx.dst_port, l4ctx.check_off) = match ipv6hdr.next_hdr {
         IpProto::Tcp => {
             let tcphdr = ptr_at::<TcpHdr>(&ctx, l4ctx.offset)?;
             (
@@ -256,7 +256,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     };
 
     let feat = Features::new();
-    log_ipv6_packet(ctx, &feat, &unsafe { *ipv6hdr });
+    log_ipv6_packet(ctx, &feat, ipv6hdr);
 
     // === reply ===
 
@@ -274,7 +274,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
             ip_be_src: Inet6U::from(src_addr),
             port_be_src: l4ctx.src_port,
             port_lb_dst: l4ctx.dst_port,
-            next_hdr: next_hdr as u32,
+            next_hdr: ipv6hdr.next_hdr as u32,
         })
     } {
         // Update the total processed packets when they are from a tracked connection
@@ -355,7 +355,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         ZLB_LB6.get(&EP6 {
             address: dst_addr,
             port: l4ctx.dst_port as u16,
-            proto: next_hdr as u16,
+            proto: ipv6hdr.next_hdr as u16,
         })
     } {
         Some(group) => group,
@@ -440,7 +440,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
         ip_be_src: Inet6U::from(&be.address),
         port_be_src: be.port as u32,
         port_lb_dst: l4ctx.src_port, // use the source port of the endpoint
-        next_hdr: next_hdr as u32,
+        next_hdr: ipv6hdr.next_hdr as u32,
     };
 
     if feat.log_enabled(Level::Info) {
@@ -519,7 +519,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     update_inet_csum(
         ctx,
-        unsafe { &mut (*ipv6hdr.cast_mut()) },
+        ipv6hdr,
         &l4ctx,
         &nat6key.ip_lb_dst,
         &nat6key.ip_be_src,
@@ -550,7 +550,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     return redirect_ipv6(ctx, feat, ipv6hdr);
 }
 
-fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: *const Ipv6Hdr) -> Result<u32, ()> {
+fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: &Ipv6Hdr) -> Result<u32, ()> {
     let dst_ip = unsafe { &(*ipv6hdr).dst_addr.in6_u.u6_addr32 };
 
     if let Some(&entry) = unsafe { ZLB_ARP6.get(dst_ip) } {
@@ -584,9 +584,9 @@ fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: *const Ipv6Hdr) -> R
     }
 
     let fib_param = BpfFibLookUp::new_inet6(
-        unsafe { (*ipv6hdr).payload_len.to_be() },
+        ipv6hdr.payload_len.to_be(),
         unsafe { (*ctx.ctx).ingress_ifindex },
-        unsafe { (*ipv6hdr).priority() as u32 },
+        ipv6hdr.priority() as u32,
         unsafe { &(*ipv6hdr).src_addr.in6_u.u6_addr32 },
         dst_ip,
     );
