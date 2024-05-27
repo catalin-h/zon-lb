@@ -1,0 +1,82 @@
+#+TITLE: Test IPv6 zon-lb between two custom network namespace via veth pairs
+
+#+begin_src
+┌───────────────────┐              ┌─────────────────────┐              ┌────────────────────┐
+│zone2 netns        │              │   default netns     │              │         zone0 netns│
+│  server           │              │                     │              │            client  │
+│                 ┌─┴──────────────┴─┐                 ┌─┴──────────────┴─┐                  │
+│            veth3│<--xdp_redirect---│veth2       veth0│<-----------------│veth1             │
+│                 │----------------->│                 │---xdp_redirect-->│                  │
+│         xdp:pass└─┬──────────────┬─┘zon-lb     zon-lb└─┬──────────────┬─┘xdp:pass          │
+│tx-checksumminf:off│              │                     │              │tx-checksumming:off │
+└───────────────────┘              └─────────────────────┘              └────────────────────┘
+#+end_src
+
+** Zon-lb features:
+
+- XDP redirect on veth
+- IPv6 Connection tracking
+- IPv6 FIB lookup
+- IPv6 ARP caching
+- full IPv6 NAT (src/dst L2/L3 addresses change)
+
+** Setup
+
+Run the [[./setup.sh][setup]] to create the custom namespace =zone0=:
+
+#+begin_src sh
+sudp ./setup.sh
+#+end_src
+
+Load the configuration [[./zonlb.toml][config]]:
+
+#+begin_src sh
+sudo ./zon-lb ./zonlb.toml load
+#+end_src
+
+Note that there no need to preload or postload the =zon-lb= program
+on any of the interfaces mentioned in the config file. The user app
+will automatically load or replace the existing program binded to
+the interface. This is done in order to patch the redirect map that
+might not be consistent with current device indexes.
+
+*** Both veth pair sides must have attached an xdp program
+
+Note that the setup script will install a simple xdp program on veth interfaces
+inside the netns that just return =XDP_PASS=. This is done because =zon-lb= uses
+=xdp redirect= functionality to move packets to another veth pair and this process
+requires that both sides of this pair to have an xdp program attached. As can you
+see from the above diagram the veth interface from the default netns has the =zon-lb=
+program attached. On the other side it necessary to have the xdp program return
+=XDP_PASS= and not other values in order for the veth driver to unpack the
+=xdp_frame= created during =xdp_redirect= and get the ethernet frame.
+
+To attach the xdp program in driver mode to an veth interface:
+#+begin_src sh
+ip link set veth3 xdp obj xdp_pass.o sec .text
+#+end_src
+
+To unload the xdp program just set it to =none=:
+#+begin_src sh
+ip link set veth3 xdp none
+#+end_src
+
+*** Must disable tx offload checksumming on both veth interfaces from netns
+The script also disables the TCP checksumming offload because veth does not
+support hw checksum compute although it advertises this support (=NETIF_F_HW_CSUM=)
+in its exported features. To overcome this bug the script will disable this
+feature. More details on how to issue was investigated see section [[Debugging ignored TCP SYN packet]].
+
+*** Use =2001:DB8::/32= to avoid clash with actual IPv6 Global Unique Addresses
+#+begin_quote
+To reduce the likelihood of conflict and confusion when relating
+documented examples to deployed systems, an IPv6 unicast address
+prefix is reserved for use in examples in RFCs, books, documentation,
+and the like.  Since site-local and link-local unicast addresses have
+special meaning in IPv6, these addresses cannot be used in many
+example situations.  The document describes the use of the IPv6
+address prefix 2001:DB8::/32 as a reserved prefix for use in
+documentation.
+#+end_quote
+For details see [[https://datatracker.ietf.org/doc/html/rfc3849][rfc3849]].
+
