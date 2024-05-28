@@ -65,7 +65,8 @@ ip link set veth3 xdp none
 The script also disables the TCP checksumming offload because veth does not
 support hw checksum compute although it advertises this support (=NETIF_F_HW_CSUM=)
 in its exported features. To overcome this bug the script will disable this
-feature. More details on how to issue was investigated see section [[Debugging ignored TCP SYN packet]].
+feature. More details on how the issue was investigated see section
+[[Debugging ignored TCP SYN packet][../netns_veth_to_netns#debugging-ignored-tcp-syn-packet-redirected-to-veth-but-received-by-pair-veth-driver]].
 
 *** Use =2001:DB8::/32= to avoid clash with actual IPv6 Global Unique Addresses
 #+begin_quote
@@ -79,4 +80,87 @@ address prefix 2001:DB8::/32 as a reserved prefix for use in
 documentation.
 #+end_quote
 For details see [[https://datatracker.ietf.org/doc/html/rfc3849][rfc3849]].
+
+** Run =ping= test
+The first test to do when deploying =zon-lb= in a IPv6 network
+is to do a ICMPv6 ping request. The config file present with this example
+adds a ICMPv6 backend group just for this test.
+
+To run the IMCPv6 connectivity test just run from the default netns
+the following command:
+
+#+begin_src sh
+sudo ip netns exec zone0 ping 2001:db8::1 -c1 -s0
+#+end_src
+
+If the =zon-lb= successfully redirects the packets between the two
+network namespaces the command will output:
+#+begin_src
+PING 2001:db8::1(2001:db8::1) 0 data bytes
+8 bytes from 2001:db8::1: icmp_seq=1 ttl=64
+
+--- 2001:db8::1 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+#+end_src
+
+** Run =telnet= test
+To verify load balancing TCP connection over IPv6 must start a telnet
+server in the =zone2= netns using =netcat-openbsd=. Note that the default or traditional
+=netcat= (=nc= symlink) does not support IPv6. Luckly, after installing the openbsd
+version the =nc= symlink will point to the latter instead of the traditional one.
+
+To start the =nc= server binded to an IPv6 address in netns =zone2= run this command
+in default netns:
+#+begin_src sh
+sudo ip netns exec zone2 nc -nlv -p 223 -s 2001:db8::2:2
+#+end_src
+
+Next connect to this server from the =zone0= netns using the following command
+run from default netns:
+#+begin_src sh
+sudo ip netns exec zone0 telnet 2001:db8::1 23
+#+end_src
+
+If the =zon-lb= successfully redirects IPv6 packets between the two netns the
+server will print:
+#+begin_src sh
+Connection received on 2001:db8::2:1 60588
+#+end_src
+
+** Run =iperf= benchmark
+To start the =iperf= server in the =zone2= netns run the following command
+from the default netns:
+#+begin_src sh
+sudo ip netns exec zone2 iperf -s -p 223 -B [2001:db8::2:2]:223 -V
+#+end_src
+
+To launch the client in =zone0= netns run the next command also from default netns:
+#+begin_src sh
+sudo ip netns exec zone0 iperf -e -p 23 -c 2001:db8::1
+#+end_src
+
+The results look like:
+#+begin_src
+[  1] local 2001:db8::%veth1 port 40500 connected with 2001:db8::1 port 23 (sock=3)
+(icwnd/mss/irtt=13/1428/70) (ct=0.29 ms) on 2024-05-26 18:31:51 (EEST)
+[ ID] Interval            Transfer    Bandwidth       Write/Err  Rtry  Cwnd/RTT(var)    NetPwr
+[  1] 0.0000-10.0118 sec  4.39 GBytes 3.77 Gbits/sec  35987/0    5     203K/1615(2846) us  291724
+#+end_src
+
+Note that the above result was obtained on an Ivy Bridge i5 dual core system.
+Also, note that during the benchmark there was no user app reading the aya-log
+as this will slow down the performance significantly. To boost even further
+the iperf performance the aya ebpf program log was turned off. This is done
+by not providing the =RUST_LOG= envar.
+
+Another way is to set explicitly the =log_filter= runtime variable for both
+=zon-lb= programs attached to interfaces on default netns side:
+#+begin_src sh
+sudo ./zon_lb runvar veth0 set log_filter=off
+sudo ./zon_lb runvar veth2 set log_filter=off
+#+end_src
+
+** References
+
+- [[https://man.openbsd.org/nc.1][OpenBSD netcat]]
 

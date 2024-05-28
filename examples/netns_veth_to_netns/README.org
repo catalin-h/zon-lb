@@ -65,7 +65,8 @@ ip link set veth3 xdp none
 The script also disables the TCP checksumming offload because veth does not
 support hw checksum compute although it advertises this support (=NETIF_F_HW_CSUM=)
 in its exported features. To overcome this bug the script will disable this
-feature. More details on how to issue was investigated see section [[Debugging ignored TCP SYN packet]].
+feature. More details on how to issue was investigated see section
+[[Debugging ignored TCP SYN packet redirected to veth but received by pair veth driver]].
 
 ** Run =telnet= test
 
