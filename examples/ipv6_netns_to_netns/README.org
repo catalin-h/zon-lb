@@ -66,7 +66,7 @@ The script also disables the TCP checksumming offload because veth does not
 support hw checksum compute although it advertises this support (=NETIF_F_HW_CSUM=)
 in its exported features. To overcome this bug the script will disable this
 feature. More details on how the issue was investigated see section
-[[Debugging ignored TCP SYN packet][../netns_veth_to_netns#debugging-ignored-tcp-syn-packet-redirected-to-veth-but-received-by-pair-veth-driver]].
+[[../netns_veth_to_netns/README.org#debugging-ignored-tcp-syn-packet-redirected-to-veth-but-received-by-pair-veth-driver][Debugging ignored TCP SYN packet]].
 
 *** Use =2001:DB8::/32= to avoid clash with actual IPv6 Global Unique Addresses
 #+begin_quote
