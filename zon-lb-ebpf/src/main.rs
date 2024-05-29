@@ -168,14 +168,15 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // TODO: support vlan tags
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, EthHdr::LEN)?;
-    let src_addr = unsafe { (*ipv4hdr).src_addr };
-    let dst_addr = unsafe { (*ipv4hdr).dst_addr };
-    let proto = unsafe { (*ipv4hdr).proto };
-    let check = !unsafe { (*ipv4hdr).check } as u32;
+    let ipv4hdr = unsafe { &mut *ipv4hdr.cast_mut() };
+    let src_addr = ipv4hdr.src_addr;
+    let dst_addr = ipv4hdr.dst_addr;
+    let proto = ipv4hdr.proto;
+    let check = !ipv4hdr.check as u32;
     let (if_index, rx_queue) = unsafe { ((*ctx.ctx).ingress_ifindex, (*ctx.ctx).rx_queue_index) };
 
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
-    let l4hdr_offset = (unsafe { (*ipv4hdr).ihl() as usize } << 2);
+    let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
     let l4hdr_offset = l4hdr_offset + EthHdr::LEN;
 
     let (src_port, dst_port) = match proto {
@@ -250,30 +251,28 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         // NOTE: optimization: since the destination IP (LB)
         // 'remains' in the csum we can recompute it as if
         // only the source IP changes.
-        unsafe {
-            let hdr = ipv4hdr.cast_mut();
-            (*hdr).dst_addr = nat.ip_src;
-            // TODO: both path mut set the src_addr to current LB
 
-            if full_nat {
-                // NOTE: both src and dest IPs must be translated
-                (*hdr).src_addr = nat.lb_ip;
+        // TODO: both path mut set the src_addr to current LB
+        ipv4hdr.dst_addr = nat.ip_src;
 
-                let csum = csum_update_u32(src_addr, nat.lb_ip, check);
-                let csum = csum_update_u32(dst_addr, nat.ip_src, csum);
+        if full_nat {
+            // NOTE: both src and dest IPs must be translated
+            ipv4hdr.src_addr = nat.lb_ip;
 
-                (*hdr).check = !csum_fold_32_to_16(csum);
-            } else {
-                (*hdr).src_addr = dst_addr;
+            let csum = csum_update_u32(src_addr, nat.lb_ip, check);
+            let csum = csum_update_u32(dst_addr, nat.ip_src, csum);
 
-                // NOTE: optimization: skip csum computation if the addresses
-                // don't actually change.
-                if diff_src_ip {
-                    //csum = csum_update_u32(src_addr, dst_addr, csum);
-                    //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
-                    let csum = csum_update_u32(src_addr, nat.ip_src, check);
-                    (*hdr).check = !csum_fold_32_to_16(csum);
-                }
+            ipv4hdr.check = !csum_fold_32_to_16(csum);
+        } else {
+            ipv4hdr.src_addr = dst_addr;
+
+            // NOTE: optimization: skip csum computation if the addresses
+            // don't actually change.
+            if diff_src_ip {
+                //csum = csum_update_u32(src_addr, dst_addr, csum);
+                //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
+                let csum = csum_update_u32(src_addr, nat.ip_src, check);
+                ipv4hdr.check = !csum_fold_32_to_16(csum);
             }
         }
 
@@ -545,23 +544,20 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // NOTE: optimization: compute the IP csum as if only
     // the source address changes.
-    unsafe {
-        let hdr = ipv4hdr.cast_mut();
-        (*hdr).src_addr = lb_addr;
-        (*hdr).dst_addr = be.address[0];
+    ipv4hdr.src_addr = lb_addr;
+    ipv4hdr.dst_addr = be.address[0];
 
-        // TODO: check if we can compute delta diff and just apply the delta
-        // to the tcp/udp check sum.
-        if lb_addr != dst_addr {
-            let csum = csum_update_u32(dst_addr, be.address[0], check);
-            let csum = csum_update_u32(src_addr, lb_addr, csum);
-            (*hdr).check = !csum_fold_32_to_16(csum);
-        } else if src_addr != be.address[0] {
-            //csum = csum_update_u32(dst_addr, be.address.v4, csum);
-            //csum = csum_update_u32(src_addr, dst_addr, csum);
-            let csum = csum_update_u32(src_addr, be.address[0], check);
-            (*hdr).check = !csum_fold_32_to_16(csum);
-        }
+    // TODO: check if we can compute delta diff and just apply the delta
+    // to the tcp/udp check sum.
+    if lb_addr != dst_addr {
+        let csum = csum_update_u32(dst_addr, be.address[0], check);
+        let csum = csum_update_u32(src_addr, lb_addr, csum);
+        ipv4hdr.check = !csum_fold_32_to_16(csum);
+    } else if src_addr != be.address[0] {
+        //csum = csum_update_u32(dst_addr, be.address.v4, csum);
+        //csum = csum_update_u32(src_addr, dst_addr, csum);
+        let csum = csum_update_u32(src_addr, be.address[0], check);
+        ipv4hdr.check = !csum_fold_32_to_16(csum);
     }
 
     match proto {
@@ -689,10 +685,8 @@ fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_actio
     }
 }
 
-fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: *const Ipv4Hdr) -> Result<u32, ()> {
-    let dest_ip = unsafe { (*ipv4hdr).dst_addr };
-
-    if let Some(&entry) = unsafe { ZLB_ARP4.get(&dest_ip) } {
+fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: &Ipv4Hdr) -> Result<u32, ()> {
+    if let Some(&entry) = unsafe { ZLB_ARP4.get(&ipv4hdr.dst_addr) } {
         // NOTE: check expiry before using this entry
         // TODO: check performance
         let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
@@ -725,11 +719,11 @@ fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: *const Ipv4Hdr) -> R
 
     let fib_param = unsafe {
         BpfFibLookUp::new_inet(
-            (*ipv4hdr).tot_len.to_be(),
+            ipv4hdr.tot_len.to_be(),
             (*ctx.ctx).ingress_ifindex,
-            (*ipv4hdr).tos as u32,
-            (*ipv4hdr).src_addr,
-            dest_ip,
+            ipv4hdr.tos as u32,
+            ipv4hdr.src_addr,
+            ipv4hdr.dst_addr,
         )
     };
 
