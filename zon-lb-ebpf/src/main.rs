@@ -16,7 +16,7 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::{error, info, Level};
-use core::mem;
+use core::mem::{self, offset_of};
 use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u16, csum_update_u32};
 use ipv6::ipv6_lb;
 use network_types::{
@@ -116,6 +116,49 @@ impl Features {
     }
 }
 
+struct L4Context {
+    offset: usize,
+    check_off: usize,
+    src_port: u32,
+    dst_port: u32,
+}
+
+impl L4Context {
+    fn new_with_offset(ctx: &XdpContext, offset: usize, proto: IpProto) -> Result<Self, ()> {
+        let (src_port, dst_port, check_off) = match proto {
+            IpProto::Tcp => {
+                let tcphdr = ptr_at::<TcpHdr>(&ctx, offset)?;
+                (
+                    unsafe { (*tcphdr).source as u32 },
+                    unsafe { (*tcphdr).dest as u32 },
+                    offset_of!(TcpHdr, check),
+                )
+            }
+            IpProto::Udp => {
+                let udphdr = ptr_at::<UdpHdr>(&ctx, offset)?;
+                (
+                    unsafe { (*udphdr).source as u32 },
+                    unsafe { (*udphdr).dest as u32 },
+                    offset_of!(UdpHdr, check),
+                )
+            }
+
+            _ => (0, 0, 0),
+        };
+
+        Ok(Self {
+            offset,
+            check_off,
+            src_port,
+            dst_port,
+        })
+    }
+
+    fn check_pkt_off(&self) -> usize {
+        self.offset + self.check_off
+    }
+}
+
 #[inline(always)]
 fn stats_inc(idx: u32) {
     if let Some(ctr) = ZLB_STATS.get_ptr_mut(idx) {
@@ -179,6 +222,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
     let l4hdr_offset = l4hdr_offset + EthHdr::LEN;
 
+    let l4ctx = L4Context::new_with_offset(ctx, l4hdr_offset, ipv4hdr.proto)?;
+
     let (src_port, dst_port) = match proto {
         IpProto::Tcp => {
             let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?;
@@ -190,6 +235,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
         _ => (0, 0),
     };
+
     let feat = Features::new();
 
     if feat.log_enabled(Level::Info) {
@@ -200,9 +246,9 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             rx_queue,
             proto as u8,
             src_addr.to_be(),
-            src_port.to_be(),
+            l4ctx.src_port.to_be(),
             dst_addr.to_be(),
-            dst_port.to_be()
+            l4ctx.dst_port.to_be()
         );
     }
 

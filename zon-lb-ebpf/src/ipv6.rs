@@ -1,4 +1,4 @@
-use crate::{ptr_at, redirect_txport, stats_inc, BpfFibLookUp, Features, ZLB_BACKENDS};
+use crate::{ptr_at, redirect_txport, stats_inc, BpfFibLookUp, Features, L4Context, ZLB_BACKENDS};
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
     helpers::{bpf_fib_lookup, bpf_ktime_get_ns},
@@ -182,19 +182,6 @@ fn log_ipv6_packet(ctx: &XdpContext, feat: &Features, ipv6hdr: &Ipv6Hdr) {
             u32::from_be_bytes([0, flow[0], flow[1], flow[2]])
         }
     );
-}
-
-struct L4Context {
-    offset: usize,
-    check_off: usize,
-    src_port: u32,
-    dst_port: u32,
-}
-
-impl L4Context {
-    fn check_pkt_off(&self) -> usize {
-        self.offset + self.check_off
-    }
 }
 
 pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
