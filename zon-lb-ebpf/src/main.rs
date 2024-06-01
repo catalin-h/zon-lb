@@ -221,6 +221,65 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
+fn update_inet_csum(
+    ctx: &XdpContext,
+    ipv4hdr: &mut Ipv4Hdr,
+    l4ctx: &L4Context,
+    src: u32,
+    dst: u32,
+    port_combo: u32,
+) -> Result<(), ()> {
+    // NOTE: since the destination IP (LB) 'remains' in the csum
+    // we can recompute it as if only the source IP changes.
+    // However, this optimization requires two checks that doesn't seem
+    // to just simple compute the checksum anyway. Also, by not using
+    // a branch instruction (if-else) there is a small increase in throughput
+    // in iperf test.
+    // OPTIMIZATION: compute the checksum update one time for both IP and L4
+    // checksums and just update them as if some packet value was update
+    // from 0 to computed checksum.
+    // WARNING: This seems checksum seems to work for iperf but if there is
+    // a case when it doesn't just use the bpftrace to investigate it.
+    let cso = csum_update_u32(ipv4hdr.src_addr, src, 0);
+    let cso = csum_update_u32(ipv4hdr.dst_addr, dst, cso);
+    let csum = csum_update_u32(0, cso, !ipv4hdr.check as u32);
+
+    ipv4hdr.src_addr = src;
+    ipv4hdr.dst_addr = dst;
+    ipv4hdr.check = !csum_fold_32_to_16(csum);
+
+    if l4ctx.check_off == 0 || port_combo == 0 {
+        return Ok(());
+    }
+
+    // NOTE: Update the csum from TCP/UDP header. This csum
+    // is computed from the pseudo header (e.g. addresses
+    // from IP header) + header (checksum is 0) + the
+    // text (payload data).
+    // NOTE: in order to compute the L4 csum must use bpf_loop
+    // as the verifier doesn't allow loops. Without loop support
+    // can't iterate over the entire packet as the number of iterations
+    // are limited; e.g. for _ 0..100 {..}
+    // Recomputing the L4 csum seems to be necessary only if the packet
+    // is forwarded between local interfaces.
+    let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
+    let csum = unsafe { !(*check) } as u32;
+    let csum = csum_update_u32(0, cso, csum);
+    let csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
+
+    let ports = ptr_at::<u32>(ctx, l4ctx.offset)?.cast_mut();
+
+    unsafe {
+        *ports = port_combo;
+        *check = !csum_fold_32_to_16(csum);
+    }
+
+    // let ipcsum = csum_update_u32(ipv4hdr.src_addr, src, !ipv4hdr.check as u32);
+    // let ipcsum = csum_update_u32(ipv4hdr.dst_addr, dst, ipcsum);
+
+    Ok(())
+}
+
 // TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // TODO: support vlan tags
@@ -266,20 +325,20 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         );
     }
 
+    // TBD: monitor RST flag to remove the conntrack entry
     // TODO: Check conntrack first for non-connection oriented, eg. icmp.
     // Alternatively add another key element to differentiate between connections
     // for e.g. the request.
     // Also we can ignore all non-connection protocols like icmp.
-
-    let nat4 = NAT4Key {
-        ip_be_src: src_addr,
-        ip_lb_dst: dst_addr,
-        port_be_src: src_port,
-        port_lb_dst: dst_port,
-        proto: proto as u32,
-    };
-
-    if let Some(&nat) = unsafe { ZLB_CONNTRACK4.get(&nat4) } {
+    if let Some(&nat) = unsafe {
+        ZLB_CONNTRACK4.get(&NAT4Key {
+            ip_be_src: src_addr,
+            ip_lb_dst: dst_addr,
+            port_be_src: src_port,
+            port_lb_dst: dst_port,
+            proto: proto as u32,
+        })
+    } {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
@@ -305,100 +364,16 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_DROP);
         }
 
-        let full_nat = nat.lb_ip != dst_addr;
-        let diff_src_ip = src_addr != nat.ip_src;
-
-        // NOTE: optimization: since the destination IP (LB)
-        // 'remains' in the csum we can recompute it as if
-        // only the source IP changes.
-
-        // TODO: both path mut set the src_addr to current LB
-        ipv4hdr.dst_addr = nat.ip_src;
-
-        if full_nat {
-            // NOTE: both src and dest IPs must be translated
-            ipv4hdr.src_addr = nat.lb_ip;
-
-            let csum = csum_update_u32(src_addr, nat.lb_ip, check);
-            let csum = csum_update_u32(dst_addr, nat.ip_src, csum);
-
-            ipv4hdr.check = !csum_fold_32_to_16(csum);
-        } else {
-            ipv4hdr.src_addr = dst_addr;
-
-            // NOTE: optimization: skip csum computation if the addresses
-            // don't actually change.
-            if diff_src_ip {
-                //csum = csum_update_u32(src_addr, dst_addr, csum);
-                //csum = csum_update_u32(dst_addr, nat.ip_src, csum);
-                let csum = csum_update_u32(src_addr, nat.ip_src, check);
-                ipv4hdr.check = !csum_fold_32_to_16(csum);
-            }
-        }
-
-        // NOTE: in order to compute the L4 csum must use bpf_loop
-        // as the verifier doesn't allow loops. Without loop support
-        // can't iterate over the entire packet as the number of iterations
-        // are limited; e.g. for _ 0..100 {..}
-        // Recomputing the L4 csum seems to be necessary only if the packet
-        // is forwarded between local interfaces.
-
-        match proto {
-            IpProto::Tcp => unsafe {
-                let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?.cast_mut();
-                // NOTE: the destination port remains the same
-
-                (*tcphdr).source = nat.port_lb as u16;
-
-                // NOTE: Update the csum from TCP header. This csum
-                // is computed from the TCP pseudo header (e.g. addresses
-                // from IP header) + TCP header (checksum is 0) + the
-                // text (payload data).
-
-                let mut tcs = !(*tcphdr).check as u32;
-
-                // The source and destination IPs are part of the TCP pseudo header
-                if full_nat {
-                    tcs = csum_update_u32(src_addr, nat.lb_ip, tcs);
-                    tcs = csum_update_u32(dst_addr, nat.ip_src, tcs);
-                } else if diff_src_ip {
-                    tcs = csum_update_u32(src_addr, nat.ip_src, tcs);
-                }
-
-                // The destination port is part of the TCP header
-                tcs = csum_update_u32(src_port as u32, nat.port_lb, tcs);
-                (*tcphdr).check = !csum_fold_32_to_16(tcs);
-
-                // TBD: monitor RST flag to remove the conntrack entry
-            },
-            IpProto::Udp => unsafe {
-                let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?.cast_mut();
-
-                // NOTE: the destination port remains the same
-
-                (*udphdr).source = nat.port_lb as u16;
-
-                // NOTE: Update the csum from header. This csum
-                // is computed from the pseudo header (e.g. addresses
-                // from IP header) + header (checksum is 0) + the
-                // text (payload data).
-
-                let mut ucs = !(*udphdr).check as u32;
-
-                // The source and destination IPs are part of the UDP pseudo header
-                if full_nat {
-                    ucs = csum_update_u32(src_addr, nat.lb_ip, ucs);
-                    ucs = csum_update_u32(dst_addr, nat.ip_src, ucs);
-                } else if diff_src_ip {
-                    ucs = csum_update_u32(src_addr, nat.ip_src, ucs);
-                }
-
-                // The destination port is part of the header
-                ucs = csum_update_u32(src_port as u32, nat.port_lb, ucs);
-                (*udphdr).check = !csum_fold_32_to_16(ucs);
-            },
-            _ => {}
-        };
+        // Update both IP and Transport layers checksums along with the source
+        // and destination addresses and ports and others like TTL.
+        update_inet_csum(
+            ctx,
+            ipv4hdr,
+            &l4ctx,
+            nat.lb_ip,
+            nat.ip_src,
+            l4ctx.dst_port << 16 | nat.port_lb,
+        )?;
 
         let ret = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             // TODO: Try use:
@@ -417,7 +392,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             unsafe { *macs = nat.mac_addresses };
             let ret = redirect_txport(ctx, &feat, nat.ifindex);
 
-            if full_nat && ret == xdp_action::XDP_REDIRECT {
+            if nat.lb_ip != dst_addr && ret == xdp_action::XDP_REDIRECT {
                 stats_inc(stats::XDP_REDIRECT_FULL_NAT);
             }
 
