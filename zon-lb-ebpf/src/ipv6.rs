@@ -8,15 +8,9 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::{error, info, Level};
-use core::mem::{self, offset_of};
+use core::mem::{self};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u32};
-use network_types::{
-    eth::EthHdr,
-    icmp::IcmpHdr,
-    ip::{IpProto, Ipv6Hdr},
-    tcp::TcpHdr,
-    udp::UdpHdr,
-};
+use network_types::{eth::EthHdr, ip::Ipv6Hdr};
 use zon_lb_common::{
     stats, ArpEntry, BEGroup, BEKey, EPFlags, Inet6U, NAT6Key, NAT6Value, EP6, MAX_ARP_ENTRIES,
     MAX_CONNTRACKS, MAX_GROUPS,
@@ -195,50 +189,11 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // be computed iterating over the extension headers until we
     // reach a non-extension next_hdr value. For now we assume
     // there are no extensions or fragments.
-    let mut l4ctx = L4Context {
-        offset: Ipv6Hdr::LEN + EthHdr::LEN,
-        check_off: 0,
-        src_port: 0,
-        dst_port: 0,
-    };
-
     // TODO: For IPv6 there can be only 6 linked header types: Hop-by-Hop Options,
     // Fragment, Destination Options, Routing, Authentication and Encapsulating
     // Security Payload. I makes sense to make make 6 calls until reaching a
     // next header we can handle.
-    (l4ctx.src_port, l4ctx.dst_port, l4ctx.check_off) = match ipv6hdr.next_hdr {
-        IpProto::Tcp => {
-            let tcphdr = ptr_at::<TcpHdr>(&ctx, l4ctx.offset)?;
-            (
-                unsafe { (*tcphdr).source as u32 },
-                unsafe { (*tcphdr).dest as u32 },
-                offset_of!(TcpHdr, check),
-            )
-        }
-        IpProto::Udp => {
-            let udphdr = ptr_at::<UdpHdr>(&ctx, l4ctx.offset)?;
-            (
-                unsafe { (*udphdr).source as u32 },
-                unsafe { (*udphdr).dest as u32 },
-                offset_of!(UdpHdr, check),
-            )
-        }
-        IpProto::Ipv6Icmp => (0, 0, offset_of!(IcmpHdr, checksum)),
-        // TODO: handle extention headers or at least fragments as they may contain
-        // actual valid tcp or udp packets.
-        // NOTE: unlike with IPv4, routers never fragment a packet.
-        // NOTE: unlike IPv4, fragmentation in IPv6 is performed only by source
-        // nodes, not by routers along a packet's delivery path. Must handle ipv6
-        // fragments in case the source decides to fragment the packet due to MTU.
-        // NOTE: IPv6 requires that every link in the Internet have an MTU of 1280
-        // octets or greater. This is known as the IPv6 minimum link MTU.
-        // On any link that cannot convey a 1280-octet packet in one piece,
-        // link-specific fragmentation and reassembly must be provided at a layer
-        // below IPv6.
-        // See: https://www.rfc-editor.org/rfc/rfc8200.html#page-25
-        // TODO: handle No Next Header => pass
-        _ => (0, 0, 0),
-    };
+    let l4ctx = L4Context::new_with_offset(ctx, Ipv6Hdr::LEN + EthHdr::LEN, ipv6hdr.next_hdr)?;
 
     let feat = Features::new();
     log_ipv6_packet(ctx, &feat, ipv6hdr);

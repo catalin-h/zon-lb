@@ -21,6 +21,7 @@ use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u16, csum_update_u32};
 use ipv6::ipv6_lb;
 use network_types::{
     eth::{EthHdr, EtherType},
+    icmp::IcmpHdr,
     ip::{IpProto, Ipv4Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
@@ -142,7 +143,20 @@ impl L4Context {
                     offset_of!(UdpHdr, check),
                 )
             }
-
+            IpProto::Ipv6Icmp => (0, 0, offset_of!(IcmpHdr, checksum)),
+            // TODO: handle extention headers or at least fragments as they may contain
+            // actual valid tcp or udp packets.
+            // NOTE: unlike with IPv4, routers never fragment a packet.
+            // NOTE: unlike IPv4, fragmentation in IPv6 is performed only by source
+            // nodes, not by routers along a packet's delivery path. Must handle ipv6
+            // fragments in case the source decides to fragment the packet due to MTU.
+            // NOTE: IPv6 requires that every link in the Internet have an MTU of 1280
+            // octets or greater. This is known as the IPv6 minimum link MTU.
+            // On any link that cannot convey a 1280-octet packet in one piece,
+            // link-specific fragmentation and reassembly must be provided at a layer
+            // below IPv6.
+            // See: https://www.rfc-editor.org/rfc/rfc8200.html#page-25
+            // TODO: handle No Next Header => pass
             _ => (0, 0, 0),
         };
 
