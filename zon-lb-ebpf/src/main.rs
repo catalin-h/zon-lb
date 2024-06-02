@@ -221,14 +221,17 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
-fn update_inet_csum(
-    ctx: &XdpContext,
-    ipv4hdr: &mut Ipv4Hdr,
-    l4ctx: &L4Context,
-    src: u32,
-    dst: u32,
-    port_combo: u32,
-) -> Result<(), ()> {
+/// Compute delta checksum after switching header addresses,
+/// updates ipv4 checksum, source and destination addresses.
+/// It returns the delta checksum to be used to update the
+/// the transport header.
+///
+/// BUG: the bpf_linker throws the following error if this
+/// function attribute is `inline(always)` or no attribute:
+/// error: LLVM issued diagnostic with error severity
+// Found that only inline(always) works here.
+#[inline(never)]
+fn update_ipv4hdr(ipv4hdr: &mut Ipv4Hdr, src: u32, dst: u32) -> u32 {
     // NOTE: since the destination IP (LB) 'remains' in the csum
     // we can recompute it as if only the source IP changes.
     // However, this optimization requires two checks that doesn't seem
@@ -248,34 +251,43 @@ fn update_inet_csum(
     ipv4hdr.dst_addr = dst;
     ipv4hdr.check = !csum_fold_32_to_16(csum);
 
-    if l4ctx.check_off == 0 || port_combo == 0 {
-        return Ok(());
+    cso
+}
+
+/// BUG: bpf_linker requires inline(always) or no attribute because
+/// with inline(never) it throws LLVM diagnostigs error.
+/// NOTE: without any attribute the linker optimizes the code better
+/// as the iperf throughput is slightly higher (~0.03Gbits/sec).
+fn update_inet_csum(
+    ctx: &XdpContext,
+    ipv4hdr: &mut Ipv4Hdr,
+    l4ctx: &L4Context,
+    src: u32,
+    dst: u32,
+    port_combo: u32,
+) -> Result<(), ()> {
+    let cso = update_ipv4hdr(ipv4hdr, src, dst);
+
+    if l4ctx.check_off != 0 && port_combo != 0 {
+        // NOTE: Update the csum from TCP/UDP header. This csum
+        // is computed from the pseudo header (e.g. addresses
+        // from IP header) + header (checksum is 0) + the
+        // text (payload data).
+        // NOTE: in order to compute the L4 csum must use bpf_loop
+        // as the verifier doesn't allow loops. Without loop support
+        // can't iterate over the entire packet as the number of iterations
+        // are limited; e.g. for _ 0..100 {..}
+        // Recomputing the L4 csum seems to be necessary only if the packet
+        // is forwarded between local interfaces.
+        let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
+        let csum = unsafe { !(*check) } as u32;
+        let csum = csum_update_u32(0, cso, csum);
+        let csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
+        unsafe { *check = !csum_fold_32_to_16(csum) };
+
+        let ports = ptr_at::<u32>(ctx, l4ctx.offset)?.cast_mut();
+        unsafe { *ports = port_combo };
     }
-
-    // NOTE: Update the csum from TCP/UDP header. This csum
-    // is computed from the pseudo header (e.g. addresses
-    // from IP header) + header (checksum is 0) + the
-    // text (payload data).
-    // NOTE: in order to compute the L4 csum must use bpf_loop
-    // as the verifier doesn't allow loops. Without loop support
-    // can't iterate over the entire packet as the number of iterations
-    // are limited; e.g. for _ 0..100 {..}
-    // Recomputing the L4 csum seems to be necessary only if the packet
-    // is forwarded between local interfaces.
-    let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
-    let csum = unsafe { !(*check) } as u32;
-    let csum = csum_update_u32(0, cso, csum);
-    let csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
-
-    let ports = ptr_at::<u32>(ctx, l4ctx.offset)?.cast_mut();
-
-    unsafe {
-        *ports = port_combo;
-        *check = !csum_fold_32_to_16(csum);
-    }
-
-    // let ipcsum = csum_update_u32(ipv4hdr.src_addr, src, !ipv4hdr.check as u32);
-    // let ipcsum = csum_update_u32(ipv4hdr.dst_addr, dst, ipcsum);
 
     Ok(())
 }
