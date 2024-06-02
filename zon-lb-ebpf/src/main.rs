@@ -17,7 +17,7 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::{error, info, Level};
 use core::mem::{self, offset_of};
-use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u16, csum_update_u32};
+use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u32};
 use ipv6::ipv6_lb;
 use network_types::{
     eth::{EthHdr, EtherType},
@@ -300,7 +300,6 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let src_addr = ipv4hdr.src_addr;
     let dst_addr = ipv4hdr.dst_addr;
     let proto = ipv4hdr.proto;
-    let check = !ipv4hdr.check as u32;
     let (if_index, rx_queue) = unsafe { ((*ctx.ctx).ingress_ifindex, (*ctx.ctx).rx_queue_index) };
 
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
@@ -589,81 +588,16 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         }
     }
 
-    // NOTE: optimization: compute the IP csum as if only
-    // the source address changes.
-    ipv4hdr.src_addr = lb_addr;
-    ipv4hdr.dst_addr = be.address[0];
-
-    // TODO: check if we can compute delta diff and just apply the delta
-    // to the tcp/udp check sum.
-    if lb_addr != dst_addr {
-        let csum = csum_update_u32(dst_addr, be.address[0], check);
-        let csum = csum_update_u32(src_addr, lb_addr, csum);
-        ipv4hdr.check = !csum_fold_32_to_16(csum);
-    } else if src_addr != be.address[0] {
-        //csum = csum_update_u32(dst_addr, be.address.v4, csum);
-        //csum = csum_update_u32(src_addr, dst_addr, csum);
-        let csum = csum_update_u32(src_addr, be.address[0], check);
-        ipv4hdr.check = !csum_fold_32_to_16(csum);
-    }
-
-    match proto {
-        IpProto::Tcp => unsafe {
-            let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?.cast_mut();
-
-            // NOTE: the source port remains the same
-
-            (*tcphdr).dest = be.port;
-
-            // NOTE: Update the csum from TCP header. This csum
-            // is computed from the TCP pseudo header (e.g. addresses
-            // from IP header) + TCP header (checksum is 0) + the
-            // text (payload data).
-
-            let mut tcs = !(*tcphdr).check as u32;
-
-            // The source ip is part of the TCP pseudo header
-            if lb_addr != dst_addr {
-                tcs = csum_update_u32(dst_addr, be.address[0], tcs);
-                tcs = csum_update_u32(src_addr, lb_addr, tcs);
-            } else if src_addr != be.address[0] {
-                tcs = csum_update_u32(src_addr, be.address[0], tcs);
-            }
-
-            // The destination port is part of the TCP header
-            tcs = csum_update_u16(dst_port, be.port, tcs);
-            (*tcphdr).check = !csum_fold_32_to_16(tcs);
-
-            // TBD: monitor RST flag to remove the conntrack entry
-        },
-        IpProto::Udp => unsafe {
-            let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?.cast_mut();
-
-            // NOTE: the source port remains the same
-
-            (*udphdr).dest = be.port;
-
-            // NOTE: Update the csum from UDP header. This csum
-            // is computed from the UDPP pseudo header (e.g. addresses
-            // from IP header) + UDPP header (checksum is 0) + the
-            // text (payload data).
-
-            let mut ucs = !(*udphdr).check as u32;
-
-            // The source ip is part of the pseudo header
-            if lb_addr != dst_addr {
-                ucs = csum_update_u32(dst_addr, be.address[0], ucs);
-                ucs = csum_update_u32(src_addr, lb_addr, ucs);
-            } else if src_addr != be.address[0] {
-                ucs = csum_update_u32(src_addr, be.address[0], ucs);
-            }
-
-            // The destination port is part of the header
-            ucs = csum_update_u16(dst_port, be.port, ucs);
-            (*udphdr).check = !csum_fold_32_to_16(ucs);
-        },
-        _ => {}
-    };
+    // Update both IP and Transport layers checksums along with the source
+    // and destination addresses and ports and others like TTL.
+    update_inet_csum(
+        ctx,
+        ipv4hdr,
+        &l4ctx,
+        lb_addr,
+        be.address[0],
+        (be.port as u32) << 16 | l4ctx.src_port,
+    )?;
 
     if !redirect {
         // Send back the packet to the same interface
