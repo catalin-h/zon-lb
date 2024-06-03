@@ -305,21 +305,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
     let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
     let l4hdr_offset = l4hdr_offset + EthHdr::LEN;
-
     let l4ctx = L4Context::new_with_offset(ctx, l4hdr_offset, ipv4hdr.proto)?;
-
-    let (src_port, dst_port) = match proto {
-        IpProto::Tcp => {
-            let tcphdr = ptr_at::<TcpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*tcphdr).source, (*tcphdr).dest) }
-        }
-        IpProto::Udp => {
-            let udphdr = ptr_at::<UdpHdr>(&ctx, l4hdr_offset)?;
-            unsafe { ((*udphdr).source, (*udphdr).dest) }
-        }
-        _ => (0, 0),
-    };
-
     let feat = Features::new();
 
     if feat.log_enabled(Level::Info) {
@@ -345,8 +331,8 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         ZLB_CONNTRACK4.get(&NAT4Key {
             ip_be_src: src_addr,
             ip_lb_dst: dst_addr,
-            port_be_src: src_port,
-            port_lb_dst: dst_port,
+            port_be_src: l4ctx.src_port as u16,
+            port_lb_dst: l4ctx.dst_port as u16,
             proto: proto as u32,
         })
     } {
@@ -362,13 +348,13 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             );
         }
         // Unlikely
-        if nat.ip_src == src_addr && src_port == dst_port {
+        if nat.ip_src == src_addr && l4ctx.src_port == l4ctx.dst_port {
             if feat.log_enabled(Level::Error) {
                 error!(
                     ctx,
                     "[out] drop same src {:i}:{}",
                     nat.ip_src.to_be(),
-                    src_port.to_be()
+                    (l4ctx.src_port as u16).to_be()
                 );
             }
             stats_inc(stats::XDP_DROP);
@@ -412,7 +398,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                     ctx,
                     "[out] redirect to {:i}:{} via {}, ret={}",
                     nat.ip_src.to_be(),
-                    dst_port.to_be(),
+                    (l4ctx.dst_port as u16).to_be(),
                     nat.ifindex,
                     ret,
                 );
@@ -424,7 +410,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                     ctx,
                     "[out] tx to {:i}:{}",
                     nat.ip_src.to_be(),
-                    dst_port.to_be(),
+                    (l4ctx.dst_port as u16).to_be(),
                 );
             }
             stats_inc(stats::XDP_TX);
@@ -435,7 +421,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                     ctx,
                     "[out] pass to {:i}:{}",
                     nat.ip_src.to_be(),
-                    dst_port.to_be(),
+                    (l4ctx.dst_port as u16).to_be(),
                 );
             }
             stats_inc(stats::XDP_PASS);
@@ -451,7 +437,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     let ep4 = EP4 {
         address: dst_addr,
-        port: dst_port,
+        port: (l4ctx.dst_port as u16),
         proto: proto as u16,
     };
 
@@ -489,7 +475,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     let key = BEKey {
         gid: group.gid,
-        index: ((((src_addr >> 16) ^ src_addr) as u16) ^ src_port) % group.becount,
+        index: (((src_addr >> 16) ^ src_addr) ^ l4ctx.src_port) as u16 % group.becount,
     };
 
     let be = match unsafe { ZLB_BACKENDS.get(&key) } {
@@ -532,7 +518,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             ip_be_src: be.address[0],
             ip_lb_dst: lb_addr,
             port_be_src: be.port,
-            port_lb_dst: src_port, // use the source port of the endpoint
+            port_lb_dst: l4ctx.src_port as u16, // use the source port of the endpoint
             proto: proto as u32,
         };
 
@@ -563,7 +549,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
         if do_insert {
             let nat4value = NAT4Value {
                 ip_src: src_addr,
-                port_lb: dst_port as u32,
+                port_lb: l4ctx.dst_port,
                 ifindex: if_index,
                 mac_addresses,
                 flags: be.flags,
