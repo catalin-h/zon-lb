@@ -299,7 +299,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv4hdr = unsafe { &mut *ipv4hdr.cast_mut() };
     let src_addr = ipv4hdr.src_addr;
     let dst_addr = ipv4hdr.dst_addr;
-    let (if_index, rx_queue) = unsafe { ((*ctx.ctx).ingress_ifindex, (*ctx.ctx).rx_queue_index) };
+    let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
 
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
     let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
@@ -308,6 +308,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let feat = Features::new();
 
     if feat.log_enabled(Level::Info) {
+        let rx_queue = unsafe { (*ctx.ctx).rx_queue_index };
         info!(
             ctx,
             "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
