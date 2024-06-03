@@ -299,7 +299,6 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ipv4hdr = unsafe { &mut *ipv4hdr.cast_mut() };
     let src_addr = ipv4hdr.src_addr;
     let dst_addr = ipv4hdr.dst_addr;
-    let proto = ipv4hdr.proto;
     let (if_index, rx_queue) = unsafe { ((*ctx.ctx).ingress_ifindex, (*ctx.ctx).rx_queue_index) };
 
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
@@ -314,7 +313,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
             if_index,
             rx_queue,
-            proto as u8,
+            ipv4hdr.proto as u8,
             src_addr.to_be(),
             l4ctx.src_port.to_be(),
             dst_addr.to_be(),
@@ -333,7 +332,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             ip_lb_dst: dst_addr,
             port_be_src: l4ctx.src_port as u16,
             port_lb_dst: l4ctx.dst_port as u16,
-            proto: proto as u32,
+            proto: ipv4hdr.proto as u32,
         })
     } {
         // Update the total processed packets when they are from a tracked connection
@@ -438,7 +437,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
     let ep4 = EP4 {
         address: dst_addr,
         port: (l4ctx.dst_port as u16),
-        proto: proto as u16,
+        proto: ipv4hdr.proto as u16,
     };
 
     let group = match unsafe { ZLB_LB4.get(&ep4) } {
@@ -519,7 +518,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             ip_lb_dst: lb_addr,
             port_be_src: be.port,
             port_lb_dst: l4ctx.src_port as u16, // use the source port of the endpoint
-            proto: proto as u32,
+            proto: ipv4hdr.proto as u32,
         };
 
         // NOTE: Always use 64-bits values for faster data transfer and
