@@ -347,6 +347,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
                 (nat.port_lb as u16).to_be()
             );
         }
+
         // Unlikely
         if nat.ip_src == src_addr && l4ctx.src_port == l4ctx.dst_port {
             if feat.log_enabled(Level::Error) {
@@ -372,7 +373,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             l4ctx.dst_port << 16 | nat.port_lb,
         )?;
 
-        let ret = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
+        let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             // TODO: Try use:
             // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
             // in order to compute the source/dest mac + vlan info from IP source,destination
@@ -389,50 +390,24 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
             unsafe { *macs = nat.mac_addresses };
             let ret = redirect_txport(ctx, &feat, nat.ifindex);
 
-            if nat.lb_ip != dst_addr && ret == xdp_action::XDP_REDIRECT {
+            if nat.flags.contains(EPFlags::XDP_TX) && ret == xdp_action::XDP_REDIRECT {
                 stats_inc(stats::XDP_REDIRECT_FULL_NAT);
             }
 
-            if feat.log_enabled(Level::Info) {
-                info!(
-                    ctx,
-                    "[out] redirect to {:i}:{} via {}, ret={}",
-                    nat.ip_src.to_be(),
-                    (l4ctx.dst_port as u16).to_be(),
-                    nat.ifindex,
-                    ret,
-                );
-            }
-            ret
+            ret as xdp_action::Type
         } else if nat.flags.contains(EPFlags::XDP_TX) {
-            if feat.log_enabled(Level::Info) {
-                info!(
-                    ctx,
-                    "[out] tx to {:i}:{}",
-                    nat.ip_src.to_be(),
-                    (l4ctx.dst_port as u16).to_be(),
-                );
-            }
             stats_inc(stats::XDP_TX);
             xdp_action::XDP_TX
         } else {
-            if feat.log_enabled(Level::Info) {
-                info!(
-                    ctx,
-                    "[out] pass to {:i}:{}",
-                    nat.ip_src.to_be(),
-                    (l4ctx.dst_port as u16).to_be(),
-                );
-            }
             stats_inc(stats::XDP_PASS);
             xdp_action::XDP_PASS
         };
-        return Ok(ret);
-    } else {
-        // TODO: to remove ?
+
         if feat.log_enabled(Level::Info) {
-            info!(ctx, "No conntrack entry");
+            info!(ctx, "[out] action: {}", action);
         }
+
+        return Ok(action);
     }
 
     let ep4 = EP4 {
