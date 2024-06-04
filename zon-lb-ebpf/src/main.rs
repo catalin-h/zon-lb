@@ -20,7 +20,7 @@ use core::mem::{self, offset_of};
 use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u32};
 use ipv6::ipv6_lb;
 use network_types::{
-    eth::{EthHdr, EtherType},
+    eth::EthHdr,
     icmp::IcmpHdr,
     ip::{IpProto, Ipv4Hdr},
     tcp::TcpHdr,
@@ -32,6 +32,7 @@ use zon_lb_common::{
 };
 
 const ETH_ALEN: usize = 6;
+
 // Address families
 const AF_INET: u8 = 2; // Internet IP Protocol
 const AF_INET6: u8 = 10; // Internet IP Protocol// Fused variables
@@ -206,13 +207,40 @@ pub fn zon_lb(ctx: XdpContext) -> u32 {
     }
 }
 
+#[repr(u16)]
+#[derive(Copy, Clone)]
+pub enum EtherType {
+    Ipv4 = 0x0800_u16.to_be(),
+    Ipv6 = 0x86DD_u16.to_be(),
+    VlanDot1Q = 0x8100_u16.to_be(),
+    VlanDot1AD = 0x88A8_u16.to_be(),
+    Others = 0,
+}
+
 // TODO: check the feature flags and see if the ipv6 is enabled or not
 fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
-    let ethhdr: *const EthHdr = ptr_at(&ctx, 0)?;
-    match unsafe { (*ethhdr).ether_type } {
-        EtherType::Ipv4 => ipv4_lb(&ctx),
-        EtherType::Ipv6 => ipv6_lb(&ctx),
+    let ether_type: *const [EtherType; 5] = ptr_at(&ctx, ETH_ALEN << 1)?;
+    let ether_type = unsafe { &*ether_type };
+
+    // BUG: Unfortunately the bpf-linker does not allow mixing
+    // match-arms that call return with function calls and match-arms
+    // that just return values. Looks like only match-arms that return
+    // compile time constant lile `Ok(xdp_action::XDP_PASS)` are allowed.`
+    let idx: usize = match ether_type[0] {
+        EtherType::Ipv4 => 0,
+        EtherType::Ipv6 => 0,
+        EtherType::VlanDot1Q => 2,
+        EtherType::VlanDot1AD => 4,
         _ => return Ok(xdp_action::XDP_PASS),
+    };
+
+    // NOTE: the base Ethernet header size does not change
+    // but for each VLAN header type must add 4 bytes.
+    let ethlen = EthHdr::LEN + (idx << 1);
+    match ether_type[idx] {
+        EtherType::Ipv4 => ipv4_lb(&ctx, EthHdr::LEN),
+        EtherType::Ipv6 => ipv6_lb(&ctx, ethlen),
+        _ => Ok(xdp_action::XDP_PASS),
     }
 }
 
@@ -293,9 +321,9 @@ fn update_inet_csum(
 }
 
 // TODO: check if moving the XdpContext boosts performance
-fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
+fn ipv4_lb(ctx: &XdpContext, ethlen: usize) -> Result<u32, ()> {
     // TODO: support vlan tags
-    let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, EthHdr::LEN)?;
+    let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, ethlen)?;
     let ipv4hdr = unsafe { &mut *ipv4hdr.cast_mut() };
     let src_addr = ipv4hdr.src_addr;
     let dst_addr = ipv4hdr.dst_addr;
@@ -303,7 +331,7 @@ fn ipv4_lb(ctx: &XdpContext) -> Result<u32, ()> {
 
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
     let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
-    let l4hdr_offset = l4hdr_offset + EthHdr::LEN;
+    let l4hdr_offset = l4hdr_offset + ethlen;
     let l4ctx = L4Context::new_with_offset(ctx, l4hdr_offset, ipv4hdr.proto)?;
     let feat = Features::new();
 

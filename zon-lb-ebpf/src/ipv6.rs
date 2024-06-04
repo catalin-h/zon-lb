@@ -178,9 +178,9 @@ fn log_ipv6_packet(ctx: &XdpContext, feat: &Features, ipv6hdr: &Ipv6Hdr) {
     );
 }
 
-pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
+pub fn ipv6_lb(ctx: &XdpContext, ethlen: usize) -> Result<u32, ()> {
     // TODO: consider the VLAN offset
-    let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
+    let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, ethlen)?;
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
     let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
@@ -193,7 +193,7 @@ pub fn ipv6_lb(ctx: &XdpContext) -> Result<u32, ()> {
     // Fragment, Destination Options, Routing, Authentication and Encapsulating
     // Security Payload. I makes sense to make make 6 calls until reaching a
     // next header we can handle.
-    let l4ctx = L4Context::new_with_offset(ctx, Ipv6Hdr::LEN + EthHdr::LEN, ipv6hdr.next_hdr)?;
+    let l4ctx = L4Context::new_with_offset(ctx, Ipv6Hdr::LEN + ethlen, ipv6hdr.next_hdr)?;
 
     let feat = Features::new();
     log_ipv6_packet(ctx, &feat, ipv6hdr);
