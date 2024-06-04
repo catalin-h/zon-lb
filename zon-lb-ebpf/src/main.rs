@@ -344,9 +344,9 @@ fn ipv4_lb(ctx: &XdpContext, ethlen: usize) -> Result<u32, ()> {
             rx_queue,
             ipv4hdr.proto as u8,
             src_addr.to_be(),
-            l4ctx.src_port.to_be(),
+            (l4ctx.src_port as u16).to_be(),
             dst_addr.to_be(),
-            l4ctx.dst_port.to_be()
+            (l4ctx.dst_port as u16).to_be()
         );
     }
 
