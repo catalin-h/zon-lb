@@ -9,6 +9,7 @@ fi
 
 NSA=0
 NSB=2
+VLANID2=2
 
 # To reduce the likelihood of conflict and confusion when relating
 # documented examples to deployed systems, an IPv6 unicast address
@@ -31,6 +32,8 @@ setup_ns() {
   IPV4_1=10.$NET.0.2
   IPV6_0=2001:db8::$NET:1
   IPV6_1=2001:db8::$NET:2
+  IF1_VID2=$IF1.$VLANID2
+  IPV4_VID2=$IPV4_1
 
   printf "setup ns $NS $IF0:$IPV4_0|$IPV6_0 $IF1:$IPV4_1|$IPV6_1\n"
 
@@ -54,6 +57,12 @@ setup_ns() {
   ip -netns $NS address add $IPV4_1/24 dev $IF1
   ip link set dev $IF0 up
   ip -netns $NS link set dev $IF1 up
+  # Add VLAN interfaces inside the netns and attached to the
+  # same veth interface. Use the same IP as the main interface to
+  # demonstrate packets are delivered to VLAN interface.
+  ip -netns $NS link add link $IF1 name $IF1_VID2 type vlan id $VLANID2
+  ip -netns $NS address add $IPV4_VID2/24 dev $IF1_VID2
+  ip -netns $NS link set dev $IF1_VID2 up
 
   printf "pinging $IPV4_0 from $NS .. "
   set +e
@@ -101,6 +110,7 @@ setup_ns() {
   # have an xdp program loaded and must return XDP_PASS.
   printf "attaching xdp program to $NS/$IF1 ...\n"
   ip -netns $NS link set $IF1 xdp obj xdp_pass.o sec .text
+  ip -netns $NS link set $IF_VID2 xdp obj xdp_pass.o sec .text
 
   # Enable forwarding on veth from default netns so the
   # fib lookup wouldn't fail.
