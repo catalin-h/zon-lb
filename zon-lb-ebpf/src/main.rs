@@ -697,9 +697,13 @@ fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: &Ipv4Hdr) -> Result<
         )
     };
 
-    // TODO: BUG: with veth first ping returns no macs because the FIB is not initialized
+    // NOTE: with veth first ping returns no macs because the FIB is not initialized
     // redirect] output, lkp_ret: 7, fw if: 54, src: 10.2.0.1, gw: 10.2.0.2,
     // dmac: 00:00:00:00:00:00, smac: 00:00:00:00:00:00
+    // This happens because ARP failed.
+    // To debug run `ip netns exec $NS ip neigh show`
+    // Also make sure that `forwarding` for the expected redirect interface is on.
+    // If not set it with sysctl -w net.ipv4.conf.$IF0.forwarding=1
     let p_fib_param = &fib_param as *const BpfFibLookUp as *mut bpf_fib_lookup_param_t;
     let rc = unsafe {
         bpf_fib_lookup(
