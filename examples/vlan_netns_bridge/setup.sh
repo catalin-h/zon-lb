@@ -32,8 +32,10 @@ setup_ns() {
   IPV4_1=10.$NET.0.2
   IPV6_0=2001:db8::$NET:1
   IPV6_1=2001:db8::$NET:2
+  IF0_VID2=$IF0.$VLANID2
+  IPV4_0_VID2=10.0.$VLANID2.$(($P1+1))
   IF1_VID2=$IF1.$VLANID2
-  IPV4_VID2=$IPV4_1
+  IPV4_VID2=10.0.$VLANID2.$P1
 
   printf "setup ns $NS $IF0:$IPV4_0|$IPV6_0 $IF1:$IPV4_1|$IPV6_1\n"
 
@@ -57,12 +59,56 @@ setup_ns() {
   ip -netns $NS address add $IPV4_1/24 dev $IF1
   ip link set dev $IF0 up
   ip -netns $NS link set dev $IF1 up
+
   # Add VLAN interfaces inside the netns and attached to the
   # same veth interface. Use the same IP as the main interface to
   # demonstrate packets are delivered to VLAN interface.
   ip -netns $NS link add link $IF1 name $IF1_VID2 type vlan id $VLANID2
   ip -netns $NS address add $IPV4_VID2/24 dev $IF1_VID2
   ip -netns $NS link set dev $IF1_VID2 up
+  # default ns
+  ip link add link $IF0 name $IF0_VID2 type vlan id $VLANID2
+  ip address add $IPV4_0_VID2/24 dev $IF0_VID2
+  ip link set dev $IF0_VID2 up
+
+  # Fix veth driver bug that falsely advertises that it support checksum compute
+  # offload and the network stack does skip computing it. As a result the
+  # tcp checksum is not computed and the packet will be dropped. Disabling the
+  # the hw checsum offload on TX for the veth interface fixes the TCP bad
+  # checksum issue.
+  printf "disabling tx-checksumming for $IF0 ...\n"
+  ethtool -K $IF0 tx-checksumming off >> /dev/null
+  ethtool -k $IF0 | grep tx-checksumming
+
+  printf "disabling tx-checksumming for $NS/$IF1 ...\n"
+  ip netns exec $NS ethtool -K $IF1 tx-checksumming off >> /dev/null
+  ip netns exec $NS ethtool -k $IF1 | grep tx-checksumming
+
+  printf "disabling vlan offload for $IF0 ...\n"
+  ethtool -K $IF0 rxvlan off txvlan off >> /dev/null
+  ethtool -k $IF0 | grep vlan-offload
+
+  # > Since XDP needs to see the VLAN headers as part of the packet headers, it is
+  # > important to turn off VLAN hardware offload (which most hardware NICs
+  # > support), since that will remove the VLAN tag from the packet header and
+  # > instead communicate it out of band to the kernel via the packet hardware
+  # > descriptor
+  #
+  # See: https://github.com/xdp-project/xdp-tutorial/tree/master/packet01-parsing#assignment-4-adding-vlan-support
+  printf "disabling vlan offload for $IF1 ...\n"
+  ip netns exec $NS ethtool -K $IF1 rxvlan off txvlan off >> /dev/null
+  ip netns exec $NS ethtool -k $IF1 | grep vlan-offload
+
+  # In order for receiving veth interfaces to handle xdp redirects they must
+  # have an xdp program loaded and must return XDP_PASS.
+  printf "attaching xdp program to $NS/$IF1 ...\n"
+  ip -netns $NS link set $IF1 xdp obj xdp_pass.o sec .text
+  #ip -netns $NS link set $IF1_VID2 xdp obj xdp_pass.o sec .text
+
+  # Enable forwarding on veth from default netns so the
+  # fib lookup wouldn't fail.
+  sysctl -w net.ipv6.conf.$IF0.forwarding=1
+  sysctl -w net.ipv4.conf.$IF0.forwarding=1
 
   printf "pinging $IPV4_0 from $NS .. "
   set +e
@@ -91,31 +137,8 @@ setup_ns() {
   set -e
 
   # here after ping the pair interface should appear as neighbour
-  # ip netns exec $NS ip neigh show
-
-  # Fix veth driver bug that falsely advertises that it support checksum compute
-  # offload and the network stack does skip computing it. As a result the
-  # tcp checksum is not computed and the packet will be dropped. Disabling the
-  # the hw checsum offload on TX for the veth interface fixes the TCP bad
-  # checksum issue.
-  printf "disabling tx-checksumming for $IF0 ...\n"
-  ethtool -K $IF0 tx-checksumming off >> /dev/null
-  ethtool -k $IF0 | grep tx-checksumming
-
-  printf "disabling tx-checksumming for $NS/$IF1 ...\n"
-  ip netns exec $NS ethtool -K $IF1 tx-checksumming off >> /dev/null
-  ip netns exec $NS ethtool -k $IF1 | grep tx-checksumming
-
-  # In order for receiving veth interfaces to handle xdp redirects they must
-  # have an xdp program loaded and must return XDP_PASS.
-  printf "attaching xdp program to $NS/$IF1 ...\n"
-  ip -netns $NS link set $IF1 xdp obj xdp_pass.o sec .text
-  ip -netns $NS link set $IF_VID2 xdp obj xdp_pass.o sec .text
-
-  # Enable forwarding on veth from default netns so the
-  # fib lookup wouldn't fail.
-  sysctl -w net.ipv6.conf.$IF0.forwarding=1
-  sysctl -w net.ipv4.conf.$IF0.forwarding=1
+  printf "[$NS neighbour show]\n"
+  ip netns exec $NS ip neigh show
 
   printf "done setup $NS\n"
 }
