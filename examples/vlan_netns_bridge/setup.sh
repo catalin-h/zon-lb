@@ -32,10 +32,11 @@ setup_ns() {
   IPV4_1=10.$NET.0.2
   IPV6_0=2001:db8::$NET:1
   IPV6_1=2001:db8::$NET:2
+  # VLAN config
   IF0_VID2=$IF0.$VLANID2
-  IPV4_0_VID2=10.0.$VLANID2.$(($P1+1))
+  IF0_VID2_IPV4=10.$NET.$VLANID2.1
   IF1_VID2=$IF1.$VLANID2
-  IPV4_VID2=10.0.$VLANID2.$P1
+  IF1_VID2_IPV4=10.$NET.$VLANID2.2
 
   printf "setup ns $NS $IF0:$IPV4_0|$IPV6_0 $IF1:$IPV4_1|$IPV6_1\n"
 
@@ -64,11 +65,20 @@ setup_ns() {
   # same veth interface. Use the same IP as the main interface to
   # demonstrate packets are delivered to VLAN interface.
   ip -netns $NS link add link $IF1 name $IF1_VID2 type vlan id $VLANID2
-  ip -netns $NS address add $IPV4_VID2/24 dev $IF1_VID2
+  ip -netns $NS address add $IF1_VID2_IPV4/24 dev $IF1_VID2
   ip -netns $NS link set dev $IF1_VID2 up
-  # default ns
+  # In order to make the ARP work within the VLAN all veth for either netns
+  # must have sub-interface in the same VLAN.
+  # Can't have the LB act as a brigde and the veth act as a trunk interface
+  # without having this additional VLAN if or some kind of ARP proxy between
+  # the two test netns.
+  # As a future functionality, the LB must act as ARP proxy and forward ARP
+  # packets & other types between netns. This will simplify the requiremens,
+  # for e.g. creating VLAN sub-interfaces and just use the two veth as trunks.
+  # Note that this example will bridge packets between two subnets activate
+  # within the same VLAN.
   ip link add link $IF0 name $IF0_VID2 type vlan id $VLANID2
-  ip address add $IPV4_0_VID2/24 dev $IF0_VID2
+  ip address add $IF0_VID2_IPV4/24 dev $IF0_VID2
   ip link set dev $IF0_VID2 up
 
   # Fix veth driver bug that falsely advertises that it support checksum compute
