@@ -77,9 +77,9 @@ setup_ns() {
   # for e.g. creating VLAN sub-interfaces and just use the two veth as trunks.
   # Note that this example will bridge packets between two subnets activate
   # within the same VLAN.
-  ip link add link $IF0 name $IF0_VID2 type vlan id $VLANID2
-  ip address add $IF0_VID2_IPV4/24 dev $IF0_VID2
-  ip link set dev $IF0_VID2 up
+  # ip link add link $IF0 name $IF0_VID2 type vlan id $VLANID2
+  # ip address add $IF0_VID2_IPV4/24 dev $IF0_VID2
+  # ip link set dev $IF0_VID2 up
 
   # Fix veth driver bug that falsely advertises that it support checksum compute
   # offload and the network stack does skip computing it. As a result the
