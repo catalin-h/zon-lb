@@ -229,7 +229,20 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     let idx: usize = match ether_type[0] {
         EtherType::Ipv4 => 0,
         EtherType::Ipv6 => 0,
-        EtherType::VlanDot1Q => 2,
+        EtherType::VlanDot1Q => {
+            let eth = ptr_at::<EthHdr>(&ctx, 0)?;
+            let eth = unsafe { &*eth };
+
+            info!(
+                &ctx,
+                "if:{} vlan_id:{} {:mac} -> {:mac}",
+                unsafe { (*ctx.ctx).ingress_ifindex },
+                (ether_type[1] as u16).to_be(),
+                eth.src_addr,
+                eth.dst_addr,
+            );
+            2
+        }
         EtherType::VlanDot1AD => 4,
         _ => return Ok(xdp_action::XDP_PASS),
     };
@@ -237,9 +250,10 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     // NOTE: the base Ethernet header size does not change
     // but for each VLAN header type must add 4 bytes.
     let ethlen = EthHdr::LEN + (idx << 1);
+
     match ether_type[idx] {
-        EtherType::Ipv4 => ipv4_lb(&ctx, EthHdr::LEN),
-        EtherType::Ipv6 => ipv6_lb(&ctx, ethlen),
+        EtherType::Ipv4 => ipv4_lb(&ctx, ethlen),
+        //EtherType::Ipv6 => ipv6_lb(&ctx, ethlen),
         _ => Ok(xdp_action::XDP_PASS),
     }
 }
