@@ -211,10 +211,53 @@ pub fn zon_lb(ctx: XdpContext) -> u32 {
 #[derive(Copy, Clone)]
 pub enum EtherType {
     Ipv4 = 0x0800_u16.to_be(),
+    Arp = 0x0806_u16.to_be(),
     Ipv6 = 0x86DD_u16.to_be(),
     VlanDot1Q = 0x8100_u16.to_be(),
     VlanDot1AD = 0x88A8_u16.to_be(),
     Others = 0,
+}
+
+#[repr(C, packed(2))]
+#[derive(Debug, Copy, Clone)]
+struct ArpHdr {
+    /// Hardware address type; e.g. Ethernet 1
+    htype: u16,
+    /// Protocol type, same as EtherType values; e.g. 0x800 for Ipv4
+    ptype: u16,
+    /// Hardware address length; e.g. the Ethernet addr is 6
+    hlen: u8,
+    /// Protocol address length; e.g. the Ipv4 addr is 4
+    plen: u8,
+    /// Operation, 1 for request and 2 for reply
+    oper: u16,
+    /// Sender hw address
+    sha: [u8; 6],
+    /// Sender protocol address
+    spa: u32,
+    /// Target hw address
+    tha: [u8; 6],
+    /// Target protocol address
+    tpa: u32,
+}
+
+fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
+    let arphdr = ptr_at::<ArpHdr>(&ctx, ethlen)?;
+    let arphdr = unsafe { &mut *arphdr.cast_mut() };
+
+    info!(
+        ctx,
+        "[arp] if:{}, vlan:{} oper:{} sha={:mac} spa:{:i} tha={:mac} tpa:{:i}",
+        unsafe { (*ctx.ctx).ingress_ifindex },
+        (vlan_id as u16).to_be() & 0xFFF,
+        arphdr.oper.to_be(),
+        arphdr.sha,
+        arphdr.spa.to_be(),
+        arphdr.tha,
+        arphdr.tpa.to_be()
+    );
+
+    Ok(xdp_action::XDP_PASS)
 }
 
 // TODO: check the feature flags and see if the ipv6 is enabled or not
@@ -226,9 +269,9 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     // match-arms that call return with function calls and match-arms
     // that just return values. Looks like only match-arms that return
     // compile time constant lile `Ok(xdp_action::XDP_PASS)` are allowed.`
-    let idx: usize = match ether_type[0] {
-        EtherType::Ipv4 => 0,
-        EtherType::Ipv6 => 0,
+    let (idx, vland_id, next_ether_type) = match ether_type[0] {
+        EtherType::Ipv4 => (0, 0, ether_type[0]),
+        EtherType::Ipv6 => (0, 0, ether_type[0]),
         EtherType::VlanDot1Q => {
             let eth = ptr_at::<EthHdr>(&ctx, 0)?;
             let eth = unsafe { &*eth };
@@ -241,19 +284,21 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
                 eth.src_addr,
                 eth.dst_addr,
             );
-            2
+            (2, ether_type[1] as u32, ether_type[2])
         }
-        EtherType::VlanDot1AD => 4,
-        _ => return Ok(xdp_action::XDP_PASS),
+        // TODO: needs additional u32 storage
+        EtherType::VlanDot1AD => (0, 0, ether_type[0]),
+        _ => (0, 0, ether_type[0]),
     };
 
     // NOTE: the base Ethernet header size does not change
     // but for each VLAN header type must add 4 bytes.
     let ethlen = EthHdr::LEN + (idx << 1);
 
-    match ether_type[idx] {
+    match next_ether_type {
         EtherType::Ipv4 => ipv4_lb(&ctx, ethlen),
         //EtherType::Ipv6 => ipv6_lb(&ctx, ethlen),
+        EtherType::Arp => arp_snoop(&ctx, vland_id, ethlen),
         _ => Ok(xdp_action::XDP_PASS),
     }
 }
