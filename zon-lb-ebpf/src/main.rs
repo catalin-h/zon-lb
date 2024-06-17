@@ -777,9 +777,11 @@ fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: &Ipv4Hdr) -> Result<
     if feat.log_enabled(Level::Info) {
         info!(
         ctx,
-        "[redirect] output, lkp_ret: {}, fw if: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
+        "[redirect] output, lkp_ret: {}, fw if: {}, tot_len: {}, tos: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
         rc,
         fib_param.ifindex,
+        fib_param.tot_len,
+        fib_param.tos,
         fib_param.src[0].to_be(),
         fib_param.dst[0].to_be(),
         fib_param.dest_mac(),
