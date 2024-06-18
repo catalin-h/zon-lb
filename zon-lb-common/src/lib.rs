@@ -415,10 +415,10 @@ pub struct NAT6Value {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for NAT6Value {}
 
-/// Arp table entry
+/// Fib table entry
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ArpEntry {
+pub struct FibEntry {
     /// Interface index
     pub ifindex: u32,
     /// The dmac and smac combo
@@ -427,10 +427,12 @@ pub struct ArpEntry {
     pub ip_src: [u32; 4],
     /// The expiry timestamp
     pub expiry: u32,
+    // TODO: The VLAN ID for the IP address (key)
+    //pub vlan_id_be: u32,
 }
 
 #[cfg(feature = "user")]
-unsafe impl aya::Pod for ArpEntry {}
+unsafe impl aya::Pod for FibEntry {}
 
 // TODO: add hasher function
 

@@ -12,7 +12,7 @@ use core::mem::{self};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u32};
 use network_types::{eth::EthHdr, ip::Ipv6Hdr};
 use zon_lb_common::{
-    stats, ArpEntry, BEGroup, BEKey, EPFlags, Inet6U, NAT6Key, NAT6Value, EP6, MAX_ARP_ENTRIES,
+    stats, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, NAT6Key, NAT6Value, EP6, MAX_ARP_ENTRIES,
     MAX_CONNTRACKS, MAX_GROUPS,
 };
 
@@ -30,7 +30,7 @@ type LHM6 = LruHashMap<NAT6Key, NAT6Value>;
 #[map]
 static mut ZLB_CONNTRACK6: LHM6 = LHM6::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
-type HMARP6 = LruHashMap<[u32; 4usize], ArpEntry>;
+type HMARP6 = LruHashMap<[u32; 4usize], FibEntry>;
 /// ARP table for caching destination ip to smac/dmac and derived source ip.
 /// The derived source ip is the address used as source when redirecting the
 /// the packet.
@@ -585,7 +585,7 @@ fn redirect_ipv6(ctx: &XdpContext, feat: Features, ipv6hdr: &Ipv6Hdr) -> Result<
 }
 
 fn update_arp6(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
-    let arp = ArpEntry {
+    let arp = FibEntry {
         ifindex: fib_param.ifindex,
         macs: fib_param.ethdr_macs(),
         ip_src: fib_param.src, // not used for now

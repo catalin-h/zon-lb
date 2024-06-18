@@ -27,7 +27,7 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, GroupInfo, NAT4Key, NAT4Value, BE, EP4,
+    runvars, stats, BEGroup, BEKey, EPFlags, FibEntry, GroupInfo, NAT4Key, NAT4Value, BE, EP4,
     MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
@@ -84,16 +84,15 @@ type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 #[map]
 static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
-type HMARP4 = HashMap<u32, ArpEntry>;
-/// ARP table for caching destination ip to smac/dmac and derived source ip.
+type HMFIB4 = HashMap<u32, FibEntry>;
+/// Fib cache for destination ip to smac/dmac and derived source ip.
 /// The derived source ip is the address used as source when redirecting the
 /// the packet.
 #[map]
-static mut ZLB_ARP4: HMARP4 = HMARP4::pinned(MAX_ARP_ENTRIES, 0);
+static mut ZLB_FIB4: HMFIB4 = HMFIB4::pinned(MAX_ARP_ENTRIES, 0);
 
+// TODO: add real ARP table
 // TODO: collect errors and put them into an lru error queue or map
-
-// TODO: add ipv6 arp table
 
 struct Features {
     log_level: u64,
@@ -715,7 +714,7 @@ fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_actio
 }
 
 fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: &Ipv4Hdr) -> Result<u32, ()> {
-    if let Some(&entry) = unsafe { ZLB_ARP4.get(&ipv4hdr.dst_addr) } {
+    if let Some(&entry) = unsafe { ZLB_FIB4.get(&ipv4hdr.dst_addr) } {
         // NOTE: check expiry before using this entry
         // TODO: check performance
         let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
@@ -836,7 +835,7 @@ fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: &Ipv4Hdr) -> Result<
 }
 
 fn update_arp(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
-    let arp = ArpEntry {
+    let arp = FibEntry {
         ifindex: fib_param.ifindex,
         macs: fib_param.ethdr_macs(),
         ip_src: fib_param.src,
@@ -845,7 +844,7 @@ fn update_arp(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
 
     // NOTE: after updating the value or key struct size must remove the pinned map
     // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
-    match unsafe { ZLB_ARP4.insert(&fib_param.dst[0], &arp, 0) } {
+    match unsafe { ZLB_FIB4.insert(&fib_param.dst[0], &arp, 0) } {
         Ok(()) => {
             if feat.log_enabled(Level::Info) {
                 info!(
