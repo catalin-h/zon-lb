@@ -243,12 +243,21 @@ struct ArpHdr {
 fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
     let arphdr = ptr_at::<ArpHdr>(&ctx, ethlen)?;
     let arphdr = unsafe { &mut *arphdr.cast_mut() };
+    let eth = ptr_at::<EthHdr>(&ctx, 0)?;
+    let eth = unsafe { &*eth };
 
     info!(
         ctx,
-        "[arp] if:{}, vlan:{} oper:{} sha={:mac} spa:{:i} tha={:mac} tpa:{:i}",
+        "[eth] if:{} vlan_id:{} {:mac} -> {:mac}",
         unsafe { (*ctx.ctx).ingress_ifindex },
         (vlan_id as u16).to_be() & 0xFFF,
+        eth.src_addr,
+        eth.dst_addr,
+    );
+
+    info!(
+        ctx,
+        "[arp] oper:{} sha={:mac} spa:{:i} tha={:mac} tpa:{:i}",
         arphdr.oper.to_be(),
         arphdr.sha,
         arphdr.spa.to_be(),
@@ -261,8 +270,8 @@ fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
 
 // TODO: check the feature flags and see if the ipv6 is enabled or not
 fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
-    let ether_type: *const [EtherType; 5] = ptr_at(&ctx, ETH_ALEN << 1)?;
-    let ether_type = unsafe { &*ether_type };
+    let ether_type = ptr_at::<[EtherType; 5]>(&ctx, ETH_ALEN << 1)?.cast_mut();
+    let ether_type = unsafe { &mut *ether_type };
 
     // BUG: Unfortunately the bpf-linker does not allow mixing
     // match-arms that call return with function calls and match-arms
@@ -271,20 +280,7 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     let (idx, vland_id, next_ether_type) = match ether_type[0] {
         EtherType::Ipv4 => (0, 0, ether_type[0]),
         EtherType::Ipv6 => (0, 0, ether_type[0]),
-        EtherType::VlanDot1Q => {
-            let eth = ptr_at::<EthHdr>(&ctx, 0)?;
-            let eth = unsafe { &*eth };
-
-            info!(
-                &ctx,
-                "if:{} vlan_id:{} {:mac} -> {:mac}",
-                unsafe { (*ctx.ctx).ingress_ifindex },
-                (ether_type[1] as u16).to_be(),
-                eth.src_addr,
-                eth.dst_addr,
-            );
-            (2, ether_type[1] as u32, ether_type[2])
-        }
+        EtherType::VlanDot1Q => (2, ether_type[1] as u32, ether_type[2]),
         // TODO: needs additional u32 storage
         EtherType::VlanDot1AD => (0, 0, ether_type[0]),
         _ => (0, 0, ether_type[0]),
