@@ -30,12 +30,12 @@ type LHM6 = LruHashMap<NAT6Key, NAT6Value>;
 #[map]
 static mut ZLB_CONNTRACK6: LHM6 = LHM6::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
-type HMARP6 = LruHashMap<[u32; 4usize], FibEntry>;
+type LHMARP6 = LruHashMap<[u32; 4usize], FibEntry>;
 /// ARP table for caching destination ip to smac/dmac and derived source ip.
 /// The derived source ip is the address used as source when redirecting the
 /// the packet.
 #[map]
-static mut ZLB_ARP6: HMARP6 = HMARP6::pinned(MAX_ARP_ENTRIES, 0);
+static mut ZLB_ARP6: LHMARP6 = LHMARP6::pinned(MAX_ARP_ENTRIES, 0);
 
 #[inline(always)]
 fn inet6_hash32(addr: &[u32; 4usize]) -> u32 {
