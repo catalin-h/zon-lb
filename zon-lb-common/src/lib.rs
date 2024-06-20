@@ -434,6 +434,36 @@ pub struct FibEntry {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for FibEntry {}
 
+/// ARP table entry (IPv4 only).
+/// The ARP entry is used to deduce the sMAC/dMAC on packet redirect or
+/// answer to ARP requests from within VLANs for IPs that the application
+/// is interested to provide connectivity, e.g. LB groups.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArpEntry {
+    /// Interface index
+    pub ifindex: u32,
+    /// The hardware address associated with an IPv4 address (key)
+    pub mac: [u8; 6],
+    /// The destination hardware address when this arp entry was updated.
+    /// This field can be used to deduce the hw address of the interface.
+    /// Unless the interface is in promiscuous mode (no MAC filtering)
+    /// the XDP program will receive frames with dest MACs that match
+    /// the interface MAC or m/bcast frames (these are ignored for it).
+    /// Since there is no easy way to detect MAC addr changes, if this
+    /// field matches the `mac` field it is certain that this is the
+    /// interface address. This is can be used by zon-lb ARP responder
+    /// to fill requests about certain IPs.
+    pub if_mac: [u8; 6],
+    /// The expiry timestamp
+    pub expiry: u32,
+    /// The VLAN ID for the IP address (key) as big-endian value
+    pub vlan_id: u32,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for ArpEntry {}
+
 // TODO: add hasher function
 
 // TODO: use IPv6 header Flow label in order to track connections.
