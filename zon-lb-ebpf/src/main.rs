@@ -287,7 +287,7 @@ fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u32, mac: &[u8; 6], eth:
             "[arp] add {:i} => {:mac}/vlan={} if:{}/{:mac}",
             ip.to_be(),
             *mac,
-            (vlan_id as u16).to_be() & 0xFFF,
+            (vlan_id as u16).to_be(),
             ifindex,
             if_mac
         ),
@@ -304,7 +304,7 @@ fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
         ctx,
         "[eth] if:{} vlan_id:{} {:mac} -> {:mac}",
         unsafe { (*ctx.ctx).ingress_ifindex },
-        (vlan_id as u16).to_be() & 0xFFF,
+        (vlan_id as u16).to_be(),
         eth.src_addr,
         eth.dst_addr,
     );
@@ -339,7 +339,7 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     let (idx, vland_id, next_ether_type) = match ether_type[0] {
         EtherType::Ipv4 => (0, 0, ether_type[0]),
         EtherType::Ipv6 => (0, 0, ether_type[0]),
-        EtherType::VlanDot1Q => (2, ether_type[1] as u32, ether_type[2]),
+        EtherType::VlanDot1Q => (2, (ether_type[1] as u16) & 0xFFF0, ether_type[2]),
         // TODO: needs additional u32 storage
         EtherType::VlanDot1AD => (0, 0, ether_type[0]),
         _ => (0, 0, ether_type[0]),
@@ -352,7 +352,7 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     match next_ether_type {
         EtherType::Ipv4 => ipv4_lb(&ctx, ethlen),
         //EtherType::Ipv6 => ipv6_lb(&ctx, ethlen),
-        EtherType::Arp => arp_snoop(&ctx, vland_id, ethlen),
+        EtherType::Arp => arp_snoop(&ctx, vland_id as u32, ethlen),
         _ => Ok(xdp_action::XDP_PASS),
     }
 }
