@@ -298,12 +298,13 @@ fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
     let arphdr = ptr_at::<ArpHdr>(&ctx, ethlen)?;
     let arphdr = unsafe { &mut *arphdr.cast_mut() };
     let eth = ptr_at::<EthHdr>(&ctx, 0)?;
-    let eth = unsafe { &*eth };
+    let eth = unsafe { &mut *eth.cast_mut() };
+    let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
 
     info!(
         ctx,
         "[eth] if:{} vlan_id:{} {:mac} -> {:mac}",
-        unsafe { (*ctx.ctx).ingress_ifindex },
+        ifindex,
         (vlan_id as u16).to_be(),
         eth.src_addr,
         eth.dst_addr,
@@ -322,9 +323,67 @@ fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
     update_arp_table(ctx, arphdr.spa, vlan_id, &arphdr.sha, eth);
     update_arp_table(ctx, arphdr.tpa, vlan_id, &arphdr.tha, eth);
 
-    // TODO: respond to oper == 1
+    // For VLANs answer to requests as this LB can act as a proxy for
+    // the endpoints inside VLANs. Without special routing rules the
+    // ARP requests are not ignored as they pertain to a different
+    // network segment.
+    if vlan_id == 0
+        || arphdr.oper.to_be() != 1
+        || !is_unicast_mac(&eth.src_addr)
+        || !is_unicast_mac(&arphdr.sha)
+    {
+        return Ok(xdp_action::XDP_PASS);
+    }
 
-    Ok(xdp_action::XDP_PASS)
+    // NOTE: can't directly pass reference to packed(2) struct like ArpHdr even if
+    // the field is 32-bit.
+    let tpa = arphdr.tpa;
+    let smac = match unsafe { ZLB_ARP.get(&tpa) } {
+        None => return Ok(xdp_action::XDP_PASS),
+        Some(entry) => {
+            // NOTE: most likely the entry.vlan_id would be 0 since it shouldn't be
+            // assigned in no VLAN
+            if entry.ifindex == ifindex && (vlan_id == entry.vlan_id || entry.vlan_id == 0) {
+                if is_unicast_mac(&entry.if_mac) {
+                    entry.if_mac
+                } else {
+                    entry.mac
+                }
+            } else {
+                return Ok(xdp_action::XDP_PASS);
+            }
+        }
+    };
+
+    // NOTE: destination is always the B-CAST address
+    eth.dst_addr = eth.src_addr;
+    eth.src_addr = smac;
+
+    arphdr.tpa = arphdr.spa;
+    arphdr.tha = arphdr.sha;
+    arphdr.spa = tpa;
+    arphdr.sha = smac;
+    arphdr.oper = 2_u16.to_be();
+
+    info!(
+        ctx,
+        "[eth] [tx] if:{} vlan_id:{} {:mac} -> {:mac}",
+        ifindex,
+        (vlan_id as u16).to_be(),
+        eth.src_addr,
+        eth.dst_addr,
+    );
+
+    info!(
+        ctx,
+        "[arp] reply sha={:mac} spa:{:i} -> tha={:mac} tpa:{:i}",
+        arphdr.sha,
+        arphdr.spa.to_be(),
+        arphdr.tha,
+        arphdr.tpa.to_be()
+    );
+
+    Ok(xdp_action::XDP_TX)
 }
 
 // TODO: check the feature flags and see if the ipv6 is enabled or not
