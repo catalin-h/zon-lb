@@ -27,8 +27,8 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    runvars, stats, BEGroup, BEKey, EPFlags, FibEntry, GroupInfo, NAT4Key, NAT4Value, BE, EP4,
-    MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
+    runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, GroupInfo, NAT4Key, NAT4Value, BE,
+    EP4, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
 const ETH_ALEN: usize = 6;
@@ -91,7 +91,13 @@ type HMFIB4 = HashMap<u32, FibEntry>;
 #[map]
 static mut ZLB_FIB4: HMFIB4 = HMFIB4::pinned(MAX_ARP_ENTRIES, 0);
 
-// TODO: add real ARP table
+type LHMARP = LruHashMap<u32, ArpEntry>;
+/// The ARP table use to answer to VLAN ARP requests mostly.
+/// For non VLAN traffic the system can handle and update the
+/// FIB for LB interested IPs.
+#[map]
+static mut ZLB_ARP: LHMARP = LHMARP::pinned(MAX_ARP_ENTRIES, 0);
+
 // TODO: collect errors and put them into an lru error queue or map
 
 struct Features {
@@ -240,6 +246,54 @@ struct ArpHdr {
     tpa: u32,
 }
 
+fn is_unicast_mac(mac: &[u8; 6]) -> bool {
+    *mac != [0_u8; 6] && (mac[0] & 0x1) == 0_u8
+}
+
+fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u32, mac: &[u8; 6], eth: &EthHdr) {
+    if !is_unicast_mac(mac) {
+        return;
+    }
+
+    // NOTE: This won't work in promiscuous mode
+    let if_mac = if is_unicast_mac(&eth.dst_addr) {
+        eth.dst_addr
+    } else {
+        match unsafe { ZLB_ARP.get(&ip) } {
+            None => [0_u8; 6],
+            Some(entry) => entry.if_mac,
+        }
+    };
+
+    // Set the expiry to 2 min but it can be used as last resort
+    let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+    let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + 120;
+    match unsafe {
+        ZLB_ARP.insert(
+            &ip,
+            &ArpEntry {
+                ifindex,
+                mac: *mac,
+                if_mac,
+                expiry,
+                vlan_id,
+            },
+            0,
+        )
+    } {
+        Err(e) => error!(ctx, "[arp] insert entry for {:i}, {}", ip.to_be(), e),
+        Ok(_) => info!(
+            ctx,
+            "[arp] add {:i} => {:mac}/vlan={} if:{}/{:mac}",
+            ip.to_be(),
+            *mac,
+            (vlan_id as u16).to_be() & 0xFFF,
+            ifindex,
+            if_mac
+        ),
+    };
+}
+
 fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
     let arphdr = ptr_at::<ArpHdr>(&ctx, ethlen)?;
     let arphdr = unsafe { &mut *arphdr.cast_mut() };
@@ -264,6 +318,11 @@ fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
         arphdr.tha,
         arphdr.tpa.to_be()
     );
+
+    update_arp_table(ctx, arphdr.spa, vlan_id, &arphdr.sha, eth);
+    update_arp_table(ctx, arphdr.tpa, vlan_id, &arphdr.tha, eth);
+
+    // TODO: respond to oper == 1
 
     Ok(xdp_action::XDP_PASS)
 }
