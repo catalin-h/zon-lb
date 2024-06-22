@@ -246,6 +246,21 @@ struct ArpHdr {
     tpa: u32,
 }
 
+pub struct L2Context {
+    pub ethlen: usize,
+    pub vlanhdr: u32,
+}
+
+impl L2Context {
+    pub fn vlan_id(&self) -> u32 {
+        self.vlanhdr & 0xFFF0
+    }
+
+    pub fn has_vlan(&self) -> bool {
+        self.vlanhdr >> 16 == EtherType::VlanDot1Q as u32
+    }
+}
+
 fn is_unicast_mac(mac: &[u8; 6]) -> bool {
     *mac != [0_u8; 6] && (mac[0] & 0x1) == 0_u8
 }
@@ -294,12 +309,13 @@ fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u32, mac: &[u8; 6], eth:
     };
 }
 
-fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
-    let arphdr = ptr_at::<ArpHdr>(&ctx, ethlen)?;
+fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
+    let arphdr = ptr_at::<ArpHdr>(&ctx, l2ctx.ethlen)?;
     let arphdr = unsafe { &mut *arphdr.cast_mut() };
     let eth = ptr_at::<EthHdr>(&ctx, 0)?;
     let eth = unsafe { &mut *eth.cast_mut() };
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+    let vlan_id = l2ctx.vlan_id();
 
     info!(
         ctx,
@@ -327,7 +343,7 @@ fn arp_snoop(ctx: &XdpContext, vlan_id: u32, ethlen: usize) -> Result<u32, ()> {
     // the endpoints inside VLANs. Without special routing rules the
     // ARP requests are not ignored as they pertain to a different
     // network segment.
-    if vlan_id == 0
+    if !l2ctx.has_vlan()
         || arphdr.oper.to_be() != 1
         || !is_unicast_mac(&eth.src_addr)
         || !is_unicast_mac(&arphdr.sha)
@@ -395,23 +411,30 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     // match-arms that call return with function calls and match-arms
     // that just return values. Looks like only match-arms that return
     // compile time constant lile `Ok(xdp_action::XDP_PASS)` are allowed.`
-    let (idx, vland_id, next_ether_type) = match ether_type[0] {
+    let (idx, vlanhdr, next_ether_type) = match ether_type[0] {
         EtherType::Ipv4 => (0, 0, ether_type[0]),
         EtherType::Ipv6 => (0, 0, ether_type[0]),
-        EtherType::VlanDot1Q => (2, (ether_type[1] as u16) & 0xFFF0, ether_type[2]),
+        EtherType::VlanDot1Q => (
+            2,
+            ((ether_type[0] as u32) << 16) | (ether_type[1] as u32),
+            ether_type[2],
+        ),
         // TODO: needs additional u32 storage
         EtherType::VlanDot1AD => (0, 0, ether_type[0]),
         _ => (0, 0, ether_type[0]),
     };
 
-    // NOTE: the base Ethernet header size does not change
-    // but for each VLAN header type must add 4 bytes.
-    let ethlen = EthHdr::LEN + (idx << 1);
+    let l2ctx = L2Context {
+        // NOTE: the base Ethernet header size does not change
+        // but for each VLAN header type must add 4 bytes.
+        ethlen: EthHdr::LEN + (idx << 1),
+        vlanhdr,
+    };
 
     match next_ether_type {
-        EtherType::Ipv4 => ipv4_lb(&ctx, ethlen),
+        EtherType::Ipv4 => ipv4_lb(&ctx, l2ctx),
         //EtherType::Ipv6 => ipv6_lb(&ctx, ethlen),
-        EtherType::Arp => arp_snoop(&ctx, vland_id as u32, ethlen),
+        EtherType::Arp => arp_snoop(&ctx, l2ctx),
         _ => Ok(xdp_action::XDP_PASS),
     }
 }
@@ -493,9 +516,9 @@ fn update_inet_csum(
 }
 
 // TODO: check if moving the XdpContext boosts performance
-fn ipv4_lb(ctx: &XdpContext, ethlen: usize) -> Result<u32, ()> {
+fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // TODO: support vlan tags
-    let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, ethlen)?;
+    let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv4hdr = unsafe { &mut *ipv4hdr.cast_mut() };
     let src_addr = ipv4hdr.src_addr;
     let dst_addr = ipv4hdr.dst_addr;
@@ -503,7 +526,7 @@ fn ipv4_lb(ctx: &XdpContext, ethlen: usize) -> Result<u32, ()> {
 
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
     let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
-    let l4hdr_offset = l4hdr_offset + ethlen;
+    let l4hdr_offset = l4hdr_offset + l2ctx.ethlen;
     let l4ctx = L4Context::new_with_offset(ctx, l4hdr_offset, ipv4hdr.proto)?;
     let feat = Features::new();
 
