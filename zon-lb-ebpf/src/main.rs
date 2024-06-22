@@ -355,7 +355,10 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // the field is 32-bit.
     let tpa = arphdr.tpa;
     let smac = match unsafe { ZLB_ARP.get(&tpa) } {
-        None => return Ok(xdp_action::XDP_PASS),
+        None => {
+            info!(ctx, "[arp] no entry for tpa: {:i}", tpa);
+            return Ok(xdp_action::XDP_PASS);
+        }
         Some(entry) => {
             // NOTE: most likely the entry.vlan_id would be 0 since it shouldn't be
             // assigned in no VLAN
@@ -366,6 +369,17 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                     entry.mac
                 }
             } else {
+                if entry.ifindex != ifindex {
+                    info!(
+                        ctx,
+                        "[arp] if diff: {}!={} for {:i}", ifindex, entry.ifindex, tpa
+                    );
+                } else {
+                    info!(
+                        ctx,
+                        "[arp] vlan id diff: {}!={}, for {:i}", vlan_id, entry.vlan_id, tpa
+                    );
+                }
                 return Ok(xdp_action::XDP_PASS);
             }
         }
