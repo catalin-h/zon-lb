@@ -760,6 +760,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             nat4.ifindex != if_index
                 || nat4.ip_src != src_addr
                 || nat4.mac_addresses != mac_addresses
+                || nat4.vlan_hdr != l2ctx.vlanhdr
         } else {
             true
         };
@@ -770,6 +771,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 port_lb: l4ctx.dst_port,
                 ifindex: if_index,
                 mac_addresses,
+                vlan_hdr: l2ctx.vlanhdr,
                 flags: be.flags,
                 lb_ip: dst_addr, // save the original LB IP
             };
