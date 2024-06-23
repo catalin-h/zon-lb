@@ -246,6 +246,10 @@ struct ArpHdr {
     tpa: u32,
 }
 
+pub fn is_8021q_hdr(vlanhdr: u32) -> bool {
+    vlanhdr as u16 == EtherType::VlanDot1Q as u16
+}
+
 pub struct L2Context {
     pub ethlen: usize,
     pub vlanhdr: u32,
@@ -253,11 +257,12 @@ pub struct L2Context {
 
 impl L2Context {
     pub fn vlan_id(&self) -> u32 {
-        self.vlanhdr & 0xFFF0
+        (self.vlanhdr >> 16) & 0xFFF0
     }
 
     pub fn has_vlan(&self) -> bool {
-        self.vlanhdr >> 16 == EtherType::VlanDot1Q as u32
+        is_8021q_hdr(self.vlanhdr)
+    }
     }
 }
 
@@ -348,6 +353,7 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         || !is_unicast_mac(&eth.src_addr)
         || !is_unicast_mac(&arphdr.sha)
     {
+        info!(ctx, "[arp] no vlan for tpa: {:i}", arphdr.tpa.to_be());
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -430,7 +436,7 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
         EtherType::Ipv6 => (0, 0, ether_type[0]),
         EtherType::VlanDot1Q => (
             2,
-            ((ether_type[0] as u32) << 16) | (ether_type[1] as u32),
+            ((ether_type[1] as u32) << 16) | (ether_type[0] as u32),
             ether_type[2],
         ),
         // TODO: needs additional u32 storage
