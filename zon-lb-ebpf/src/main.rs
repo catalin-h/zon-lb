@@ -9,7 +9,7 @@ use aya_ebpf::{
         BPF_FIB_LKUP_RET_PROHIBIT, BPF_FIB_LKUP_RET_SUCCESS, BPF_FIB_LKUP_RET_UNREACHABLE,
         BPF_F_NO_COMMON_LRU,
     },
-    helpers::{bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect},
+    helpers::{bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect, bpf_xdp_adjust_head},
     macros::{map, xdp},
     maps::{Array, DevMap, HashMap, LruHashMap, PerCpuArray},
     programs::XdpContext,
@@ -263,6 +263,77 @@ impl L2Context {
     pub fn has_vlan(&self) -> bool {
         is_8021q_hdr(self.vlanhdr)
     }
+
+    pub fn vlan_offset(&self) -> usize {
+        self.ethlen - mem::size_of::<EtherType>() - mem::size_of::<u32>()
+    }
+
+    fn vlan_push(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<(), ()> {
+        let rc = unsafe { bpf_xdp_adjust_head(ctx.ctx, -4) };
+        info!(ctx, "[vlan] push hdr, rc: {}", rc);
+
+        let hdr = ptr_at::<[u32; 4]>(&ctx, 0)?.cast_mut();
+        let hdr = unsafe { &mut *hdr };
+
+        hdr[0] = hdr[1];
+        hdr[1] = hdr[2];
+        hdr[2] = hdr[3];
+        hdr[3] = vlanhdr;
+
+        self.ethlen += mem::size_of::<u32>();
+        self.vlanhdr = vlanhdr;
+
+        Ok(())
+    }
+
+    fn vlan_change(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<(), ()> {
+        let vhdr = ptr_at::<u32>(&ctx, self.vlan_offset())?.cast_mut();
+        unsafe { *vhdr = vlanhdr };
+        self.vlanhdr = vlanhdr;
+        Ok(())
+    }
+
+    fn vlan_pop(&mut self, ctx: &XdpContext) -> Result<(), ()> {
+        let hdr = ptr_at::<[u32; 4]>(&ctx, 0)?.cast_mut();
+        let hdr = unsafe { &mut *hdr };
+
+        hdr[3] = hdr[2];
+        hdr[2] = hdr[1];
+        hdr[1] = hdr[0];
+
+        let rc = unsafe { bpf_xdp_adjust_head(ctx.ctx, 4 as i32) };
+        info!(ctx, "[vlan] pop hdr, rc: {}", rc);
+
+        self.ethlen -= mem::size_of::<u32>();
+        self.vlanhdr = 0;
+
+        Ok(())
+    }
+    /// Updates vlan header as follows:
+    /// ---------------------------------
+    /// l2ctx vlan | target vlan | action
+    /// ---------------------------------
+    ///         no |          no |   none
+    ///        yes |          no |    pop
+    ///        yes |         yes | update
+    ///         no |         yes |   push
+    /// ---------------------------------
+    /// NOTE: no support for vlan on 802.ad
+    fn vlan_update(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<(), ()> {
+        info!(ctx, "[vlan] update to vlanhdr {:x}", vlanhdr.to_be());
+        if is_8021q_hdr(vlanhdr) {
+            if self.has_vlan() {
+                return self.vlan_change(ctx, vlanhdr);
+            }
+
+            return self.vlan_push(ctx, vlanhdr);
+        }
+
+        if self.has_vlan() {
+            return self.vlan_pop(&ctx);
+        }
+
+        Ok(())
     }
 }
 
