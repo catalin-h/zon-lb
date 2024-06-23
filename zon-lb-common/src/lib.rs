@@ -369,7 +369,7 @@ unsafe impl aya::Pod for NAT4Value {}
 /// the one in the IPv6 packet on reply flow
 /// in order to optimize copying the addresses
 /// to the actual packet as 4 x 64-bit moves.
-#[repr(C, align(8))]
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NAT6Key {
     /// The backend will respond to this address
