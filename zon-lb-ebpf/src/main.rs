@@ -702,6 +702,14 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             // - https://docs.kernel.org/bpf/redirect.html
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             unsafe { *macs = nat.mac_addresses };
+
+            let mut l2ctx = l2ctx;
+
+            // NOTE: After this call all references derived from ctx must be recreated
+            // since this method can change the packet limits.
+            // This function is a no-op if no VLAN translation is needed.
+            l2ctx.vlan_update(ctx, nat.vlan_hdr)?;
+
             let ret = redirect_txport(ctx, &feat, nat.ifindex);
 
             if nat.flags.contains(EPFlags::XDP_TX) && ret == xdp_action::XDP_REDIRECT {
@@ -919,7 +927,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
     // ifindex used to redirect the packet.
 
-    return redirect_ipv4(ctx, feat, ipv4hdr);
+    return redirect_ipv4(ctx, feat, ipv4hdr, l2ctx);
 }
 
 fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_action::Type {
@@ -943,13 +951,18 @@ fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_actio
     }
 }
 
-fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: &Ipv4Hdr) -> Result<u32, ()> {
+fn redirect_ipv4(
+    ctx: &XdpContext,
+    feat: Features,
+    ipv4hdr: &Ipv4Hdr,
+    mut l2ctx: L2Context,
+) -> Result<u32, ()> {
     if let Some(&entry) = unsafe { ZLB_FIB4.get(&ipv4hdr.dst_addr) } {
         // NOTE: check expiry before using this entry
         // TODO: check performance
         let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
 
-        if now - entry.expiry < 600 {
+        if now - entry.expiry < 6 {
             let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
 
             // NOTE: look like aya can't convert the '*eth = entry.macs' into
@@ -961,6 +974,10 @@ fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: &Ipv4Hdr) -> Result<
                 (*eth)[1] = entry.macs[1];
                 (*eth)[2] = entry.macs[2];
             };
+
+            // TODO: use the vlan info from fib lookup to update the frame vlan.
+            // Till then assume we redirect to backends outside of any VLAN.
+            l2ctx.vlan_update(ctx, 0)?;
 
             let action = redirect_txport(ctx, &feat, entry.ifindex);
 
@@ -1024,6 +1041,11 @@ fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: &Ipv4Hdr) -> Result<
         let action = unsafe {
             let eth = ptr_at::<EthHdr>(&ctx, 0)?;
             fib_param.fill_ethdr_macs(eth.cast_mut());
+
+            // TODO: use the vlan info from fib lookup to update the frame vlan.
+            // Till then assume we redirect to backends outside of any VLAN.
+            l2ctx.vlan_update(ctx, 0)?;
+
             redirect_txport(ctx, &feat, fib_param.ifindex)
         };
 
@@ -1059,6 +1081,10 @@ fn redirect_ipv4(ctx: &XdpContext, feat: Features, ipv4hdr: &Ipv4Hdr) -> Result<
         // let it pass to the stack to handle it
         info!(ctx, "[redirect] packet not fwd, fib rc: {}", rc);
     }
+
+    // TODO: use the vlan info from fib lookup to update the frame vlan.
+    // Till then assume we redirect to backends outside of any VLAN.
+    l2ctx.vlan_update(ctx, 0)?;
 
     stats_inc(stats::XDP_PASS);
     Ok(xdp_action::XDP_PASS)
