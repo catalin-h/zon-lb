@@ -268,10 +268,8 @@ impl L2Context {
         self.ethlen - mem::size_of::<EtherType>() - mem::size_of::<u32>()
     }
 
-    fn vlan_push(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<(), ()> {
+    fn vlan_push(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<i64, ()> {
         let rc = unsafe { bpf_xdp_adjust_head(ctx.ctx, -4) };
-        info!(ctx, "[vlan] push hdr, rc: {}", rc);
-
         let hdr = ptr_at::<[u32; 4]>(&ctx, 0)?.cast_mut();
         let hdr = unsafe { &mut *hdr };
 
@@ -283,17 +281,19 @@ impl L2Context {
         self.ethlen += mem::size_of::<u32>();
         self.vlanhdr = vlanhdr;
 
-        Ok(())
+        Ok(rc)
     }
 
-    fn vlan_change(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<(), ()> {
+    fn vlan_change(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<i64, ()> {
         let vhdr = ptr_at::<u32>(&ctx, self.vlan_offset())?.cast_mut();
+
         unsafe { *vhdr = vlanhdr };
         self.vlanhdr = vlanhdr;
-        Ok(())
+
+        Ok(0)
     }
 
-    fn vlan_pop(&mut self, ctx: &XdpContext) -> Result<(), ()> {
+    fn vlan_pop(&mut self, ctx: &XdpContext) -> Result<i64, ()> {
         let hdr = ptr_at::<[u32; 4]>(&ctx, 0)?.cast_mut();
         let hdr = unsafe { &mut *hdr };
 
@@ -302,13 +302,13 @@ impl L2Context {
         hdr[1] = hdr[0];
 
         let rc = unsafe { bpf_xdp_adjust_head(ctx.ctx, 4 as i32) };
-        info!(ctx, "[vlan] pop hdr, rc: {}", rc);
 
         self.ethlen -= mem::size_of::<u32>();
         self.vlanhdr = 0;
 
-        Ok(())
+        Ok(rc)
     }
+
     /// Updates vlan header as follows:
     /// ---------------------------------
     /// l2ctx vlan | target vlan | action
@@ -319,18 +319,29 @@ impl L2Context {
     ///         no |         yes |   push
     /// ---------------------------------
     /// NOTE: no support for vlan on 802.ad
-    fn vlan_update(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<(), ()> {
-        info!(ctx, "[vlan] update to vlanhdr {:x}", vlanhdr.to_be());
-        if is_8021q_hdr(vlanhdr) {
+    fn vlan_update(&mut self, ctx: &XdpContext, vlanhdr: u32, feat: &Features) -> Result<(), ()> {
+        let rc = if is_8021q_hdr(vlanhdr) {
             if self.has_vlan() {
-                return self.vlan_change(ctx, vlanhdr);
+                self.vlan_change(ctx, vlanhdr)
+            } else {
+                self.vlan_push(ctx, vlanhdr)
             }
+        } else {
+            if self.has_vlan() {
+                self.vlan_pop(&ctx)
+            } else {
+                return Ok(());
+            }
+        }?;
 
-            return self.vlan_push(ctx, vlanhdr);
-        }
-
-        if self.has_vlan() {
-            return self.vlan_pop(&ctx);
+        if feat.log_enabled(Level::Info) {
+            info!(
+                ctx,
+                "[vlan] update vlan 0x{:x} -> 0x{:x}, rc={}",
+                self.vlanhdr,
+                vlanhdr.to_be(),
+                rc
+            );
         }
 
         Ok(())
@@ -608,7 +619,6 @@ fn update_inet_csum(
 
 // TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
-    // TODO: support vlan tags
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv4hdr = unsafe { &mut *ipv4hdr.cast_mut() };
     let src_addr = ipv4hdr.src_addr;
@@ -708,7 +718,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             // NOTE: After this call all references derived from ctx must be recreated
             // since this method can change the packet limits.
             // This function is a no-op if no VLAN translation is needed.
-            l2ctx.vlan_update(ctx, nat.vlan_hdr)?;
+            l2ctx.vlan_update(ctx, nat.vlan_hdr, &feat)?;
 
             let ret = redirect_txport(ctx, &feat, nat.ifindex);
 
@@ -977,7 +987,7 @@ fn redirect_ipv4(
 
             // TODO: use the vlan info from fib lookup to update the frame vlan.
             // Till then assume we redirect to backends outside of any VLAN.
-            l2ctx.vlan_update(ctx, 0)?;
+            l2ctx.vlan_update(ctx, 0, &feat)?;
 
             let action = redirect_txport(ctx, &feat, entry.ifindex);
 
@@ -1044,7 +1054,7 @@ fn redirect_ipv4(
 
             // TODO: use the vlan info from fib lookup to update the frame vlan.
             // Till then assume we redirect to backends outside of any VLAN.
-            l2ctx.vlan_update(ctx, 0)?;
+            l2ctx.vlan_update(ctx, 0, &feat)?;
 
             redirect_txport(ctx, &feat, fib_param.ifindex)
         };
@@ -1084,7 +1094,7 @@ fn redirect_ipv4(
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
     // Till then assume we redirect to backends outside of any VLAN.
-    l2ctx.vlan_update(ctx, 0)?;
+    l2ctx.vlan_update(ctx, 0, &feat)?;
 
     stats_inc(stats::XDP_PASS);
     Ok(xdp_action::XDP_PASS)
