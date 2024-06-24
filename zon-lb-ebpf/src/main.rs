@@ -352,6 +352,13 @@ fn is_unicast_mac(mac: &[u8; 6]) -> bool {
     *mac != [0_u8; 6] && (mac[0] & 0x1) == 0_u8
 }
 
+// BUG: bpf_linker: can't pass the Features ref as arg as the linker will throw the
+// `LLVM issued diagnostic with error severity` error if it used in the match statement:
+// match rc {
+//    Ok(()) => if feat.log_enabled(Level::info) { info!(ctx, "ok") },
+//    Err(e) => if feat.log_enabled(Level::error) { error!(ctx, "error") },
+// }
+// BUG: the same bpf_linker is thrown when using a  bool param and pass a local bool arg
 fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u32, mac: &[u8; 6], eth: &EthHdr) {
     if !is_unicast_mac(mac) {
         return;
@@ -370,30 +377,44 @@ fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u32, mac: &[u8; 6], eth:
     // Set the expiry to 2 min but it can be used as last resort
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
     let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + 120;
-    match unsafe {
-        ZLB_ARP.insert(
-            &ip,
-            &ArpEntry {
-                ifindex,
-                mac: *mac,
-                if_mac,
-                expiry,
-                vlan_id,
-            },
-            0,
-        )
-    } {
-        Err(e) => error!(ctx, "[arp] insert entry for {:i}, {}", ip.to_be(), e),
-        Ok(_) => info!(
+    let arpentry = ArpEntry {
+        ifindex,
+        mac: *mac,
+        if_mac,
+        expiry,
+        vlan_id,
+    };
+    let rc = unsafe { ZLB_ARP.insert(&ip, &arpentry, 0) };
+
+    // BUG: the aya compiler generates code that inflates the stack above 512 bytes
+    // when using a moved array like mac or if_mac. Just use the values from arpentry.
+    // This happens only when writing:
+    // match rc {
+    //    Ok(()) => if feat.log_enabled(Level::info) { info!(ctx, "{:mac}", *mac) },
+    //    Err(e) => if feat.log_enabled(Level::error) { error!(ctx, "error") },
+    // }
+
+    let feat = Features::new();
+    if !feat.log_enabled(Level::Info) {
+        return;
+    }
+
+    match rc {
+        Ok(()) => info!(
             ctx,
             "[arp] add {:i} => {:mac}/vlan={} if:{}/{:mac}",
             ip.to_be(),
-            *mac,
+            arpentry.mac,
             (vlan_id as u16).to_be(),
             ifindex,
-            if_mac
+            arpentry.if_mac
         ),
-    };
+        Err(e) => {
+            if feat.log_enabled(Level::Error) {
+                info!(ctx, "[arp] can't add entry for {:i}, err={}", ip.to_be(), e);
+            }
+        }
+    }
 }
 
 fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
@@ -403,25 +424,29 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let eth = unsafe { &mut *eth.cast_mut() };
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
     let vlan_id = l2ctx.vlan_id();
+    let feat = Features::new();
+    let log_on = feat.log_enabled(Level::Info);
 
-    info!(
-        ctx,
-        "[eth] if:{} vlan_id:{} {:mac} -> {:mac}",
-        ifindex,
-        (vlan_id as u16).to_be(),
-        eth.src_addr,
-        eth.dst_addr,
-    );
+    if log_on {
+        info!(
+            ctx,
+            "[eth] if:{} vlan_id:{} {:mac} -> {:mac}",
+            ifindex,
+            (vlan_id as u16).to_be(),
+            eth.src_addr,
+            eth.dst_addr,
+        );
 
-    info!(
-        ctx,
-        "[arp] oper:{} sha={:mac} spa:{:i} tha={:mac} tpa:{:i}",
-        arphdr.oper.to_be(),
-        arphdr.sha,
-        arphdr.spa.to_be(),
-        arphdr.tha,
-        arphdr.tpa.to_be()
-    );
+        info!(
+            ctx,
+            "[arp] oper:{} sha={:mac} spa:{:i} tha={:mac} tpa:{:i}",
+            arphdr.oper.to_be(),
+            arphdr.sha,
+            arphdr.spa.to_be(),
+            arphdr.tha,
+            arphdr.tpa.to_be()
+        );
+    }
 
     update_arp_table(ctx, arphdr.spa, vlan_id, &arphdr.sha, eth);
     update_arp_table(ctx, arphdr.tpa, vlan_id, &arphdr.tha, eth);
@@ -435,7 +460,9 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         || !is_unicast_mac(&eth.src_addr)
         || !is_unicast_mac(&arphdr.sha)
     {
-        info!(ctx, "[arp] no vlan for tpa: {:i}", arphdr.tpa.to_be());
+        if log_on {
+            info!(ctx, "[arp] no vlan for tpa: {:i}", arphdr.tpa.to_be());
+        }
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -444,7 +471,9 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let tpa = arphdr.tpa;
     let smac = match unsafe { ZLB_ARP.get(&tpa) } {
         None => {
-            info!(ctx, "[arp] no entry for tpa: {:i}", tpa);
+            if log_on {
+                info!(ctx, "[arp] no entry for tpa: {:i}", tpa);
+            }
             return Ok(xdp_action::XDP_PASS);
         }
         Some(entry) => {
@@ -457,16 +486,18 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                     entry.mac
                 }
             } else {
-                if entry.ifindex != ifindex {
-                    info!(
-                        ctx,
-                        "[arp] if diff: {}!={} for {:i}", ifindex, entry.ifindex, tpa
-                    );
-                } else {
-                    info!(
-                        ctx,
-                        "[arp] vlan id diff: {}!={}, for {:i}", vlan_id, entry.vlan_id, tpa
-                    );
+                if log_on {
+                    if entry.ifindex != ifindex {
+                        info!(
+                            ctx,
+                            "[arp] if diff: {}!={} for {:i}", ifindex, entry.ifindex, tpa
+                        );
+                    } else {
+                        info!(
+                            ctx,
+                            "[arp] vlan id diff: {}!={}, for {:i}", vlan_id, entry.vlan_id, tpa
+                        );
+                    }
                 }
                 return Ok(xdp_action::XDP_PASS);
             }
@@ -483,23 +514,25 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     arphdr.sha = smac;
     arphdr.oper = 2_u16.to_be();
 
-    info!(
-        ctx,
-        "[eth] [tx] if:{} vlan_id:{} {:mac} -> {:mac}",
-        ifindex,
-        (vlan_id as u16).to_be(),
-        eth.src_addr,
-        eth.dst_addr,
-    );
+    if log_on {
+        info!(
+            ctx,
+            "[eth] [tx] if:{} vlan_id:{} {:mac} -> {:mac}",
+            ifindex,
+            (vlan_id as u16).to_be(),
+            eth.src_addr,
+            eth.dst_addr,
+        );
 
-    info!(
-        ctx,
-        "[arp] reply sha={:mac} spa:{:i} -> tha={:mac} tpa:{:i}",
-        arphdr.sha,
-        arphdr.spa.to_be(),
-        arphdr.tha,
-        arphdr.tpa.to_be()
-    );
+        info!(
+            ctx,
+            "[arp] reply sha={:mac} spa:{:i} -> tha={:mac} tpa:{:i}",
+            arphdr.sha,
+            arphdr.spa.to_be(),
+            arphdr.tha,
+            arphdr.tpa.to_be()
+        );
+    }
 
     Ok(xdp_action::XDP_TX)
 }
