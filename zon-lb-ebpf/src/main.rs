@@ -568,7 +568,7 @@ fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
 
     match next_ether_type {
         EtherType::Ipv4 => ipv4_lb(&ctx, l2ctx),
-        EtherType::Ipv6 => ipv6_lb(&ctx, l2ctx.ethlen),
+        EtherType::Ipv6 => ipv6_lb(&ctx, l2ctx),
         EtherType::Arp => arp_snoop(&ctx, l2ctx),
         _ => Ok(xdp_action::XDP_PASS),
     }
