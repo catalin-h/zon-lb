@@ -33,7 +33,7 @@ type LHM6 = LruHashMap<NAT6Key, NAT6Value>;
 static mut ZLB_CONNTRACK6: LHM6 = LHM6::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
 type LHMARP6 = LruHashMap<[u32; 4usize], FibEntry>;
-/// ARP table for caching destination ip to smac/dmac and derived source ip.
+/// Fib used to cache the dest ipv6 to smac/dmac and derived source ip mapping.
 /// The derived source ip is the address used as source when redirecting the
 /// the packet.
 #[map]

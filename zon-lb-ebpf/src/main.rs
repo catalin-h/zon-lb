@@ -85,14 +85,14 @@ type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
 type HMFIB4 = HashMap<u32, FibEntry>;
-/// Fib cache for destination ip to smac/dmac and derived source ip.
+/// Fib used to cache the dest ipv4 to smac/dmac and derived source ip mapping.
 /// The derived source ip is the address used as source when redirecting the
 /// the packet.
 #[map]
 static mut ZLB_FIB4: HMFIB4 = HMFIB4::pinned(MAX_ARP_ENTRIES, 0);
 
 type LHMARP = LruHashMap<u32, ArpEntry>;
-/// The ARP table use to answer to VLAN ARP requests mostly.
+/// The ARP table is used to answer to VLAN ARP requests mostly.
 /// For non VLAN traffic the system can handle and update the
 /// FIB for LB interested IPs.
 #[map]
@@ -411,7 +411,7 @@ fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u32, mac: &[u8; 6], eth:
         ),
         Err(e) => {
             if feat.log_enabled(Level::Error) {
-                info!(ctx, "[arp] can't add entry for {:i}, err={}", ip.to_be(), e);
+                error!(ctx, "[arp] can't add entry for {:i}, err={}", ip.to_be(), e);
             }
         }
     }
