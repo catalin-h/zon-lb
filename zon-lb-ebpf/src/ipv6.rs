@@ -180,6 +180,34 @@ fn log_ipv6_packet(ctx: &XdpContext, feat: &Features, ipv6hdr: &Ipv6Hdr) {
     );
 }
 
+pub mod icmpv6 {
+    pub const ECHO_REQUEST: u8 = 128_u8;
+    pub const ECHO_REPLY: u8 = 129_u8;
+    pub const ND_SOLICIT: u8 = 135_u8;
+    pub const ND_ADVERT: u8 = 136_u8;
+}
+
+/// The neighbor discovery header for handling icmpv6 types:
+/// - 135 neighbor solicitation request (NDS)
+/// - 136 neighbor advertisement reply (NDA)
+#[repr(C)]
+pub struct Icmpv6NdHdr {
+    type_: u8,
+    code: u8,
+    check: u16,
+    /// Used only for NDA
+    flags: u32,
+    /// Both NDS and NDA set this field to the target IPv6 address
+    tgt_addr: Inet6U,
+    /// It is set to 1 for NDS and 2 for NDA
+    option_type: u8,
+    /// Set to 1 both NDS and NDA representing the number of 8 bytes
+    /// in this option including the option type and length.
+    len: u8,
+    /// On NDS it is set to the source mac address and on NDR to the
+    /// requested target mac address.
+    mac: [u8; 6],
+}
 pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
