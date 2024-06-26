@@ -1,5 +1,6 @@
 use crate::{
-    ptr_at, redirect_txport, stats_inc, BpfFibLookUp, Features, L2Context, L4Context, ZLB_BACKENDS,
+    is_unicast_mac, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, Features, L2Context,
+    L4Context, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -10,12 +11,16 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::{error, info, Level};
-use core::mem::{self};
+use core::mem;
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u32};
-use network_types::{eth::EthHdr, ip::Ipv6Hdr};
+use network_types::{
+    eth::EthHdr,
+    icmp::IcmpHdr,
+    ip::{IpProto, Ipv6Hdr},
+};
 use zon_lb_common::{
-    stats, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, NAT6Key, NAT6Value, EP6, MAX_ARP_ENTRIES,
-    MAX_CONNTRACKS, MAX_GROUPS,
+    stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, NAT6Key, NAT6Value, EP6,
+    MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_GROUPS,
 };
 
 /// Same as ZLB_LB4 but for IPv6 packets.
@@ -38,6 +43,14 @@ type LHMARP6 = LruHashMap<[u32; 4usize], FibEntry>;
 /// the packet.
 #[map]
 static mut ZLB_ARP6: LHMARP6 = LHMARP6::pinned(MAX_ARP_ENTRIES, 0);
+
+type NeighborEntry = ArpEntry;
+type LHMND = LruHashMap<[u32; 4usize], NeighborEntry>;
+/// The Neighbor table is used to answer to VLAN neighbor discovery requests
+/// mostly. For non VLAN traffic the system can handle and update the FIB
+/// for LB interested IPs.
+#[map]
+static mut ZLB_ND: LHMND = LHMND::pinned(MAX_ARP_ENTRIES, 0);
 
 #[inline(always)]
 fn inet6_hash32(addr: &[u32; 4usize]) -> u32 {
@@ -208,6 +221,129 @@ pub struct Icmpv6NdHdr {
     /// requested target mac address.
     mac: [u8; 6],
 }
+
+/// Update the neighbour entry for source IPv6 address
+/// BUG: the bpf_linker need this inline(always) in order to avoid link errors
+/// or to increase the stack size over 512.
+#[inline(always)]
+fn update_neighbors_cache(
+    ctx: &XdpContext,
+    ip: &[u32; 4usize],
+    vlan_id: u32,
+    mac: &[u8; 6],
+    eth: &EthHdr,
+) {
+    // NOTE: This won't work in promiscuous mode
+    let if_mac = if is_unicast_mac(&eth.dst_addr) {
+        eth.dst_addr
+    } else {
+        match unsafe { ZLB_ND.get(&ip) } {
+            None => [0_u8; 6],
+            Some(entry) => entry.if_mac,
+        }
+    };
+
+    // Set the expiry to 2 min but it can be used as last resort
+    let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + 120;
+    let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+    let ndentry = NeighborEntry {
+        ifindex,
+        mac: *mac,
+        if_mac,
+        expiry,
+        vlan_id,
+    };
+
+    // BUG: looks like using Result objects confuses the bpf_linker
+    // if it is used in a match statement after later.
+    let rc = match unsafe { ZLB_ND.insert(&ip, &ndentry, 0) } {
+        Ok(()) => 0,
+        Err(e) => e,
+    };
+
+    let feat = Features::new();
+    if !feat.log_enabled(Level::Info) {
+        return;
+    }
+
+    match rc {
+        0 => info!(
+            ctx,
+            "[nd] added if: {} {:i} => {:mac} ",
+            ifindex,
+            unsafe { Inet6U::from(ip).addr8 },
+            *mac,
+        ),
+        _ => {
+            if feat.log_enabled(Level::Error) {
+                error!(
+                    ctx,
+                    "[nd] not added if:{} {:i} => {:mac}, err={}",
+                    ifindex,
+                    unsafe { Inet6U::from(ip).addr8 },
+                    *mac,
+                    rc
+                )
+            }
+        }
+    }
+}
+
+fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Result<u32, ()> {
+    let eth = ptr_at::<EthHdr>(&ctx, 0)?;
+    let eth = unsafe { &mut *eth.cast_mut() };
+    let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
+    let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
+    let ndhdr = ptr_at::<Icmpv6NdHdr>(&ctx, l4ctx.offset)?;
+    let ndhdr = unsafe { &mut *ndhdr.cast_mut() };
+    let feat = Features::new();
+
+    if !is_unicast_mac(&ndhdr.mac) || ndhdr.option_type == 0 || ndhdr.option_type > 2 {
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    if feat.log_enabled(Level::Info) {
+        let opt = if ndhdr.option_type == 1 {
+            "sol-req"
+        } else {
+            "adver-reply"
+        };
+        info!(
+            ctx,
+            "[nd] {} src {:i}/{:mac}/vlan={} for {:i}",
+            opt,
+            unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
+            eth.src_addr,
+            l2ctx.vlan_id(),
+            unsafe { ndhdr.tgt_addr.addr8 }
+        );
+    }
+
+    // If this is a ND advertisement
+    if ndhdr.option_type == 2 {
+        update_neighbors_cache(
+            ctx,
+            unsafe { &ndhdr.tgt_addr.addr32 },
+            l2ctx.vlan_id(),
+            &ndhdr.mac,
+            eth,
+        );
+
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    // If this is a ND request
+    update_neighbors_cache(
+        ctx,
+        unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 },
+        l2ctx.vlan_id(),
+        &ndhdr.mac,
+        eth,
+    );
+
+    Ok(xdp_action::XDP_PASS)
+}
+
 pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
@@ -223,6 +359,16 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // Security Payload. I makes sense to make make 6 calls until reaching a
     // next header we can handle.
     let l4ctx = L4Context::new_with_offset(ctx, Ipv6Hdr::LEN + l2ctx.ethlen, ipv6hdr.next_hdr)?;
+
+    if ipv6hdr.next_hdr == IpProto::Ipv6Icmp {
+        let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
+        let icmp_type = unsafe { (*icmphdr).type_ };
+        match icmp_type {
+            icmpv6::ND_ADVERT | icmpv6::ND_SOLICIT => return neighbor_solicit(ctx, l2ctx, l4ctx),
+            icmpv6::ECHO_REPLY | icmpv6::ECHO_REQUEST => { /* Handle bellow */ }
+            _ => return Ok(xdp_action::XDP_PASS),
+        }
+    }
 
     let feat = Features::new();
     log_ipv6_packet(ctx, &feat, ipv6hdr);
