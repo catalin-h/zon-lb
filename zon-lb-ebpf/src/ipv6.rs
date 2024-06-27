@@ -200,6 +200,31 @@ pub mod icmpv6 {
     pub const ND_ADVERT: u8 = 136_u8;
 }
 
+/// The source/target link-layer address option
+/// 0                   1                   2                   3
+//  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |     Type      |    Length     |    Link-Layer Address ...
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Icmpv6LLAddrOption {
+    /// It is set to 1 for NDS and 2 for NDA
+    otype: u8,
+    /// Set to 1 both NDS and NDA representing the number of 8 bytes
+    /// in this option including the option type and length.
+    len: u8,
+    /// On NDS it is set to the source mac address and on NDR to the
+    /// requested target mac address.
+    mac: [u8; 6],
+}
+
+impl Icmpv6LLAddrOption {
+    fn as_array(&self) -> &[u32; 2] {
+        unsafe { &*(self as *const Icmpv6LLAddrOption as *const [u32; 2]) }
+    }
+}
+
 /// The neighbor discovery header for handling icmpv6 types:
 /// - 135 neighbor solicitation request (NDS)
 /// - 136 neighbor advertisement reply (NDA)
