@@ -228,8 +228,8 @@ impl Icmpv6LLAddrOption {
 /// The neighbor discovery header for handling icmpv6 types:
 /// - 135 neighbor solicitation request (NDS)
 /// - 136 neighbor advertisement reply (NDA)
-#[repr(C)]
-pub struct Icmpv6NdHdr {
+#[repr(C, packed(4))]
+struct Icmpv6NdHdr {
     type_: u8,
     code: u8,
     check: u16,
@@ -237,14 +237,8 @@ pub struct Icmpv6NdHdr {
     flags: u32,
     /// Both NDS and NDA set this field to the target IPv6 address
     tgt_addr: Inet6U,
-    /// It is set to 1 for NDS and 2 for NDA
-    option_type: u8,
-    /// Set to 1 both NDS and NDA representing the number of 8 bytes
-    /// in this option including the option type and length.
-    len: u8,
-    /// On NDS it is set to the source mac address and on NDR to the
-    /// requested target mac address.
-    mac: [u8; 6],
+    /// The source/target link-layer address option
+    lladopt: Icmpv6LLAddrOption,
 }
 
 /// Update the neighbour entry for source IPv6 address
@@ -322,13 +316,16 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
     let ndhdr = ptr_at::<Icmpv6NdHdr>(&ctx, l4ctx.offset)?;
     let ndhdr = unsafe { &mut *ndhdr.cast_mut() };
     let feat = Features::new();
+    let log_on = feat.log_enabled(Level::Info);
+    let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+    let llao = ndhdr.lladopt;
 
-    if !is_unicast_mac(&ndhdr.mac) || ndhdr.option_type == 0 || ndhdr.option_type > 2 {
+    if !is_unicast_mac(&llao.mac) || llao.otype == 0 || llao.otype > 2 {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    if feat.log_enabled(Level::Info) {
-        let opt = if ndhdr.option_type == 1 {
+    if log_on {
+        let opt = if llao.otype == 1 {
             "sol-req"
         } else {
             "adver-reply"
@@ -345,29 +342,165 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
         );
     }
 
+    // If this is a ND solicitation request
+    update_neighbors_cache(
+        ctx,
+        unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 },
+        l2ctx.vlan_id(),
+        &llao.mac,
+        eth,
+    );
+
     // If this is a ND advertisement
-    if ndhdr.option_type == 2 {
+    if llao.otype == 2 {
+        // TODO: fix bpf_linker error
+        // update_neighbors_cache(
+        //     ctx,
+        //     unsafe { &ndhdr.tgt_addr.addr32 },
+        //     l2ctx.vlan_id(),
+        //     &llao.mac,
+        //     eth,
+        // );
+
         update_neighbors_cache(
             ctx,
-            unsafe { &ndhdr.tgt_addr.addr32 },
+            unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 },
             l2ctx.vlan_id(),
-            &ndhdr.mac,
+            &eth.dst_addr,
             eth,
         );
 
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // If this is a ND request
-    update_neighbors_cache(
-        ctx,
+    // For VLANs answer to requests as this LB can act as a proxy for
+    // the endpoints inside VLANs. Without special routing rules the
+    // Icmpv6 ND requests are not ignored as they pertain to a different
+    // network segment.
+
+    if !l2ctx.has_vlan() || !is_unicast_mac(&eth.src_addr) {
+        if log_on {
+            info!(ctx, "[nd] no vlan for [{:i}]", unsafe {
+                ndhdr.tgt_addr.addr8
+            });
+        }
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    let smac = match unsafe { ZLB_ND.get(&ndhdr.tgt_addr.addr32) } {
+        None => {
+            if log_on {
+                info!(ctx, "[nd] no entry for [{:i}]", unsafe {
+                    ndhdr.tgt_addr.addr8
+                });
+            }
+            return Ok(xdp_action::XDP_PASS);
+        }
+        Some(entry) => {
+            // NOTE: most likely the entry.vlan_id would be 0 since it shouldn't be
+            // assigned in no VLAN
+            if entry.ifindex == ifindex && (l2ctx.vlan_id() == entry.vlan_id || entry.vlan_id == 0)
+            {
+                if is_unicast_mac(&entry.if_mac) {
+                    entry.if_mac
+                } else {
+                    entry.mac
+                }
+            } else {
+                if log_on {
+                    if entry.ifindex != ifindex {
+                        info!(
+                            ctx,
+                            "[nd] if diff: {}!={} for [{:i}]",
+                            ifindex,
+                            entry.ifindex,
+                            unsafe { ndhdr.tgt_addr.addr8 }
+                        );
+                    } else {
+                        info!(
+                            ctx,
+                            "[arp] vlan id diff: {}!={}, for [{:i}]",
+                            l2ctx.vlan_id(),
+                            entry.vlan_id,
+                            unsafe { ndhdr.tgt_addr.addr8 }
+                        );
+                    }
+                }
+                return Ok(xdp_action::XDP_PASS);
+            }
+        }
+    };
+
+    // NOTE: destination is always the B-CAST address
+    // BUG: due to aligment constraints can't copy the llao.mac array directly
+    for i in 0..6 {
+        eth.dst_addr[i] = llao.mac[i];
+    }
+    eth.src_addr = smac;
+
+    // Compute the IcmpV6 checksum first and update the header
+    let mut check = !ndhdr.check as u32;
+
+    check = csum_update_u32(icmpv6::ND_SOLICIT as u32, icmpv6::ND_ADVERT as u32, check);
+    ndhdr.type_ = icmpv6::ND_ADVERT;
+
+    // For solicited nd advertisement must set the flags:
+    // * Override: to override an existing cache entry)
+    // * Solicited: to denote that this is a response to a neighbor solicitation
+    // TODO: don't set it for multicast source addresses
+    // * TBD: Router: indicates this is a router
+    // See: https://datatracker.ietf.org/doc/html/rfc4861#section-4.4
+    //  0                   1                   2                   3
+    //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    // |R|S|O|                     Reserved                            |
+    let flags = 0x60_00_00_00_u32.to_be();
+    check = csum_update_u32(ndhdr.flags, flags, check);
+    ndhdr.flags = flags;
+
+    // Update the option for mark this is the target link-layer address
+    ndhdr.lladopt.otype = 2;
+    ndhdr.lladopt.len = 1;
+    ndhdr.lladopt.mac = smac;
+
+    let from = llao.as_array();
+    let to = ndhdr.lladopt.as_array();
+    check = csum_update_u32(from[0], to[0], check);
+    check = csum_update_u32(from[1], to[1], check);
+
+    check = compute_checksum(
+        check,
+        unsafe { &mut ipv6hdr.dst_addr.in6_u.u6_addr32 },
         unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 },
-        l2ctx.vlan_id(),
-        &ndhdr.mac,
-        eth,
     );
 
-    Ok(xdp_action::XDP_PASS)
+    check = compute_checksum(
+        check,
+        unsafe { &mut ipv6hdr.src_addr.in6_u.u6_addr32 },
+        unsafe { &ndhdr.tgt_addr.addr32 },
+    );
+
+    ndhdr.check = !csum_fold_32_to_16(check);
+
+    if log_on {
+        info!(
+            ctx,
+            "[eth] [tx] if:{} vlan_id:{} {:mac} -> {:mac}",
+            ifindex,
+            (l2ctx.vlan_id() as u16).to_be(),
+            eth.src_addr,
+            eth.dst_addr,
+        );
+
+        info!(
+            ctx,
+            "[nd] [tx] advert-reply [{:i}] -> {:mac} to [{:i}]",
+            unsafe { ndhdr.tgt_addr.addr8 },
+            smac,
+            unsafe { ipv6hdr.dst_addr.in6_u.u6_addr8 }
+        );
+    }
+
+    Ok(xdp_action::XDP_TX)
 }
 
 pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
