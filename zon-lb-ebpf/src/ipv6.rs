@@ -269,7 +269,7 @@ fn update_neighbors_cache(
     match rc {
         0 => info!(
             ctx,
-            "[nd] added if: {} {:i} => {:mac} ",
+            "[nd] added if: {} [{:i}] => {:mac} ",
             ifindex,
             unsafe { Inet6U::from(ip).addr8 },
             *mac,
@@ -278,7 +278,7 @@ fn update_neighbors_cache(
             if feat.log_enabled(Level::Error) {
                 error!(
                     ctx,
-                    "[nd] not added if:{} {:i} => {:mac}, err={}",
+                    "[nd] not added if:{} [{:i}] => {:mac}, err={}",
                     ifindex,
                     unsafe { Inet6U::from(ip).addr8 },
                     *mac,
@@ -310,11 +310,12 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
         };
         info!(
             ctx,
-            "[nd] {} src {:i}/{:mac}/vlan={} for {:i}",
+            "[nd] {} if:{} src:[{:i}]/{:mac}/vlan={} for target [{:i}]",
             opt,
+            ifindex,
             unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
             eth.src_addr,
-            l2ctx.vlan_id(),
+            (l2ctx.vlan_id() as u16).to_be(),
             unsafe { ndhdr.tgt_addr.addr8 }
         );
     }
