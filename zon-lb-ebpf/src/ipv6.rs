@@ -360,7 +360,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // next header we can handle.
     let l4ctx = L4Context::new_with_offset(ctx, Ipv6Hdr::LEN + l2ctx.ethlen, ipv6hdr.next_hdr)?;
 
-    if ipv6hdr.next_hdr == IpProto::Ipv6Icmp {
+    let icmp_type = if ipv6hdr.next_hdr == IpProto::Ipv6Icmp {
         let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
         let icmp_type = unsafe { (*icmphdr).type_ };
         match icmp_type {
@@ -368,7 +368,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             icmpv6::ECHO_REPLY | icmpv6::ECHO_REQUEST => { /* Handle bellow */ }
             _ => return Ok(xdp_action::XDP_PASS),
         }
-    }
+        icmp_type
+    } else {
+        0_u8
+    };
 
     let feat = Features::new();
     log_ipv6_packet(ctx, &feat, ipv6hdr);
@@ -449,6 +452,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     // === request ===
+
+    // Don't track echo replies as there can be a response from the actual source.
+    // To avoid messing with the packet routing allow tracking only ICMP requests.
+    if ipv6hdr.next_hdr == IpProto::Ipv6Icmp && icmp_type == icmpv6::ECHO_REPLY {
+        return Ok(xdp_action::XDP_PASS);
+    }
 
     let group = match unsafe {
         ZLB_LB6.get(&EP6 {

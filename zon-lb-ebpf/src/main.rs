@@ -775,6 +775,17 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(action);
     }
 
+    // === request ===
+
+    // Don't track echo replies as there can be a response from the actual source.
+    // To avoid messing with the packet routing allow tracking only ICMP requests.
+    if ipv4hdr.proto == IpProto::Icmp {
+        let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
+        if unsafe { (*icmphdr).type_ } == 0 {
+            return Ok(xdp_action::XDP_PASS);
+        }
+    }
+
     let ep4 = EP4 {
         address: dst_addr,
         port: (l4ctx.dst_port as u16),
