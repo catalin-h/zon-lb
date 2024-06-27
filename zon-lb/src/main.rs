@@ -334,9 +334,8 @@ pub(crate) const PROG_NAME: &str = "zon_lb";
 pub(crate) const BPFFS: &str = "/sys/fs/bpf/";
 
 pub(crate) fn bpf_instance() -> Result<aya::Ebpf, anyhow::Error> {
-    let mut bpf = EbpfLoader::new()
-        .load(ZONLB)
-        .context("Failed to load the maps and program blob")?;
+    let mut bpf = EbpfLoader::new().load(ZONLB)?;
+    //.with_context(|| "Failed to load the maps and program blob")?;
 
     // NOTE: initialize the log here in order to catch the verifier errors
     if let Err(e) = EbpfLogger::init(&mut bpf) {
