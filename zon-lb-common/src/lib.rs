@@ -409,6 +409,13 @@ pub struct NAT6Value {
     /// from the request frame.
     /// See `EPFlags::XDP_REDIRECT`.
     pub mac_addresses: [u32; 3],
+    /// The VLAN 802.1q header that needs to be inserted on reply frame.
+    /// NOTE: this is separate from the mac combo because this header needs
+    /// to be inserted between the src mac and the actual ethernet type:
+    /// ---------------------------------------------
+    ///  dst | src | [[802.ad |] 802.1q] | ether type | IP hdr
+    /// --------------------------------------------
+    pub vlan_hdr: u32,
     /// Flags that control the way to forward the packet,
     /// for e.g. pass to net stack to redirect it to
     /// another interface.
