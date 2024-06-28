@@ -588,8 +588,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             unsafe { *macs = nat.mac_addresses };
 
-            let mut l2ctx = l2ctx;
-
             // NOTE: After this call all references derived from ctx must be recreated
             // since this method can change the packet limits.
             // This function is a no-op if no VLAN translation is needed.
@@ -611,7 +609,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         };
 
         if feat.log_enabled(Level::Info) {
-            info!(ctx, "[out] action: {}", action);
+            info!(ctx, "[out] action: {} vlan: {:x}", action, l2ctx.vlanhdr);
         }
 
         return Ok(action);
@@ -775,9 +773,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 if feat.log_enabled(Level::Info) {
                     info!(
                         ctx,
-                        "[ctrk] [{:i}]:{} added",
+                        "[ctrk] [{:i}]:{} added vlanhdr: {:x}",
                         unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
                         (l4ctx.src_port as u16).to_be(),
+                        l2ctx.vlanhdr
                     )
                 }
             }
@@ -826,14 +825,14 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    return redirect_ipv6(ctx, feat, ipv6hdr, l2ctx);
+    return redirect_ipv6(ctx, feat, ipv6hdr, &l2ctx);
 }
 
 fn redirect_ipv6(
     ctx: &XdpContext,
     feat: Features,
     ipv6hdr: &Ipv6Hdr,
-    mut l2ctx: L2Context,
+    l2ctx: &L2Context,
 ) -> Result<u32, ()> {
     if let Some(&entry) = unsafe { ZLB_ARP6.get(&ipv6hdr.dst_addr.in6_u.u6_addr32) } {
         // NOTE: check expiry before using this entry

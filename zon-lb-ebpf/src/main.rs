@@ -268,7 +268,7 @@ impl L2Context {
         self.ethlen - mem::size_of::<EtherType>() - mem::size_of::<u32>()
     }
 
-    fn vlan_push(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<i64, ()> {
+    fn vlan_push(&self, ctx: &XdpContext, vlanhdr: u32) -> Result<i64, ()> {
         let rc = unsafe { bpf_xdp_adjust_head(ctx.ctx, -4) };
         let hdr = ptr_at::<[u32; 4]>(&ctx, 0)?.cast_mut();
         let hdr = unsafe { &mut *hdr };
@@ -278,22 +278,18 @@ impl L2Context {
         hdr[2] = hdr[3];
         hdr[3] = vlanhdr;
 
-        self.ethlen += mem::size_of::<u32>();
-        self.vlanhdr = vlanhdr;
-
         Ok(rc)
     }
 
-    fn vlan_change(&mut self, ctx: &XdpContext, vlanhdr: u32) -> Result<i64, ()> {
+    fn vlan_change(&self, ctx: &XdpContext, vlanhdr: u32) -> Result<i64, ()> {
         let vhdr = ptr_at::<u32>(&ctx, self.vlan_offset())?.cast_mut();
 
         unsafe { *vhdr = vlanhdr };
-        self.vlanhdr = vlanhdr;
 
         Ok(0)
     }
 
-    fn vlan_pop(&mut self, ctx: &XdpContext) -> Result<i64, ()> {
+    fn vlan_pop(&self, ctx: &XdpContext) -> Result<i64, ()> {
         let hdr = ptr_at::<[u32; 4]>(&ctx, 0)?.cast_mut();
         let hdr = unsafe { &mut *hdr };
 
@@ -302,9 +298,6 @@ impl L2Context {
         hdr[1] = hdr[0];
 
         let rc = unsafe { bpf_xdp_adjust_head(ctx.ctx, 4 as i32) };
-
-        self.ethlen -= mem::size_of::<u32>();
-        self.vlanhdr = 0;
 
         Ok(rc)
     }
@@ -319,7 +312,7 @@ impl L2Context {
     ///         no |         yes |   push
     /// ---------------------------------
     /// NOTE: no support for vlan on 802.ad
-    fn vlan_update(&mut self, ctx: &XdpContext, vlanhdr: u32, feat: &Features) -> Result<(), ()> {
+    fn vlan_update(&self, ctx: &XdpContext, vlanhdr: u32, feat: &Features) -> Result<(), ()> {
         let rc = if is_8021q_hdr(vlanhdr) {
             if self.has_vlan() {
                 self.vlan_change(ctx, vlanhdr)
@@ -338,7 +331,7 @@ impl L2Context {
             info!(
                 ctx,
                 "[vlan] update vlan 0x{:x} -> 0x{:x}, rc={}",
-                self.vlanhdr,
+                self.vlanhdr.to_be(),
                 vlanhdr.to_be(),
                 rc
             );
@@ -746,8 +739,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             unsafe { *macs = nat.mac_addresses };
 
-            let mut l2ctx = l2ctx;
-
             // NOTE: After this call all references derived from ctx must be recreated
             // since this method can change the packet limits.
             // This function is a no-op if no VLAN translation is needed.
@@ -981,7 +972,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
     // ifindex used to redirect the packet.
 
-    return redirect_ipv4(ctx, feat, ipv4hdr, l2ctx);
+    return redirect_ipv4(ctx, feat, ipv4hdr, &l2ctx);
 }
 
 fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_action::Type {
@@ -1009,7 +1000,7 @@ fn redirect_ipv4(
     ctx: &XdpContext,
     feat: Features,
     ipv4hdr: &Ipv4Hdr,
-    mut l2ctx: L2Context,
+    l2ctx: &L2Context,
 ) -> Result<u32, ()> {
     if let Some(&entry) = unsafe { ZLB_FIB4.get(&ipv4hdr.dst_addr) } {
         // NOTE: check expiry before using this entry
