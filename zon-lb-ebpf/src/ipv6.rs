@@ -825,48 +825,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    return redirect_ipv6(ctx, feat, ipv6hdr, &l2ctx);
+    return redirect_ipv6(ctx, &feat, ipv6hdr, &l2ctx);
 }
 
-fn redirect_ipv6(
-    ctx: &XdpContext,
-    feat: Features,
-    ipv6hdr: &Ipv6Hdr,
-    l2ctx: &L2Context,
-) -> Result<u32, ()> {
-    if let Some(&entry) = unsafe { ZLB_ARP6.get(&ipv6hdr.dst_addr.in6_u.u6_addr32) } {
-        // NOTE: check expiry before using this entry
-        let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
-
-        if now - entry.expiry < 600 {
-            let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
-
-            // NOTE: look like aya can't convert the '*eth = entry.macs' into
-            // a 3 load instructions block that doesn't panic the bpf verifier
-            // with 'invalid access to packet'. The same statement when modifying
-            // stack data passes the verifier check.
-            unsafe {
-                (*eth)[0] = entry.macs[0];
-                (*eth)[1] = entry.macs[1];
-                (*eth)[2] = entry.macs[2];
-            };
-
-            // TODO: use the vlan info from fib lookup to update the frame vlan.
-            // Till then assume we redirect to backends outside of any VLAN.
-            l2ctx.vlan_update(ctx, 0, &feat)?;
-
-            let action = redirect_txport(ctx, &feat, entry.ifindex);
-
-            if feat.log_enabled(Level::Info) {
-                info!(
-                    ctx,
-                    "[redirect] [arp-cache] oif: {} action => {}", entry.ifindex, action
-                );
-            }
-
-            return Ok(action);
-        }
-    }
+fn fib_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) -> Result<u32, ()> {
+    // Must re-check the ip header here because the packet might
+    // be adjusted because the vlan header was stripped when first
+    // attempt to redirect with cache values.
+    let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
+    let ipv6hdr = unsafe { &*ipv6hdr };
 
     let fib_param = BpfFibLookUp::new_inet6(
         ipv6hdr.payload_len.to_be(),
@@ -952,7 +919,50 @@ fn redirect_ipv6(
     l2ctx.vlan_update(ctx, 0, &feat)?;
 
     stats_inc(stats::XDP_PASS);
+
     Ok(xdp_action::XDP_PASS)
+}
+
+fn redirect_ipv6(
+    ctx: &XdpContext,
+    feat: &Features,
+    ipv6hdr: &Ipv6Hdr,
+    l2ctx: &L2Context,
+) -> Result<u32, ()> {
+    if let Some(&entry) = unsafe { ZLB_ARP6.get(&ipv6hdr.dst_addr.in6_u.u6_addr32) } {
+        // NOTE: check expiry before using this entry
+        let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
+
+        if now - entry.expiry < 120 {
+            let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+
+            // NOTE: look like aya can't convert the '*eth = entry.macs' into
+            // a 3 load instructions block that doesn't panic the bpf verifier
+            // with 'invalid access to packet'. The same statement when modifying
+            // stack data passes the verifier check.
+            unsafe {
+                (*eth)[0] = entry.macs[0];
+                (*eth)[1] = entry.macs[1];
+                (*eth)[2] = entry.macs[2];
+            };
+
+            // TODO: use the vlan info from fib lookup to update the frame vlan.
+            // Till then assume we redirect to backends outside of any VLAN.
+            l2ctx.vlan_update(ctx, 0, &feat)?;
+
+            // In case of redirect failure just try to query the FIB again
+            if xdp_action::XDP_REDIRECT == redirect_txport(ctx, &feat, entry.ifindex) {
+                if feat.log_enabled(Level::Info) {
+                    info!(ctx, "[redirect] [nd-cache] oif: {}", entry.ifindex,);
+                }
+
+                return Ok(xdp_action::XDP_REDIRECT);
+            }
+        }
+    }
+
+    // NOTE: to avoid verifier stack overflow error just do a tail call
+    fib_lookup_redirect(ctx, l2ctx, feat)
 }
 
 fn update_arp6(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
