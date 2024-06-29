@@ -54,7 +54,7 @@ pub mod stats {
     pub const LB_ERROR_NO_BE: u32 = 11;
     pub const LB_ERROR_BAD_BE: u32 = 12;
     pub const CT_ERROR_UPDATE: u32 = 13;
-    pub const ARP_ERROR_UPDATE: u32 = 14;
+    pub const FIB_ERROR_UPDATE: u32 = 14;
 
     pub const MAX: u32 = 15;
 }

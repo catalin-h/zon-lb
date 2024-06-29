@@ -37,12 +37,12 @@ type LHM6 = LruHashMap<NAT6Key, NAT6Value>;
 #[map]
 static mut ZLB_CONNTRACK6: LHM6 = LHM6::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
-type LHMARP6 = LruHashMap<[u32; 4usize], FibEntry>;
+type LHMFIB6 = LruHashMap<[u32; 4usize], FibEntry>;
 /// Fib used to cache the dest ipv6 to smac/dmac and derived source ip mapping.
 /// The derived source ip is the address used as source when redirecting the
 /// the packet.
 #[map]
-static mut ZLB_ARP6: LHMARP6 = LHMARP6::pinned(MAX_ARP_ENTRIES, 0);
+static mut ZLB_FIB6: LHMFIB6 = LHMFIB6::pinned(MAX_ARP_ENTRIES, 0);
 
 type NeighborEntry = ArpEntry;
 type LHMND = LruHashMap<[u32; 4usize], NeighborEntry>;
@@ -419,7 +419,7 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
                     } else {
                         info!(
                             ctx,
-                            "[arp] vlan id diff: {}!={}, for [{:i}]",
+                            "[nd] vlan id diff: {}!={}, for [{:i}]",
                             l2ctx.vlan_id(),
                             entry.vlan_id,
                             unsafe { ndhdr.tgt_addr.addr8 }
@@ -689,7 +689,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // TBD: need to check BE.src_ip == 0 ?
     let lb_addr = if redirect && be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
-        // TODO: check the arp table and update or insert
+        // TODO: check the ND table and update or insert
         // smac/dmac and derived ip src and redirect ifindex
         &be.src_ip
     } else {
@@ -828,7 +828,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     return redirect_ipv6(ctx, &feat, ipv6hdr, &l2ctx);
 }
 
-fn fib_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) -> Result<u32, ()> {
+fn fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) -> Result<u32, ()> {
     // Must re-check the ip header here because the packet might
     // be adjusted because the vlan header was stripped when first
     // attempt to redirect with cache values.
@@ -885,7 +885,7 @@ fn fib_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) -> 
             info!(ctx, "[redirect] action => {}", action);
         }
 
-        update_arp6(ctx, &feat, fib_param);
+        update_fib6_cache(ctx, &feat, fib_param);
 
         return Ok(action);
     }
@@ -929,7 +929,7 @@ fn redirect_ipv6(
     ipv6hdr: &Ipv6Hdr,
     l2ctx: &L2Context,
 ) -> Result<u32, ()> {
-    if let Some(&entry) = unsafe { ZLB_ARP6.get(&ipv6hdr.dst_addr.in6_u.u6_addr32) } {
+    if let Some(&entry) = unsafe { ZLB_FIB6.get(&ipv6hdr.dst_addr.in6_u.u6_addr32) } {
         // NOTE: check expiry before using this entry
         let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
 
@@ -962,11 +962,11 @@ fn redirect_ipv6(
     }
 
     // NOTE: to avoid verifier stack overflow error just do a tail call
-    fib_lookup_redirect(ctx, l2ctx, feat)
+    fib6_lookup_redirect(ctx, l2ctx, feat)
 }
 
-fn update_arp6(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
-    let arp = FibEntry {
+fn update_fib6_cache(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
+    let fib6 = FibEntry {
         ifindex: fib_param.ifindex,
         macs: fib_param.ethdr_macs(),
         ip_src: fib_param.src, // not used for now
@@ -976,12 +976,12 @@ fn update_arp6(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
 
     // NOTE: after updating the value or key struct size must remove the pinned map
     // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
-    match unsafe { ZLB_ARP6.insert(&fib_param.dst, &arp, 0) } {
+    match unsafe { ZLB_FIB6.insert(&fib_param.dst, &fib6, 0) } {
         Ok(()) => {
             if feat.log_enabled(Level::Info) {
                 info!(
                     ctx,
-                    "[arp6] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
+                    "[fib6] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
                     unsafe { Inet6U::from(&fib_param.dst).addr8 },
                     fib_param.ifindex,
                     fib_param.src_mac(),
@@ -992,9 +992,9 @@ fn update_arp6(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
         }
         Err(e) => {
             if feat.log_enabled(Level::Error) {
-                error!(ctx, "[arp6] fail to insert entry, err:{}", e)
+                error!(ctx, "[fib6] fail to insert entry, err:{}", e)
             }
-            stats_inc(stats::ARP_ERROR_UPDATE);
+            stats_inc(stats::FIB_ERROR_UPDATE);
         }
     };
 }

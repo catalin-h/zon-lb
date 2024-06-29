@@ -1029,7 +1029,7 @@ fn redirect_ipv4(
             if feat.log_enabled(Level::Info) {
                 info!(
                     ctx,
-                    "[redirect] [arp-cache] oif: {} action => {}", entry.ifindex, action
+                    "[redirect] [fib-cache] oif: {} action => {}", entry.ifindex, action
                 );
             }
 
@@ -1163,7 +1163,7 @@ fn update_arp(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
             if feat.log_enabled(Level::Error) {
                 error!(ctx, "[arp] fail to insert entry, err:{}", e)
             }
-            stats_inc(stats::ARP_ERROR_UPDATE);
+            stats_inc(stats::FIB_ERROR_UPDATE);
         }
     };
 }
