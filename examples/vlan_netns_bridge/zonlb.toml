@@ -1,0 +1,63 @@
+[netif.veth0.1]
+ip = "2001:db8::0:1"
+proto = 6
+port = 23
+
+[backend.1_0]
+ip = "2001:db8::2:2"
+proto = 6
+port = 223
+options = ["tx", "redirect", "src_ip=2001:db8::2:1"]
+
+[netif.veth0.2]
+ip = "2001:db8::0:1"
+proto = 17
+port = 23
+options = []
+
+[backend.2_0]
+ip = "2001:db8::2:2"
+proto = 17
+port = 223
+options = ["tx", "redirect", "src_ip=2001:db8::2:1"]
+
+[netif.veth2.3]
+ip = "2001:db8::0:1"
+proto = 58
+
+[backend.3_0]
+ip = "2001:db8::2:2"
+proto = 58
+options = ["tx", "redirect", "src_ip=2001:db8::2:1"]
+
+[netif.veth0.4]
+ip = "10.0.0.1"
+proto = 6
+port = 23
+
+[backend.4_0]
+ip = "10.2.0.2"
+proto = 6
+port = 223
+options = ["tx", "redirect", "src_ip=10.2.0.1"]
+
+[netif.veth0.5]
+ip = "10.0.0.1"
+proto = 17
+port = 23
+
+[backend.5_0]
+ip = "10.2.0.2"
+proto = 17
+port = 223
+options = ["tx", "redirect", "src_ip=10.2.0.1"]
+
+[netif.veth2.6]
+ip = "10.0.0.1"
+proto = 1
+
+[backend.6_0]
+ip = "10.2.0.2"
+proto = 1
+options = ["tx", "redirect", "src_ip=10.2.0.1"]
+
