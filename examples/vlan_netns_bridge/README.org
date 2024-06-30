@@ -1,0 +1,148 @@
+#+TITLE: VLAN proxying and load balancing between two custom network namespace via veth pairs
+
+#+begin_src
+┌───────────────────┐              ┌──────────────────────┐              ┌────────────────────┐
+│zone2 netns        │              │    default netns     │              │         zone0 netns│
+|                   |              |                      |              |                    |
+│  server           │              │       rx/tx vlan off │  VLAN trunk  │            client  │
+│                 ┌─┴──────────────┴─┐    ARP/ICMPv6-ND ┌─┴──────────────┴─┐veth1.2/ip_c(*)   │
+│            veth3│<--xdp_redirect---│veth2   veth0/ip_a│<-----------------│veth1/ip_b        │
+│                 │----------------->│                  │---xdp_redirect-->│                  │
+│         xdp:pass└─┬──────────────┬─┘zon-lb      zon-lb└─┬──────────────┬─┘xdp:pass          │
+│tx-checksumminf:off│              │           VLAN proxy │              │tx-checksumming:off │
+└───────────────────┘              └──────────────────────┘              └────────────────────┘
+(*) The veth1.2 is a VLAN sub-interface that has a different subnet than ip_a or ip_b
+#+end_src
+
+The reason for implementing VLAN proxying for a load balancer is to allow clients from certain VLANs
+to access servers available in a shared non-VLAN restricted network without the need of a L3 router.
+
+The network design is minimal and its purpose is to demonstrate the VLAN proxy capability while also
+providing load balancing for different services.
+In order for VLAN proxying to work the zon-lb maintains a ARP (IPv4) and a Neighbor (IPv6) table
+and can answer to ARP requests and ICMPv6 neighbor solicitations.
+
+** Zon-lb features:
+
+- XDP redirect on veth
+- IPv6/4 Connection tracking
+- IPv6/4 FIB lookup and caching
+- IPv4 ARP reply and table build up with VLAN support
+- IPv6 neighbors advertisement and table build up with VLAN support
+- VLAN proxying
+- Full IPv6 NAT with VLAN (src/dst VLAN/L2/L3 addresses change)
+
+** Setup
+
+Run the [[./setup.sh][setup]] to create the custom namespace =zone0=:
+
+#+begin_src sh
+sudo ./setup.sh
+#+end_src
+
+Load the configuration [[./zonlb.toml][config]]:
+
+#+begin_src sh
+sudo ./zon-lb ./zonlb.toml load
+#+end_src
+
+*** Initializing the neighbor table entry for the backend group address
+In order for VLAN proxying to work the zon-lb must have a arp/neighbor entry
+of the group LB IP address. This is required since VLANs are logically separated
+network segments and neighbot solicitations are answered only within that segment.
+To initialize the neighbor entry just run a =ping= to the other pair veth from
+default netns:
+#+begin_src sh
+ping -c1 -s0 10.0.0.2
+ping -c1 -s0 2001:db8::2
+#+end_src
+Note that any other connectivity tool was enough since what we are interested is
+to =trigger= a neighbor solicitation (Icmpv6) or ARP (IPv4) request so that zon-lb
+can intercept the =request= and figure out the hardware address assigned to the
+interface.
+
+Notes:
+- The setup assumes the that =zone0= netns contains many VLANs and that
+=veth0= acts as a =trunk= interface that can carry tagged and untagged traffic.
+For this setup the tagged traffic will be sent by veth1.2 interface and the untagged
+one from veth1.
+- The VLAN sub-interface name follows the naming convention ={if_name}.{VLAN ID}=.
+- The VLAN tagging is supported on both IPv4 and IPv6 connections
+
+*** Disable vlan offload
+By default the veth interfaces strip the VLAN tags and the XDP program will receive the
+frame without the VLAN header. However, in order to handle neighbor solicitations or
+redirect packets to a certain VLAN id must disable the interface VLAN offloading
+for both receive and transmit with the following commands:
+#+begin_src sh
+ethtool -K $IF0 rxvlan off txvlan off
+#+end_src
+Please checkout the
+[[https://github.com/xdp-project/xdp-tutorial/tree/master/packet01-parsing#a-note-about-vlan-offloads][note about VLAN offloads]]
+from XDP project github.
+
+** Run =ping= test
+To test the ICMP and ICMPv6 connectivity between a VLAN endpoint and the backend from a non-VLAN segment the usual
+=ping= command can be run but with an additional parameter =-I= to specify the interface:
+#+begin_src sh
+sudo ip netns exec zone0 ping 10.0.0.1 -c1 -s0 -I veth1.2
+sudo ip netns exec zone0 ping 2001:db8::1 -c1 -s0 -I veth1.2
+#+end_src
+
+Note that if the ping fails please check if the neighbor table for the backend group was initialized.
+For more details see the above setup section.
+
+** Run =telnet= test
+To verify load balancing TCP connection from VLAN must start a telnet
+server in the =zone2= netns.
+Note that for IPv6 we must use the =netcat-openbsd= as the default or traditional
+=netcat= (=nc= symlink) does not support IPv6.
+
+As usual, we start the =nc= server binded to an known address in netns =zone2= with the following
+command for IPv4:
+#+begin_src sh
+sudo ip netns exec zone2 nc -nlv -p 223 -s 10.2.0.2
+#+end_src
+
+For IPv6 the equivalent command is:
+#+begin_src sh
+sudo ip netns exec zone2 nc -nlv -p 223 -s 2001:db8::2:2
+#+end_src
+
+As client, we are going to use =curl= as it provides an option =--interface= to pass the
+net device as we did with =ping=.
+
+To start the =curl= telnet client for IPv4 binded to the VLAN subinterface use the command:
+#+begin_src sh
+sudo ip netns exec zone0 curl --interface veth1.2 telnet://10.0.0.1:23
+#+end_src
+
+For IPv6 run:
+#+begin_src sh
+sudo ip netns exec zone0 curl --interface veth1.2 telnet://[2001:db8::1]:23
+#+end_src
+
+** Notes:
+- The =telnet= utility has the =-b= to provide the source IP that the TCP socket
+should use. But, using this option on current =minimal= setup will allow sending only
+untagged traffic over the veth1. The TL;DR is that the routing decision is
+to send packets over the normal =veth1= interface rather than the VLAN
+sub-interface =veth1.2= even if the source IP pertains to the latter.
+- To demonstrate that both tagged and untagged traffic can be handled by the
+load balancer we need a client that supports setting the socket option
+=SO_BINDTODEVICE= with the desired interface, like =curl=.
+- In a typical VLAN network design the tagged and untagged traffic is generated
+by endpoints from different network namespaces and delivered to a =bridge= device
+that resides in its own netns. To keep this example as simple as possible and
+demonstrate the VLAN proxying, only one VLAN subinterface was created without
+any modifications in =ip rules= or =iptables=.
+- When monitoring VLAN packets with tshark make sure
+the main interface is monitored in order to see the VLAN tag:
+=sudo ip netns exec zone0 tshark -V -xx -i veth1 tcp=
+- When monitoring the vlan attached interface the tag info
+will be stripped: =sudo ip netns exec zone0 tshark -V -xx -i veth1.2 tcp=
+
+** References
+- [[https://github.com/xdp-project/xdp-tutorial/tree/master/packet01-parsing#a-note-about-vlan-offloads][A note about VLAN offloads]]
+- [[https://linux-blog.anracom.com/2017/11/20/fun-with-veth-devices-linux-bridges-and-vlans-in-unnamed-linux-network-namespaces-iv/][Fun with veth-devices, Linux bridges and VLANs in unnamed Linux network namespaces – IV]]
+
