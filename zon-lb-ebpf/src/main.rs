@@ -330,7 +330,7 @@ impl L2Context {
         if feat.log_enabled(Level::Info) {
             info!(
                 ctx,
-                "[vlan] update vlan 0x{:x} -> 0x{:x}, rc={}",
+                "[vlan] update vlan 0x{:x} -> 0x{:x}, adj_hdr rc={}",
                 self.vlanhdr.to_be(),
                 vlanhdr.to_be(),
                 rc
@@ -483,15 +483,22 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                     if entry.ifindex != ifindex {
                         info!(
                             ctx,
-                            "[arp] if diff: {}!={} for {:i}", ifindex, entry.ifindex, tpa
+                            "[arp] if diff: {}!={} for {:i}",
+                            ifindex,
+                            entry.ifindex,
+                            tpa.to_be()
                         );
                     } else {
                         info!(
                             ctx,
-                            "[arp] vlan id diff: {}!={}, for {:i}", vlan_id, entry.vlan_id, tpa
+                            "[arp] vlan id diff: {}!={}, for {:i}",
+                            vlan_id,
+                            entry.vlan_id,
+                            tpa.to_be()
                         );
                     }
                 }
+
                 return Ok(xdp_action::XDP_PASS);
             }
         }
@@ -1007,7 +1014,7 @@ fn redirect_ipv4(
         // TODO: check performance
         let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
 
-        if now - entry.expiry < 6 {
+        if now - entry.expiry < 120 {
             let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
 
             // NOTE: look like aya can't convert the '*eth = entry.macs' into
@@ -1024,18 +1031,21 @@ fn redirect_ipv4(
             // Till then assume we redirect to backends outside of any VLAN.
             l2ctx.vlan_update(ctx, 0, &feat)?;
 
-            let action = redirect_txport(ctx, &feat, entry.ifindex);
-
-            if feat.log_enabled(Level::Info) {
-                info!(
-                    ctx,
-                    "[redirect] [fib-cache] oif: {} action => {}", entry.ifindex, action
-                );
+            // In case of redirect failure just try to query the FIB again
+            if xdp_action::XDP_REDIRECT == redirect_txport(ctx, &feat, entry.ifindex) {
+                if feat.log_enabled(Level::Info) {
+                    info!(ctx, "[redirect] [fib-cache] oif: {}", entry.ifindex);
+                }
+                return Ok(xdp_action::XDP_REDIRECT);
             }
-
-            return Ok(action);
         }
     }
+
+    // If the packet was already adjusted after the vlan header was stripped
+    // on first attempt to redirect the packet with cached fib data must
+    // recompute the ip header ref before accessing it again.
+    let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
+    let ipv4hdr = unsafe { &*ipv4hdr };
 
     let fib_param = unsafe {
         BpfFibLookUp::new_inet(
@@ -1098,7 +1108,7 @@ fn redirect_ipv4(
             info!(ctx, "[redirect] action => {}", action);
         }
 
-        update_arp(ctx, &feat, fib_param);
+        update_fib(ctx, &feat, fib_param);
 
         return Ok(action);
     }
@@ -1135,7 +1145,7 @@ fn redirect_ipv4(
     Ok(xdp_action::XDP_PASS)
 }
 
-fn update_arp(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
+fn update_fib(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
     let arp = FibEntry {
         ifindex: fib_param.ifindex,
         macs: fib_param.ethdr_macs(),
@@ -1150,7 +1160,7 @@ fn update_arp(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
             if feat.log_enabled(Level::Info) {
                 info!(
                     ctx,
-                    "[arp] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
+                    "[fib] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
                     fib_param.dst[0].to_be(),
                     fib_param.ifindex,
                     fib_param.src_mac(),
@@ -1161,7 +1171,7 @@ fn update_arp(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
         }
         Err(e) => {
             if feat.log_enabled(Level::Error) {
-                error!(ctx, "[arp] fail to insert entry, err:{}", e)
+                error!(ctx, "[fib] fail to insert entry, err:{}", e)
             }
             stats_inc(stats::FIB_ERROR_UPDATE);
         }
