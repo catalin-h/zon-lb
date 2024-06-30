@@ -32,11 +32,11 @@ setup_ns() {
   IPV4_1=10.$NET.0.2
   IPV6_0=2001:db8::$NET:1
   IPV6_1=2001:db8::$NET:2
+
   # VLAN config
-  IF0_VID2=$IF0.$VLANID2
-  IF0_VID2_IPV4=10.$NET.$VLANID2.1
   IF1_VID2=$IF1.$VLANID2
   IF1_VID2_IPV4=10.$NET.$VLANID2.2
+  IF1_VID2_IPV6=2001:db8::$NET:$VLANID2:2
 
   printf "setup ns $NS $IF0:$IPV4_0|$IPV6_0 $IF1:$IPV4_1|$IPV6_1\n"
 
@@ -61,12 +61,26 @@ setup_ns() {
   ip link set dev $IF0 up
   ip -netns $NS link set dev $IF1 up
 
+  # Even if the IP addresses are transmitted inside VLANs this doesn't
+  # mean that they should clash with others from outside the VLAN.
+
+  # Option A
   # Add VLAN interfaces inside the netns and attached to the
-  # same veth interface. Use the same IP as the main interface to
-  # demonstrate packets are delivered to VLAN interface.
+  # same veth interface. Note that this option requires that
+  # there is an entry in neighbor table to the other non-vlan veth pair
+  # ip via the veth-vlan interface. With the zon-lb this step is optional
+  # as it has a arp/neighbor solicitation responder. The only catch is that
+  # there should be an arp/neighbor solicitation _after_ the zon-lb is
+  # loaded on the _trunk_ interface. The solicitation needs to be from
+  # the interface were the zon-lb is attached to the other veth pair ip.
+  # So, after loading the zon-lb just run:
+  # ping -c1 -s0 $IPv4_1 # or $IPv6_1
   ip -netns $NS link add link $IF1 name $IF1_VID2 type vlan id $VLANID2
   ip -netns $NS address add $IF1_VID2_IPV4/24 dev $IF1_VID2
+  ip -netns $NS address add $IF1_VID2_IPV6/120 dev $IF1_VID2
   ip -netns $NS link set dev $IF1_VID2 up
+
+  # Option B
   # In order to make the ARP work within the VLAN all veth for either netns
   # must have sub-interface in the same VLAN.
   # Can't have the LB act as a brigde and the veth act as a trunk interface
@@ -80,6 +94,15 @@ setup_ns() {
   # ip link add link $IF0 name $IF0_VID2 type vlan id $VLANID2
   # ip address add $IF0_VID2_IPV4/24 dev $IF0_VID2
   # ip link set dev $IF0_VID2 up
+
+  # TODO: just for testing purposes, add source routing rule so when the client
+  # that binds to a certain source IP the packet goes to a certain interface.
+  # By default, the kernel will choose the best interface for the destination
+  # IP. Since both VLAN and non-VLAN traffic uses the same destination IP the
+  # kernel will choose the main interface even though the bind source address is
+  # assigned to the VLAN interface. The other way around is to use clients that
+  # allow to set socket option SO_BINDTODEVICE to choose the output device, like
+  # curl --interface <dev> ot ping -I <device>.
 
   # Fix veth driver bug that falsely advertises that it support checksum compute
   # offload and the network stack does skip computing it. As a result the
