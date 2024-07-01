@@ -1,6 +1,6 @@
 use crate::{
     backends::EndPoint,
-    helpers::{mapdata_from_pinned_map, teardown_maps},
+    helpers::{mapdata_from_pinned_map, teardown_maps, IfCache},
     info::InfoTable,
     protocols::Protocol,
     ToMapName,
@@ -37,7 +37,8 @@ where
 
 pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
     let ctm = conntrack_mapdata::<NAT4Key, NAT4Value>()?;
-    let mut tab = InfoTable::new(vec!["proto", "src", "lb", "backend"]);
+    let mut ifc = IfCache::new();
+    let mut tab = InfoTable::new(vec!["proto", "src", "lb", "backend", "if", "vlan"]);
     for (key, value) in ctm.iter().filter_map(|f| f.ok()) {
         let src = EndPoint {
             ipaddr: IpAddr::from(value.ip_src.to_le_bytes()),
@@ -62,6 +63,8 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
             src.to_string(),
             lb.to_string(),
             be.to_string(),
+            format!("{}:{}", ifc.name(value.ifindex, "na"), value.ifindex),
+            format!("{:x}", value.vlan_hdr.to_be() & 0xFFF),
         ]);
     }
 

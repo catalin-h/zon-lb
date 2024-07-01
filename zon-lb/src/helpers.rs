@@ -4,6 +4,7 @@ use aya::{maps::MapData, Ebpf};
 use aya_obj::generated::{bpf_link_type, BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
 use bitflags;
 use log::{info, warn};
+use std::collections::HashMap;
 use std::fs::remove_file;
 use std::path::{Path, PathBuf};
 
@@ -223,4 +224,29 @@ pub(crate) fn get_mapdata_by_name(ifname: &str, map_name: &str) -> Option<MapDat
             None => false,
         })?;
     MapData::from_id(map.id()).ok()
+}
+
+pub struct IfCache {
+    cache: HashMap<u32, String>,
+}
+
+impl IfCache {
+    pub fn new() -> Self {
+        Self {
+            cache: HashMap::new(),
+        }
+    }
+    pub fn name(&mut self, ifindex: u32, def_name: &str) -> String {
+        if let Some(name) = self.cache.get(&ifindex) {
+            return name.clone();
+        }
+
+        let name = match if_index_to_name(ifindex) {
+            None => String::from(def_name),
+            Some(name) => name,
+        };
+
+        self.cache.insert(ifindex, name.clone());
+        name
+    }
 }
