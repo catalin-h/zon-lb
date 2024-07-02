@@ -1,4 +1,4 @@
-use crate::{backends, conntrack, helpers::*, runvars::RunVars, ToMapName};
+use crate::{backends, conntrack, helpers::*, neighbors, runvars::RunVars, ToMapName};
 use anyhow::{anyhow, Context};
 use aya::{
     maps::{DevMap, Map},
@@ -123,6 +123,7 @@ impl Prog {
     pub fn teardown(&mut self) -> Result<(), anyhow::Error> {
         backends::teardown_all_maps()?;
         conntrack::teardown_all_maps()?;
+        neighbors::teardown_all_maps()?;
         self.unload()
     }
 

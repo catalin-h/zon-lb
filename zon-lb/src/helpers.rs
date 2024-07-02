@@ -264,3 +264,10 @@ impl IfCache {
         name
     }
 }
+
+pub fn mac_to_str(mac: &[u8; 6]) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    )
+}

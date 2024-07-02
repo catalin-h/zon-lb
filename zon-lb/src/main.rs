@@ -4,6 +4,7 @@ mod conntrack;
 mod helpers;
 mod info;
 mod logging;
+mod neighbors;
 mod options;
 mod prog;
 mod protocols;
@@ -12,7 +13,6 @@ mod services;
 mod stats;
 
 use crate::{logging::init_log_with_replace, runvars::RunVars};
-use anyhow::Context;
 use aya::{include_bytes_aligned, programs::XdpFlags, EbpfLoader};
 use aya_log::EbpfLogger;
 use backends::{Backend, EndPoint, ToEndPoint};
@@ -292,6 +292,21 @@ struct RunVarOpt {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum NeighAction {
+    /// List neighbor entries
+    List,
+    /// Remove all neighbor entries
+    Remove,
+}
+
+#[derive(clap::Args, Debug)]
+struct NeighOpt {
+    /// Conntrack actions
+    #[clap(subcommand)]
+    action: Option<NeighAction>,
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum Command {
     /// Shows information about loaded programs and the used maps
     Info,
@@ -311,6 +326,16 @@ enum Command {
     Stats(StatsOpt),
     /// Allows to set or get runtime variables and enable or disable runtime features
     Runvar(RunVarOpt),
+    /// Access the discovered neighbors cache from remote and local interfaces.
+    /// The cache maps IP addresses to hardware addresses, if id and vlan id.
+    /// It is constructed from ARP (IPv4) requests and neighbor solicitations (IPv6).
+    /// and it is used mainly to respond the neighbor requests from within VLANs.
+    Neighbors(NeighOpt),
+    // Forward informational database cache access.
+    // This cache is used during redirects in order to set the proper interface index
+    // to redirect and the mac addresses for that interface. This cache is updated after
+    // querying the kernel FIB.
+    // Fib,
 }
 
 #[derive(Debug, Parser)]
@@ -504,6 +529,14 @@ fn handle_runvar(opt: &RunVarOpt) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
+    let action = opt.action.as_ref().unwrap_or(&NeighAction::List);
+    match action {
+        NeighAction::List => neighbors::list(),
+        NeighAction::Remove => neighbors::remove_all(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -520,6 +553,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Conntrack(opt) => handle_conntrack(opt),
         Command::Stats(opt) => handle_stats(opt),
         Command::Runvar(opt) => handle_runvar(opt),
+        Command::Neighbors(opt) => handle_neighbors(opt),
     };
 
     if let Err(e) = res {
