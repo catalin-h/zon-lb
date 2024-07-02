@@ -54,6 +54,10 @@ impl InfoTable {
             println!("{}", self.to_aligned_column(row));
         }
         println!("{0:-<1$}", '-', hdr.len());
+        if self.table.len() >= 10 {
+            println!("{hdr}");
+            println!("{0:-<1$}", '-', hdr.len());
+        }
     }
     pub fn reset(&mut self) {
         self.table.clear();
