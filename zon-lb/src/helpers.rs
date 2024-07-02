@@ -101,6 +101,52 @@ where
     Ok(map)
 }
 
+pub struct MapOpResult {
+    pub count: u32,
+    pub errors: u32,
+}
+
+impl MapOpResult {
+    fn new() -> Self {
+        MapOpResult {
+            count: 0,
+            errors: 0,
+        }
+    }
+}
+
+pub fn hashmap_remove_if<K, V, F>(predicate: F) -> Result<MapOpResult, anyhow::Error>
+where
+    K: aya::Pod + ToMapName,
+    V: aya::Pod,
+    F: Fn(&K, &V) -> bool,
+{
+    let mut map = hashmap_mapdata::<K, V>()?;
+    let mut result = MapOpResult::new();
+
+    loop {
+        let keys = map
+            .iter()
+            .filter_map(|pair| pair.ok())
+            .filter_map(|(k, v)| if predicate(&k, &v) { Some(k) } else { None })
+            .take(10)
+            .collect::<Vec<_>>();
+
+        if keys.is_empty() {
+            break;
+        }
+
+        for key in keys {
+            match map.remove(&key) {
+                Ok(()) => result.count += 1,
+                Err(_) => result.errors += 1,
+            }
+        }
+    }
+
+    Ok(result)
+}
+
 pub(crate) fn if_index_to_name(index: u32) -> Option<String> {
     let mut name = [0_i8; libc::IF_NAMESIZE];
     let iname = unsafe { libc::if_indextoname(index, name.as_mut_ptr()) };

@@ -1,6 +1,6 @@
 use crate::{
     backends::EndPoint,
-    helpers::{hashmap_mapdata, teardown_maps, IfCache},
+    helpers::{hashmap_mapdata, hashmap_remove_if, teardown_maps, IfCache},
     info::InfoTable,
     protocols::Protocol,
     ToMapName,
@@ -95,27 +95,17 @@ pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
 }
 
 pub fn remove_all() -> Result<(), anyhow::Error> {
-    let mut ctm = hashmap_mapdata::<NAT4Key, NAT4Value>()?;
-    let mut error_no = 0;
-    let mut count = 0;
-    loop {
-        let keys = ctm
-            .keys()
-            .filter_map(|k| k.ok())
-            .take(10)
-            .collect::<Vec<_>>();
-        if keys.is_empty() {
-            break;
-        }
-        for key in keys {
-            match ctm.remove(&key) {
-                Ok(()) => count += 1,
-                Err(_) => error_no += 1,
-            };
-        }
-    }
+    let result = hashmap_remove_if::<NAT4Key, NAT4Value, _>(|_, _| true)?;
+    info!(
+        "[ct] remove ipv4 summary, count/errors: {}/{}",
+        result.count, result.errors
+    );
 
-    info!("[ct] Remove summary, count/errors: {}/{}", count, error_no);
+    let result = hashmap_remove_if::<NAT6Key, NAT6Value, _>(|_, _| true)?;
+    info!(
+        "[ct] remove ipv6 summary, count/errors: {}/{}",
+        result.count, result.errors
+    );
 
     Ok(())
 }
