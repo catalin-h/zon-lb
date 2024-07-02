@@ -478,6 +478,26 @@ pub struct ArpEntry {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for ArpEntry {}
 
+/// IPv4 ARP cache key
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArpKey {
+    pub addr: u32,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for ArpKey {}
+
+/// IPv6 neighbor discovery cache key
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NDKey {
+    pub addr32: [u32; 4usize],
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for NDKey {}
+
 // TODO: add hasher function
 
 // TODO: use IPv6 header Flow label in order to track connections.
