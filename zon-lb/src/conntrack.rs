@@ -1,12 +1,10 @@
 use crate::{
     backends::EndPoint,
-    helpers::{mapdata_from_pinned_map, teardown_maps, IfCache},
+    helpers::{hashmap_mapdata, teardown_maps, IfCache},
     info::InfoTable,
     protocols::Protocol,
     ToMapName,
 };
-use anyhow::anyhow;
-use aya::maps::{HashMap, Map, MapData};
 use log::info;
 use std::net::IpAddr;
 use zon_lb_common::{NAT4Key, NAT4Value, NAT6Key, NAT6Value};
@@ -23,20 +21,8 @@ impl ToMapName for NAT6Key {
     }
 }
 
-fn conntrack_mapdata<K, V>() -> Result<HashMap<MapData, K, V>, anyhow::Error>
-where
-    K: aya::Pod + ToMapName,
-    V: aya::Pod,
-{
-    let map = mapdata_from_pinned_map("", K::map_name())
-        .ok_or(anyhow!("Failed to find map: {} in bpffs", K::map_name()))?;
-    let map = Map::HashMap(map);
-    let map: HashMap<_, K, V> = map.try_into()?;
-    Ok(map)
-}
-
 pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
-    let ctm4 = conntrack_mapdata::<NAT4Key, NAT4Value>()?;
+    let ctm4 = hashmap_mapdata::<NAT4Key, NAT4Value>()?;
     let mut ifc = IfCache::new();
     let mut tab = InfoTable::new(vec!["proto", "src", "lb", "backend", "if", "vlan"]);
 
@@ -69,7 +55,7 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
         ]);
     }
 
-    let ctm6 = conntrack_mapdata::<NAT6Key, NAT6Value>()?;
+    let ctm6 = hashmap_mapdata::<NAT6Key, NAT6Value>()?;
 
     for (key, value) in ctm6.iter().filter_map(|f| f.ok()) {
         let src = EndPoint {
@@ -109,7 +95,7 @@ pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
 }
 
 pub fn remove_all() -> Result<(), anyhow::Error> {
-    let mut ctm = conntrack_mapdata::<NAT4Key, NAT4Value>()?;
+    let mut ctm = hashmap_mapdata::<NAT4Key, NAT4Value>()?;
     let mut error_no = 0;
     let mut count = 0;
     loop {

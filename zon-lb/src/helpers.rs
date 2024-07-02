@@ -1,12 +1,14 @@
 use anyhow::{anyhow, Context, Result};
 use aya::maps::MapInfo;
-use aya::{maps::MapData, Ebpf};
+use aya::{maps::HashMap as AyaHashMap, maps::Map, maps::MapData, Ebpf};
 use aya_obj::generated::{bpf_link_type, BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
 use bitflags;
 use log::{info, warn};
 use std::collections::HashMap;
 use std::fs::remove_file;
 use std::path::{Path, PathBuf};
+
+use crate::ToMapName;
 
 bitflags::bitflags! {
 /// Flags for BPF_MAP_UPDATE_ELEM command
@@ -85,6 +87,18 @@ pub(crate) fn _create_pinned_links_for_maps(
         }
     }
     Ok(())
+}
+
+pub fn hashmap_mapdata<K, V>() -> Result<AyaHashMap<MapData, K, V>, anyhow::Error>
+where
+    K: aya::Pod + ToMapName,
+    V: aya::Pod,
+{
+    let map = mapdata_from_pinned_map("", K::map_name())
+        .ok_or(anyhow!("Failed to find map: {} in bpffs", K::map_name()))?;
+    let map = Map::HashMap(map);
+    let map: AyaHashMap<_, K, V> = map.try_into()?;
+    Ok(map)
 }
 
 pub(crate) fn if_index_to_name(index: u32) -> Option<String> {
