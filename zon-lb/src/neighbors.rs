@@ -65,7 +65,11 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
         }
     }
 
-    tab.print(&format!("Neighbors cache ({} hidden)", hidden));
+    tab.print(&format!(
+        "Neighbors cache (hidden: {}, filter: {})",
+        hidden,
+        options.to_options().join(", ")
+    ));
 
     Ok(())
 }

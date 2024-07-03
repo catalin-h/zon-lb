@@ -53,7 +53,11 @@ impl Options {
             opt.push(name.to_string());
         }
         for (k, v) in &self.props {
-            opt.push(format!("{}={}", k, v));
+            if v.is_empty() {
+                opt.push(k.clone());
+            } else {
+                opt.push(format!("{}={}", k, v));
+            }
         }
         opt
     }
