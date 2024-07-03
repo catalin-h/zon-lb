@@ -294,7 +294,15 @@ struct RunVarOpt {
 #[derive(clap::Subcommand, Debug)]
 enum NeighAction {
     /// List neighbor entries
-    List,
+    List {
+        /// Filter options:
+        /// * `all`  : By default only neighbors with existing interfaces are displayed.
+        ///            To list all entries must pass this argument. This filter applies last.
+        /// * `ipv4` : List only IPv4 or ARP entries
+        /// * `ipv6` : List only IPv6 neighbor entries
+        #[clap(verbatim_doc_comment)]
+        filter_options: Vec<String>,
+    },
     /// Remove all neighbor entries
     Remove,
 }
@@ -530,9 +538,12 @@ fn handle_runvar(opt: &RunVarOpt) -> Result<(), anyhow::Error> {
 }
 
 fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
-    let action = opt.action.as_ref().unwrap_or(&NeighAction::List);
+    let def_cmd = NeighAction::List {
+        filter_options: Vec::new(),
+    };
+    let action = opt.action.as_ref().unwrap_or(&def_cmd);
     match action {
-        NeighAction::List => neighbors::list(),
+        NeighAction::List { filter_options } => neighbors::list(filter_options),
         NeighAction::Remove => neighbors::remove_all(),
     }
 }
