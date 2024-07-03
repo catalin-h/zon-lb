@@ -9,6 +9,9 @@ pub const NO_NAT: &str = "no_nat";
 pub const SRC_IP: &str = "src_ip";
 pub const REPLACE: &str = "replace";
 pub const LOG_FILTER: &str = "log_filter";
+pub const FLAG_ALL: &str = "all";
+pub const FLAG_IPV4: &str = "ipv4";
+pub const FLAG_IPV6: &str = "ipv6";
 
 #[derive(Clone)]
 pub struct Options {
@@ -43,6 +46,8 @@ impl Options {
                 EPFlags::XDP_TX => TX,
                 EPFlags::XDP_REDIRECT => REDIRECT,
                 EPFlags::NO_CONNTRACK => NO_NAT,
+                EPFlags::IPV4 => FLAG_IPV4,
+                EPFlags::IPV6 => FLAG_IPV6,
                 _ => continue,
             };
             opt.push(name.to_string());
@@ -61,6 +66,10 @@ impl Options {
     }
 
     pub fn from_option_args(args: &Vec<String>) -> Self {
+        Self::from_option_args_with_keys(args, &vec![])
+    }
+
+    pub fn from_option_args_with_keys(args: &Vec<String>, allowed_keys: &[&str]) -> Self {
         let mut props = BTreeMap::new();
         let mut flags = EPFlags::empty();
 
@@ -68,12 +77,20 @@ impl Options {
             let kv = arg.split_once('=');
             let (key, value) = match kv {
                 None => {
-                    match arg.as_str() {
+                    let f = arg.to_lowercase();
+                    if !allowed_keys.is_empty() && !allowed_keys.contains(&f.as_str()) {
+                        log::warn!("Unknown flag '{}' for current context", arg);
+                        continue;
+                    }
+                    match f.as_str() {
                         DISABLE => flags.insert(EPFlags::DISABLE),
                         TX => flags.insert(EPFlags::XDP_TX),
                         NO_NAT | "no_conntrack" | "no_ct" => flags.insert(EPFlags::NO_CONNTRACK),
                         REDIRECT => flags.insert(EPFlags::XDP_REDIRECT),
-                        REPLACE => {
+                        FLAG_IPV4 => flags.insert(EPFlags::IPV4),
+                        FLAG_IPV6 => flags.insert(EPFlags::IPV6),
+                        // Flags not used by EPFlags but allowed for some commands
+                        REPLACE | FLAG_ALL => {
                             props.insert(arg.to_string(), String::new());
                         }
                         _ => log::error!("Unknown flag '{}' ", arg),
@@ -82,7 +99,13 @@ impl Options {
                 }
                 Some(kv) => kv,
             };
-            match key {
+
+            let key = key.to_lowercase();
+            if !allowed_keys.is_empty() && !allowed_keys.iter().any(|a| *a == key) {
+                log::warn!("Unknown key '{}' for current context", key);
+                continue;
+            }
+            match key.as_str() {
                 REDIRECT => match helpers::ifindex(value) {
                     Ok(_) => {
                         flags.insert(EPFlags::XDP_REDIRECT);
