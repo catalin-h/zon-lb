@@ -1,5 +1,7 @@
 use crate::{
-    helpers::{hashmap_mapdata, hashmap_remove_if, mac_to_str, teardown_maps, IfCache},
+    helpers::{
+        hashmap_mapdata, hashmap_remove_if, if_index_to_name, mac_to_str, teardown_maps, IfCache,
+    },
     info::InfoTable,
     options::{self, Options},
     ToMapName,
@@ -78,17 +80,24 @@ pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
     teardown_maps(&[ArpKey::map_name(), NDKey::map_name()])
 }
 
-pub fn remove_all() -> Result<(), anyhow::Error> {
-    let result = hashmap_remove_if::<ArpKey, ArpEntry, _>(|_, _| true)?;
+pub fn remove(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
+    let rem_all = Options::from_option_args_with_keys(filter_opts, &vec![options::FLAG_ALL])
+        .props
+        .contains_key(options::FLAG_ALL);
+    let result = hashmap_remove_if::<ArpKey, ArpEntry, _>(|_, e| {
+        rem_all || if_index_to_name(e.ifindex).is_none()
+    })?;
     log::info!(
-        "[nd] remove arp (ipv4) summary, count/errors: {}/{}",
+        "remove arp (ipv4) entries, count/errors: {}/{}",
         result.count,
         result.errors
     );
 
-    let result = hashmap_remove_if::<NDKey, ArpEntry, _>(|_, _| true)?;
+    let result = hashmap_remove_if::<NDKey, ArpEntry, _>(|_, e| {
+        rem_all || if_index_to_name(e.ifindex).is_none()
+    })?;
     log::info!(
-        "[nd] remove ND (ipv6) summary, count/errors: {}/{}",
+        "remove ND (ipv6) entries, count/errors: {}/{}",
         result.count,
         result.errors
     );

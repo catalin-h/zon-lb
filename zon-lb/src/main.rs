@@ -303,8 +303,14 @@ enum NeighAction {
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
-    /// Remove all neighbor entries
-    Remove,
+    /// Remove neighbor entries
+    Remove {
+        /// Filter options:
+        /// * `all`  : By default only neighbors with non-existing interfaces are removed.
+        ///            To remove all pass this flag.
+        #[clap(verbatim_doc_comment)]
+        filter_options: Vec<String>,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -544,7 +550,7 @@ fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
     let action = opt.action.as_ref().unwrap_or(&def_cmd);
     match action {
         NeighAction::List { filter_options } => neighbors::list(filter_options),
-        NeighAction::Remove => neighbors::remove_all(),
+        NeighAction::Remove { filter_options } => neighbors::remove(filter_options),
     }
 }
 
