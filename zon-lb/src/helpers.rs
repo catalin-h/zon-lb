@@ -104,6 +104,7 @@ where
 pub struct MapOpResult {
     pub count: u32,
     pub errors: u32,
+    pub total: u32,
 }
 
 impl MapOpResult {
@@ -111,7 +112,12 @@ impl MapOpResult {
         MapOpResult {
             count: 0,
             errors: 0,
+            total: 0,
         }
+    }
+
+    pub fn matches_total(&self) -> bool {
+        self.errors + self.count >= self.total
     }
 }
 
@@ -124,6 +130,10 @@ where
     let mut map = hashmap_mapdata::<K, V>()?;
     let mut result = MapOpResult::new();
 
+    result.total = map.iter().count() as u32;
+
+    println!("total: {}", result.total);
+
     loop {
         let keys = map
             .iter()
@@ -132,13 +142,16 @@ where
             .take(10)
             .collect::<Vec<_>>();
 
-        if keys.is_empty() {
+        if keys.is_empty() || result.matches_total() {
             break;
         }
 
         for key in keys {
+            if result.matches_total() {
+                return Ok(result);
+            }
             match map.remove(&key) {
-                Ok(()) => result.count += 1,
+                Ok(_) => result.count += 1,
                 Err(_) => result.errors += 1,
             }
         }
