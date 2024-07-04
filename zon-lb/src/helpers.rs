@@ -288,21 +288,23 @@ pub(crate) fn get_mapdata_by_name(ifname: &str, map_name: &str) -> Option<MapDat
 
 pub struct IfCache {
     cache: HashMap<u32, String>,
+    def_name: String,
 }
 
 impl IfCache {
-    pub fn new() -> Self {
+    pub fn new<T: AsRef<str>>(def_name: T) -> Self {
         Self {
             cache: HashMap::new(),
+            def_name: String::from(def_name.as_ref()),
         }
     }
-    pub fn name(&mut self, ifindex: u32, def_name: &str) -> String {
+    pub fn name(&mut self, ifindex: u32) -> String {
         if let Some(name) = self.cache.get(&ifindex) {
             return name.clone();
         }
 
         let name = match if_index_to_name(ifindex) {
-            None => String::from(def_name),
+            None => String::from(&self.def_name),
             Some(name) => name,
         };
 

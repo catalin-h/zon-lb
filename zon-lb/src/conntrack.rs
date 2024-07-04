@@ -23,7 +23,7 @@ impl ToMapName for NAT6Key {
 
 pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
     let ctm4 = hashmap_mapdata::<NAT4Key, NAT4Value>()?;
-    let mut ifc = IfCache::new();
+    let mut ifc = IfCache::new("(na)");
     let mut tab = InfoTable::new(vec!["proto", "src", "lb", "backend", "if", "vlan"]);
 
     for (key, value) in ctm4.iter().filter_map(|f| f.ok()) {
@@ -50,7 +50,7 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
             src.to_string(),
             lb.to_string(),
             be.to_string(),
-            format!("{}:{}", ifc.name(value.ifindex, "na"), value.ifindex),
+            format!("{}:{}", ifc.name(value.ifindex), value.ifindex),
             format!("{:x}", value.vlan_hdr.to_be() & 0xFFF),
         ]);
     }
@@ -81,7 +81,7 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
             src.to_string(),
             lb.to_string(),
             be.to_string(),
-            format!("{}:{}", ifc.name(value.ifindex, "na"), value.ifindex),
+            format!("{}:{}", ifc.name(value.ifindex), value.ifindex),
             format!("{:x}", value.vlan_hdr.to_be() & 0xFFF),
         ]);
     }

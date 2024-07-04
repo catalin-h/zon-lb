@@ -22,7 +22,7 @@ impl ToMapName for NDKey {
 }
 
 pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
-    let mut ifc = IfCache::new();
+    let mut ifc = IfCache::new("(na)");
     let mut tab = InfoTable::new(vec!["ip", "mac", "if", "if_mac", "vlan", "expiry"]);
     let options = Options::from_option_args_with_keys(
         filter_opts,
@@ -32,7 +32,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     if options.flags.contains(EPFlags::IPV4) || !options.flags.contains(EPFlags::IPV6) {
         let arp = hashmap_mapdata::<ArpKey, ArpEntry>()?;
         for (key, value) in arp.iter().filter_map(|f| f.ok()) {
-            let name = ifc.name(value.ifindex, "(na)");
+            let name = ifc.name(value.ifindex);
             if !options.props.contains_key(options::FLAG_ALL) && name.contains("(na)") {
                 hidden += 1;
                 continue;
@@ -51,7 +51,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     if options.flags.contains(EPFlags::IPV6) || !options.flags.contains(EPFlags::IPV4) {
         let nd = hashmap_mapdata::<NDKey, ArpEntry>()?;
         for (key, value) in nd.iter().filter_map(|f| f.ok()) {
-            let name = ifc.name(value.ifindex, "(na)");
+            let name = ifc.name(value.ifindex);
             if !options.props.contains_key(options::FLAG_ALL) && name.contains("(na)") {
                 hidden += 1;
                 continue;
@@ -59,7 +59,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
             tab.push_row(vec![
                 Ipv6Addr::from(unsafe { Inet6U::from(&key.addr32).addr8 }).to_string(),
                 mac_to_str(&value.mac),
-                format!("{}:{}", ifc.name(value.ifindex, "na"), value.ifindex),
+                format!("{}:{}", ifc.name(value.ifindex), value.ifindex),
                 mac_to_str(&value.if_mac),
                 format!("{:x}", value.vlan_id.to_be() & 0xFFF),
                 value.expiry.to_string(),
