@@ -1,6 +1,7 @@
 mod backends;
 mod config;
 mod conntrack;
+mod fib;
 mod helpers;
 mod info;
 mod logging;
@@ -315,9 +316,38 @@ enum NeighAction {
 
 #[derive(clap::Args, Debug)]
 struct NeighOpt {
-    /// Conntrack actions
+    /// Neighbor actions
     #[clap(subcommand)]
     action: Option<NeighAction>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum FibAction {
+    /// List FIB entries
+    List {
+        /// Filter options:
+        /// * `all`  : By default only FIB with existing interfaces are displayed.
+        ///            To list all entries must pass this argument. This filter applies last.
+        /// * `ipv4` : List only IPv4 FIB entries
+        /// * `ipv6` : List only IPv6 FIB entries
+        #[clap(verbatim_doc_comment)]
+        filter_options: Vec<String>,
+    },
+    /// Remove FIB entries
+    Remove {
+        /// Filter options:
+        /// * `all`  : By default only FIB with non-existing interfaces are removed.
+        ///            To remove all pass this flag.
+        #[clap(verbatim_doc_comment)]
+        filter_options: Vec<String>,
+    },
+}
+
+#[derive(clap::Args, Debug)]
+struct FibOpt {
+    /// FIB actions
+    #[clap(subcommand)]
+    action: Option<FibAction>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -349,7 +379,7 @@ enum Command {
     // This cache is used during redirects in order to set the proper interface index
     // to redirect and the mac addresses for that interface. This cache is updated after
     // querying the kernel FIB.
-    // Fib,
+    Fib(FibOpt),
 }
 
 #[derive(Debug, Parser)]
@@ -554,6 +584,17 @@ fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
     }
 }
 
+fn handle_fib(opt: &FibOpt) -> Result<(), anyhow::Error> {
+    let def_cmd = FibAction::List {
+        filter_options: Vec::new(),
+    };
+    let action = opt.action.as_ref().unwrap_or(&def_cmd);
+    match action {
+        FibAction::List { filter_options } => fib::list(filter_options),
+        FibAction::Remove { filter_options } => fib::remove(filter_options),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -571,6 +612,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Stats(opt) => handle_stats(opt),
         Command::Runvar(opt) => handle_runvar(opt),
         Command::Neighbors(opt) => handle_neighbors(opt),
+        Command::Fib(opt) => handle_fib(opt),
     };
 
     if let Err(e) = res {

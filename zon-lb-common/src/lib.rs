@@ -448,6 +448,26 @@ pub struct FibEntry {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for FibEntry {}
 
+/// IPv4 FIB cache key
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Fib4Key {
+    pub addr: u32,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for Fib4Key {}
+
+/// IPv6 FIB cache key
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Fib6Key {
+    pub addr32: [u32; 4usize],
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for Fib6Key {}
+
 /// ARP table entry (IPv4 only).
 /// The ARP entry is used to deduce the sMAC/dMAC on packet redirect or
 /// answer to ARP requests from within VLANs for IPs that the application

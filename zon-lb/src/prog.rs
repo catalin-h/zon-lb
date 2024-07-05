@@ -1,4 +1,4 @@
-use crate::{backends, conntrack, helpers::*, neighbors, runvars::RunVars, ToMapName};
+use crate::{backends, conntrack, fib, helpers::*, neighbors, runvars::RunVars, ToMapName};
 use anyhow::{anyhow, Context};
 use aya::{
     maps::{DevMap, Map},
@@ -124,6 +124,7 @@ impl Prog {
         backends::teardown_all_maps()?;
         conntrack::teardown_all_maps()?;
         neighbors::teardown_all_maps()?;
+        fib::teardown_all_maps()?;
         self.unload()
     }
 
