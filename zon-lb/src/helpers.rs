@@ -332,3 +332,26 @@ pub fn mac_to_str(mac: &[u8; 6]) -> String {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     )
 }
+
+pub struct ComboHwAddr<'a> {
+    pub combo: &'a [u32; 3],
+}
+
+impl<'a> ComboHwAddr<'a> {
+    pub fn new(combo: &'a [u32; 3usize]) -> Self {
+        Self { combo }
+    }
+
+    fn at(&self, index: usize) -> &[u8; 6] {
+        let split = self.combo.as_ptr() as *const [u8; 6];
+        unsafe { &*split.add(index) }
+    }
+
+    pub fn first_string(&self) -> String {
+        mac_to_str(self.at(0))
+    }
+
+    pub fn second_string(&self) -> String {
+        mac_to_str(self.at(1))
+    }
+}
