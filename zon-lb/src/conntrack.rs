@@ -50,7 +50,7 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
             src.to_string(),
             lb.to_string(),
             be.to_string(),
-            format!("{}:{}", ifc.name(value.ifindex), value.ifindex),
+            ifc.name(value.ifindex),
             format!("{:x}", value.vlan_hdr.to_be() & 0xFFF),
         ]);
     }
@@ -81,7 +81,7 @@ pub fn conntrack_list(_gid: u32) -> Result<(), anyhow::Error> {
             src.to_string(),
             lb.to_string(),
             be.to_string(),
-            format!("{}:{}", ifc.name(value.ifindex), value.ifindex),
+            ifc.name(value.ifindex),
             format!("{:x}", value.vlan_hdr.to_be() & 0xFFF),
         ]);
     }

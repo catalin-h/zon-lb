@@ -317,8 +317,8 @@ impl IfCache {
         }
 
         let name = match if_index_to_name(ifindex) {
-            None => String::from(&self.def_name),
-            Some(name) => name,
+            None => format!("{}:{}", &self.def_name, ifindex),
+            Some(name) => format!("{}:{}", name, ifindex),
         };
 
         self.cache.insert(ifindex, name.clone());

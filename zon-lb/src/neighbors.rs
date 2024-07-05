@@ -40,7 +40,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
             tab.push_row(vec![
                 Ipv4Addr::from(key.addr.to_be()).to_string(),
                 mac_to_str(&value.mac),
-                format!("{}:{}", name, value.ifindex),
+                name,
                 mac_to_str(&value.if_mac),
                 format!("{:x}", value.vlan_id.to_be() & 0xFFF),
                 value.expiry.to_string(),
@@ -59,7 +59,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
             tab.push_row(vec![
                 Ipv6Addr::from(unsafe { Inet6U::from(&key.addr32).addr8 }).to_string(),
                 mac_to_str(&value.mac),
-                format!("{}:{}", ifc.name(value.ifindex), value.ifindex),
+                name,
                 mac_to_str(&value.if_mac),
                 format!("{:x}", value.vlan_id.to_be() & 0xFFF),
                 value.expiry.to_string(),
