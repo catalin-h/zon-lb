@@ -34,8 +34,11 @@ impl ToMapName for Stats {
 
 impl Stats {
     pub fn new(ifname: &str) -> Result<Self, anyhow::Error> {
-        let map = get_mapdata_by_name(ifname, Stats::map_name())
-            .ok_or(anyhow!("Can't find map {}", Stats::map_name()))?;
+        let map = get_mapdata_by_name(ifname, Stats::map_name()).ok_or(anyhow!(
+            "[{}] can't find map {}",
+            ifname,
+            Stats::map_name()
+        ))?;
         let map = Map::PerCpuArray(map);
         let smap: PerCpuArray<_, u64> = map.try_into()?;
         Ok(Self {
