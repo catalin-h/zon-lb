@@ -374,11 +374,13 @@ enum Command {
     /// The cache maps IP addresses to hardware addresses, if id and vlan id.
     /// It is constructed from ARP (IPv4) requests and neighbor solicitations (IPv6).
     /// and it is used mainly to respond the neighbor requests from within VLANs.
+    #[clap(verbatim_doc_comment)]
     Neighbors(NeighOpt),
-    // Forward informational database cache access.
-    // This cache is used during redirects in order to set the proper interface index
-    // to redirect and the mac addresses for that interface. This cache is updated after
-    // querying the kernel FIB.
+    /// Forward informational database cache access.
+    /// This cache is used during redirects in order to set the proper interface index
+    /// to redirect and the mac addresses for that interface. This cache is updated after
+    /// querying the kernel FIB.
+    #[clap(verbatim_doc_comment)]
     Fib(FibOpt),
 }
 
