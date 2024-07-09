@@ -1,6 +1,7 @@
 use crate::{
     helpers::{
         hashmap_mapdata, hashmap_remove_if, if_index_to_name, mac_to_str, teardown_maps, IfCache,
+        PrintTimeStatus,
     },
     info::InfoTable,
     options::{self, Options},
@@ -23,12 +24,13 @@ impl ToMapName for NDKey {
 
 pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     let mut ifc = IfCache::new("(na)");
-    let mut tab = InfoTable::new(vec!["ip", "mac", "if", "if_mac", "vlan", "expiry"]);
+    let mut tab = InfoTable::new(vec!["ip", "mac", "if", "if_mac", "vlan", "status"]);
     let options = Options::from_option_args_with_keys(
         filter_opts,
         &vec![options::FLAG_ALL, options::FLAG_IPV4, options::FLAG_IPV6],
     );
     let mut hidden = 0;
+    let pts = PrintTimeStatus::new(0);
     if options.flags.contains(EPFlags::IPV4) || !options.flags.contains(EPFlags::IPV6) {
         let arp = hashmap_mapdata::<ArpKey, ArpEntry>()?;
         for (key, value) in arp.iter().filter_map(|f| f.ok()) {
@@ -37,13 +39,14 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
                 hidden += 1;
                 continue;
             }
+
             tab.push_row(vec![
                 Ipv4Addr::from(key.addr.to_be()).to_string(),
                 mac_to_str(&value.mac),
                 name,
                 mac_to_str(&value.if_mac),
                 format!("{:x}", value.vlan_id.to_be() & 0xFFF),
-                value.expiry.to_string(),
+                pts.status(value.expiry),
             ]);
         }
     }
@@ -62,7 +65,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
                 name,
                 mac_to_str(&value.if_mac),
                 format!("{:x}", value.vlan_id.to_be() & 0xFFF),
-                value.expiry.to_string(),
+                pts.status(value.expiry),
             ]);
         }
     }
