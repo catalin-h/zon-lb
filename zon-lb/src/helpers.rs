@@ -3,6 +3,7 @@ use aya::maps::MapInfo;
 use aya::{maps::HashMap as AyaHashMap, maps::Map, maps::MapData, Ebpf};
 use aya_obj::generated::{bpf_link_type, BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
 use bitflags;
+use libc::{clock_gettime, timespec, CLOCK_MONOTONIC};
 use log::{info, warn};
 use std::collections::HashMap;
 use std::fs::remove_file;
@@ -353,5 +354,45 @@ impl<'a> ComboHwAddr<'a> {
 
     pub fn second_string(&self) -> String {
         mac_to_str(self.at(1))
+    }
+}
+
+pub fn get_monotonic_clock_time() -> i64 {
+    let mut tp = timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let ptp = &mut tp as *mut timespec;
+
+    if 0 != unsafe { clock_gettime(CLOCK_MONOTONIC, ptp) } {
+        return 0;
+    }
+
+    tp.tv_sec
+}
+
+pub struct PrintTimeStatus {
+    now: i64,
+    expiry_interval: i64,
+}
+
+impl PrintTimeStatus {
+    pub fn new(expiry_interval: u32) -> Self {
+        Self {
+            now: get_monotonic_clock_time(),
+            expiry_interval: expiry_interval as i64,
+        }
+    }
+
+    pub fn status(&self, expiry: u32) -> String {
+        if self.now == 0 {
+            return "unknown".to_string();
+        }
+
+        if self.now - expiry as i64 >= self.expiry_interval {
+            "stale".to_string()
+        } else {
+            "active".to_string()
+        }
     }
 }
