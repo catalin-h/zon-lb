@@ -21,6 +21,7 @@ use network_types::{
 use zon_lb_common::{
     stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, NAT6Key, NAT6Value, EP6,
     MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_GROUPS,
+    NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
 /// Same as ZLB_LB4 but for IPv6 packets.
@@ -263,7 +264,7 @@ fn update_neighbors_cache(
     };
 
     // Set the expiry to 2 min but it can be used as last resort
-    let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + 120;
+    let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + NEIGH_ENTRY_EXPIRY_INTERVAL;
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
     let ndentry = NeighborEntry {
         ifindex,

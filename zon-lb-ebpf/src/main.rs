@@ -29,6 +29,7 @@ use network_types::{
 use zon_lb_common::{
     runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, GroupInfo, NAT4Key, NAT4Value, BE,
     EP4, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
+    NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
 const ETH_ALEN: usize = 6;
@@ -369,7 +370,7 @@ fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u32, mac: &[u8; 6], eth:
 
     // Set the expiry to 2 min but it can be used as last resort
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
-    let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + 120;
+    let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + NEIGH_ENTRY_EXPIRY_INTERVAL;
     let arpentry = ArpEntry {
         ifindex,
         mac: *mac,

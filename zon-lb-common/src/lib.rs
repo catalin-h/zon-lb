@@ -10,6 +10,8 @@ pub const MAX_CONNTRACKS: u32 = 10; // tmp dev, actual = 1 << 15;
 // ARP table it should at least the number of supported backends
 pub const MAX_ARP_ENTRIES: u32 = MAX_BACKENDS;
 
+pub const NEIGH_ENTRY_EXPIRY_INTERVAL: u32 = 120;
+
 /// Runtime variables allows the user app to dynamically set the
 /// logging level, enable or disable some bpf features like conntrack
 /// or just read statistics. The variable are accessed using the
