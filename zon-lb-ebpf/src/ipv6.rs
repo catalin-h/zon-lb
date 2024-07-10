@@ -20,7 +20,7 @@ use network_types::{
 };
 use zon_lb_common::{
     stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, NAT6Key, NAT6Value, EP6,
-    MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_GROUPS,
+    FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_GROUPS,
     NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
@@ -934,7 +934,7 @@ fn redirect_ipv6(
         // NOTE: check expiry before using this entry
         let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
 
-        if now - entry.expiry < 120 {
+        if now <= entry.expiry {
             let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
 
             // NOTE: look like aya can't convert the '*eth = entry.macs' into
@@ -972,7 +972,7 @@ fn update_fib6_cache(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp)
         macs: fib_param.ethdr_macs(),
         ip_src: fib_param.src, // not used for now
         // TODO: make the expiry time a runvar
-        expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32,
+        expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + FIB_ENTRY_EXPIRY_INTERVAL,
     };
 
     // NOTE: after updating the value or key struct size must remove the pinned map

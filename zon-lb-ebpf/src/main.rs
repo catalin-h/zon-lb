@@ -28,7 +28,7 @@ use network_types::{
 };
 use zon_lb_common::{
     runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, GroupInfo, NAT4Key, NAT4Value, BE,
-    EP4, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
+    EP4, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_GROUPS,
     NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
@@ -600,8 +600,9 @@ fn update_ipv4hdr(ipv4hdr: &mut Ipv4Hdr, src: u32, dst: u32) -> u32 {
     // OPTIMIZATION: compute the checksum update one time for both IP and L4
     // checksums and just update them as if some packet value was update
     // from 0 to computed checksum.
-    // WARNING: This seems checksum seems to work for iperf but if there is
+    // WARNING: This checksum seems to work for iperf but if there is
     // a case when it doesn't just use the bpftrace to investigate it.
+    // See the scripts folder for bpftrace scripts.
     let cso = csum_update_u32(ipv4hdr.src_addr, src, 0);
     let cso = csum_update_u32(ipv4hdr.dst_addr, dst, cso);
     let csum = csum_update_u32(0, cso, !ipv4hdr.check as u32);
@@ -1015,7 +1016,7 @@ fn redirect_ipv4(
         // TODO: check performance
         let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
 
-        if now - entry.expiry < 120 {
+        if now <= entry.expiry {
             let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
 
             // NOTE: look like aya can't convert the '*eth = entry.macs' into
@@ -1151,7 +1152,7 @@ fn update_fib(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
         ifindex: fib_param.ifindex,
         macs: fib_param.ethdr_macs(),
         ip_src: fib_param.src,
-        expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32,
+        expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + FIB_ENTRY_EXPIRY_INTERVAL,
     };
 
     // NOTE: after updating the value or key struct size must remove the pinned map
