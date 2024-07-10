@@ -1,6 +1,7 @@
 use crate::{
     helpers::{
         hashmap_mapdata, hashmap_remove_if, if_index_to_name, teardown_maps, ComboHwAddr, IfCache,
+        PrintTimeStatus,
     },
     info::InfoTable,
     options::{self, Options},
@@ -29,6 +30,8 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
         &vec![options::FLAG_ALL, options::FLAG_IPV4, options::FLAG_IPV6],
     );
     let mut hidden = 0;
+    let pts = PrintTimeStatus::new(0);
+
     if options.flags.contains(EPFlags::IPV4) || !options.flags.contains(EPFlags::IPV6) {
         let arp = hashmap_mapdata::<Fib4Key, FibEntry>()?;
         for (key, value) in arp.iter().filter_map(|f| f.ok()) {
@@ -45,7 +48,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
                 String::from("<"),
                 cwa.second_string(),
                 name,
-                value.expiry.to_string(),
+                pts.status(value.expiry),
             ]);
         }
     }
@@ -68,7 +71,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
                 String::from("<"),
                 cwa.second_string(),
                 name,
-                value.expiry.to_string(),
+                pts.status(value.expiry),
             ]);
         }
     }
