@@ -292,6 +292,22 @@ struct RunVarOpt {
     action: Option<RunVarAction>,
 }
 
+#[derive(clap::Args, Debug)]
+struct NeighAddOpt {
+    /// The neighbor IP address
+    ip_address: String,
+    /// Neighbor key pair options:
+    /// mac=<hw addr>    mac address of the neighbor
+    /// if=<name>        interface to access the neighbor
+    /// if_mac=<hw addr> mac address of the interface
+    /// vlan=<VLAN id>   vlan id of the neighbor
+    ///
+    /// If no options are provided the program will try to trigger a neighbor
+    /// discovery or obtain the details if the IP is local.
+    #[clap(verbatim_doc_comment)]
+    options: Vec<String>,
+}
+
 #[derive(clap::Subcommand, Debug)]
 enum NeighAction {
     /// List neighbor entries
@@ -312,6 +328,8 @@ enum NeighAction {
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
+    /// Inserts or updates a neighbor
+    Add(NeighAddOpt),
 }
 
 #[derive(clap::Args, Debug)]
@@ -546,6 +564,7 @@ fn handle_stats(opt: &StatsOpt) -> Result<(), anyhow::Error> {
         counter_pattern: None,
     });
 
+    // TODO: list stats for all loaded programs is no ifname is provided
     match action {
         StatsAction::List { counter_pattern } => {
             stats.print_all(counter_pattern.as_ref().map(|cname| cname.as_str()))
@@ -583,6 +602,7 @@ fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
     match action {
         NeighAction::List { filter_options } => neighbors::list(filter_options),
         NeighAction::Remove { filter_options } => neighbors::remove(filter_options),
+        NeighAction::Add(opt) => Ok(()),
     }
 }
 
