@@ -1,4 +1,4 @@
-use crate::helpers;
+use crate::helpers::{self, ifindex, mac_to_str, parse_mac};
 use std::{collections::BTreeMap, fmt, net::IpAddr};
 use zon_lb_common::EPFlags;
 
@@ -12,6 +12,10 @@ pub const LOG_FILTER: &str = "log_filter";
 pub const FLAG_ALL: &str = "all";
 pub const FLAG_IPV4: &str = "ipv4";
 pub const FLAG_IPV6: &str = "ipv6";
+pub const MAC_ADDR: &str = "mac";
+pub const IF_MAC_ADDR: &str = "if_mac";
+pub const IF_NAME: &str = "if";
+pub const VLAN: &str = "vlan";
 
 #[derive(Clone)]
 pub struct Options {
@@ -128,6 +132,29 @@ impl Options {
                 LOG_FILTER => {
                     props.insert(key.to_string(), value.to_string());
                 }
+                MAC_ADDR | IF_MAC_ADDR => match parse_mac(&value) {
+                    Ok(mac) => {
+                        log::info!(
+                            "Unsing {} mac: {}",
+                            if key == MAC_ADDR { "neighbor" } else { "if" },
+                            mac_to_str(&mac)
+                        );
+                        props.insert(key.to_string(), mac_to_str(&mac));
+                    }
+                    Err(e) => log::error!("{} parse error, {}", key, e),
+                },
+                VLAN => match u16::from_str_radix(&value, 10) {
+                    Ok(_) => {
+                        props.insert(key.to_string(), value.to_string());
+                    }
+                    Err(e) => log::error!("{} parse error, {}", key, e),
+                },
+                IF_NAME => match ifindex(value) {
+                    Ok(_) => {
+                        props.insert(key.to_string(), value.to_string());
+                    }
+                    Err(e) => log::error!("{} parse error, {}", key, e),
+                },
                 _ => log::error!("Unknown key '{}' in option '{}'", key, arg),
             };
         }

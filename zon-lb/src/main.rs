@@ -27,7 +27,7 @@ use options::Options;
 use prog::*;
 use protocols::Protocol;
 use stats::Stats;
-use std::str::FromStr;
+use std::{net::IpAddr, str::FromStr};
 use tokio::signal;
 
 pub(crate) trait ToMapName {
@@ -602,7 +602,11 @@ fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
     match action {
         NeighAction::List { filter_options } => neighbors::list(filter_options),
         NeighAction::Remove { filter_options } => neighbors::remove(filter_options),
-        NeighAction::Add(opt) => Ok(()),
+        NeighAction::Add(opt) => {
+            let ip = opt.ip_address.parse::<IpAddr>()?;
+            let opt = Options::from_option_args(&opt.options);
+            Ok(())
+        }
     }
 }
 
