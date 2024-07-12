@@ -396,3 +396,35 @@ impl PrintTimeStatus {
         }
     }
 }
+
+pub fn parse_mac<T: AsRef<str>>(input: T) -> Result<[u8; 6], anyhow::Error> {
+    let mut mac = [0; 6];
+    let bytes: Vec<&str> = input.as_ref().split(":").collect();
+    if bytes.len() == 6 {
+        for (i, b) in bytes.iter().enumerate() {
+            mac[i] = u8::from_str_radix(b, 16)?;
+        }
+        return Ok(mac);
+    }
+
+    let bytes: Vec<&str> = input.as_ref().split("-").collect();
+    if bytes.len() == 6 {
+        for (i, b) in bytes.iter().enumerate() {
+            mac[i] = u8::from_str_radix(b, 16)?;
+        }
+        return Ok(mac);
+    }
+
+    for (i, c) in input.as_ref().char_indices() {
+        if i >= 12 {
+            return Err(anyhow!(
+                "invalid lenth for mac address '{}'",
+                input.as_ref()
+            ));
+        }
+        let hexd = c.to_digit(16).ok_or(anyhow!("non hex digit '{}'", c))? as u8;
+        mac[i / 2] |= hexd << 4 * (1 - (i & 1));
+    }
+
+    Ok(mac)
+}
