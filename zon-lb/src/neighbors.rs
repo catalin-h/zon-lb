@@ -7,7 +7,8 @@ use crate::{
     options::{self, Options},
     ToMapName,
 };
-use std::net::{Ipv4Addr, Ipv6Addr};
+use anyhow::anyhow;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use zon_lb_common::{ArpEntry, ArpKey, EPFlags, Inet6U, NDKey};
 
 impl ToMapName for ArpKey {
@@ -107,6 +108,113 @@ pub fn remove(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
 
     Ok(())
 }
+
+const NEIGH_OPTIONS: [&str; 4] = [
+    options::IF_NAME,
+    options::IF_MAC_ADDR,
+    options::MAC_ADDR,
+    options::VLAN,
+];
+
+fn fill_neigh_entry(entry: &mut ArpEntry, opts: &Options) -> bool {
+    let mut updated = false;
+
+    if let Ok(mac) = opts.get_mac(options::MAC_ADDR) {
+        if mac != entry.mac {
+            log::info!(
+                "[nd] update mac: {} -> {}",
+                mac_to_str(&entry.mac),
+                mac_to_str(&mac)
+            );
+            entry.mac = mac;
+            updated = true;
+        }
+    }
+
+    if let Ok(mac) = opts.get_mac(options::IF_MAC_ADDR) {
+        if entry.if_mac != mac {
+            log::info!(
+                "[nd] update if_mac: {} -> {}",
+                mac_to_str(&entry.if_mac),
+                mac_to_str(&mac)
+            );
+            entry.if_mac = mac;
+            updated = true;
+        }
+    }
+
+    if let Ok(if_index) = opts.get_u32(options::IF_INDEX) {
+        if if_index != entry.ifindex {
+            let mut ifc = IfCache::new("na");
+            log::info!(
+                "[nd] update if: {} -> {}",
+                ifc.name(entry.ifindex),
+                ifc.name(if_index)
+            );
+            entry.ifindex = if_index;
+            updated = true;
+        }
+    }
+
+    if let Ok(vlan) = opts.get_u32(options::VLAN) {
+        if vlan != entry.vlan_id {
+            log::info!("[nd] update vlan id: {} -> {}", entry.vlan_id, vlan);
+            entry.vlan_id = vlan;
+            updated = true;
+        }
+    }
+
+    updated
+}
+
+fn insert_ipv4(ip: &Ipv4Addr, opts: &Options) -> Result<(), anyhow::Error> {
+    let mut arp = hashmap_mapdata::<ArpKey, ArpEntry>()?;
+    let key = ArpKey {
+        addr: u32::from_le_bytes(ip.octets()),
+    };
+    let mut entry = match arp.get(&key, 0) {
+        Ok(entry) => entry,
+        Err(_) => ArpEntry::default(),
+    };
+
+    if !fill_neigh_entry(&mut entry, opts) {
+        log::info!("[nd] no updates!");
+        return Ok(());
+    }
+
+    arp.insert(&key, entry, 0).map_err(|e| {
+        anyhow!(
+            "can't update arp neigh {}, {}",
+            ip.to_string(),
+            e.to_string()
+        )
+    })
+}
+
+fn insert_ipv6(ip: &Ipv6Addr, opts: &Options) -> Result<(), anyhow::Error> {
+    Ok(())
+}
+
+/// Launch a TCP connection to trigger ND discovery
+pub fn trigger_nd(ip: &str) -> Result<(), anyhow::Error> {
+    let ip = ip.parse::<IpAddr>()?;
+    Ok(())
+}
+
 pub fn insert(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
+    let opts = Options::from_option_args_with_keys(in_opts, &NEIGH_OPTIONS);
+
+    if opts.props_empty() {
+        return trigger_nd(&ip);
+    }
+
+    let ipaddr = ip.parse::<IpAddr>()?;
+
+    log::info!("[nd] updating {} ...", ipaddr.to_string());
+    match ipaddr {
+        IpAddr::V4(v4) => insert_ipv4(&v4, &opts),
+        IpAddr::V6(v6) => insert_ipv6(&v6, &opts),
+    }?;
+
     Ok(())
 }
