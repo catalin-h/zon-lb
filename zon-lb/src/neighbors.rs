@@ -107,3 +107,6 @@ pub fn remove(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
 
     Ok(())
 }
+pub fn insert(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
+    Ok(())
+}
