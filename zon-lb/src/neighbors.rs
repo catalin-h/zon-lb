@@ -116,8 +116,10 @@ const NEIGH_OPTIONS: [&str; 4] = [
     options::VLAN,
 ];
 
-fn fill_neigh_entry(entry: &mut ArpEntry, opts: &Options) -> bool {
+fn fill_neigh_entry(entry: Option<ArpEntry>, opts: &Options) -> Option<ArpEntry> {
     let mut updated = false;
+    let exists = entry.is_some();
+    let mut entry = entry.unwrap_or_default();
 
     if let Ok(mac) = opts.get_mac(options::MAC_ADDR) {
         if mac != entry.mac {
@@ -129,6 +131,11 @@ fn fill_neigh_entry(entry: &mut ArpEntry, opts: &Options) -> bool {
             entry.mac = mac;
             updated = true;
         }
+    }
+
+    if !updated && !exists {
+        log::error!("[nd] must provide at least a valid 'mac' option");
+        return None;
     }
 
     if let Ok(mac) = opts.get_mac(options::IF_MAC_ADDR) {
@@ -164,7 +171,11 @@ fn fill_neigh_entry(entry: &mut ArpEntry, opts: &Options) -> bool {
         }
     }
 
-    updated
+    if updated {
+        Some(entry)
+    } else {
+        None
+    }
 }
 
 fn insert_ipv4(ip: &Ipv4Addr, opts: &Options) -> Result<(), anyhow::Error> {
@@ -172,15 +183,18 @@ fn insert_ipv4(ip: &Ipv4Addr, opts: &Options) -> Result<(), anyhow::Error> {
     let key = ArpKey {
         addr: u32::from_le_bytes(ip.octets()),
     };
-    let mut entry = match arp.get(&key, 0) {
-        Ok(entry) => entry,
-        Err(_) => ArpEntry::default(),
+    let entry = match arp.get(&key, 0) {
+        Ok(entry) => Some(entry),
+        Err(_) => None,
     };
 
-    if !fill_neigh_entry(&mut entry, opts) {
-        log::info!("[nd] no updates!");
-        return Ok(());
-    }
+    let entry = match fill_neigh_entry(entry, opts) {
+        None => {
+            log::info!("[nd] no updates !");
+            return Ok(());
+        }
+        Some(entry) => entry,
+    };
 
     arp.insert(&key, entry, 0).map_err(|e| {
         anyhow!(
@@ -192,7 +206,31 @@ fn insert_ipv4(ip: &Ipv4Addr, opts: &Options) -> Result<(), anyhow::Error> {
 }
 
 fn insert_ipv6(ip: &Ipv6Addr, opts: &Options) -> Result<(), anyhow::Error> {
-    Ok(())
+    let mut nd = hashmap_mapdata::<NDKey, ArpEntry>()?;
+    let key = NDKey {
+        addr32: unsafe { Inet6U::from(ip.octets()).addr32 },
+    };
+
+    let entry = match nd.get(&key, 0) {
+        Ok(entry) => Some(entry),
+        Err(_) => None,
+    };
+
+    let entry = match fill_neigh_entry(entry, opts) {
+        None => {
+            log::info!("[nd] no updates !");
+            return Ok(());
+        }
+        Some(entry) => entry,
+    };
+
+    nd.insert(&key, entry, 0).map_err(|e| {
+        anyhow!(
+            "can't update arp neigh {}, {}",
+            ip.to_string(),
+            e.to_string()
+        )
+    })
 }
 
 /// Launch a TCP connection to trigger ND discovery
