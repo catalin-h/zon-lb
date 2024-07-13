@@ -137,7 +137,7 @@ impl Options {
                 MAC_ADDR | IF_MAC_ADDR => match parse_unicast_mac(&value) {
                     Ok(mac) => {
                         log::info!(
-                            "Unsing {} mac: {}",
+                            "Using {} mac: {}",
                             if key == MAC_ADDR { "neighbor" } else { "if" },
                             mac_to_str(&mac)
                         );
