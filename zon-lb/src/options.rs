@@ -16,6 +16,7 @@ pub const FLAG_IPV6: &str = "ipv6";
 pub const MAC_ADDR: &str = "mac";
 pub const IF_MAC_ADDR: &str = "if_mac";
 pub const IF_NAME: &str = "if";
+pub const IF_INDEX: &str = "ifidx";
 pub const VLAN: &str = "vlan";
 
 #[derive(Clone)]
@@ -151,8 +152,9 @@ impl Options {
                     Err(e) => log::error!("{} parse error, {}", key, e),
                 },
                 IF_NAME => match ifindex(value) {
-                    Ok(_) => {
+                    Ok(index) => {
                         props.insert(key.to_string(), value.to_string());
+                        props.insert(IF_INDEX.to_string(), index.to_string());
                     }
                     Err(e) => log::error!("{} parse error, {}", key, e),
                 },
