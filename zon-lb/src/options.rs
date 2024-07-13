@@ -163,4 +163,29 @@ impl Options {
         }
         Self { props, flags }
     }
+
+    pub fn get_and_parse<V, T>(&self, key: T) -> Result<V, anyhow::Error>
+    where
+        T: AsRef<str>,
+        V: FromStr,
+    {
+        let value = self.props.get(key.as_ref()).ok_or(anyhow!(""))?;
+        value
+            .parse::<V>()
+            .map_err(|_| anyhow!("{}: parse error '{}'", key.as_ref(), value))
+    }
+
+    pub fn get_mac<T: AsRef<str>>(&self, key: T) -> Result<[u8; 6], anyhow::Error> {
+        let mac: String = self.get_and_parse(key)?;
+        parse_unicast_mac(mac)
+    }
+
+    pub fn get_u32<T: AsRef<str>>(&self, key: T) -> Result<u32, anyhow::Error> {
+        let num: u32 = self.get_and_parse(key)?;
+        Ok(num)
+    }
+
+    pub fn props_empty(&self) -> bool {
+        self.props.is_empty()
+    }
 }
