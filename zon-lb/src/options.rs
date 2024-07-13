@@ -89,7 +89,15 @@ impl Options {
                 None => {
                     let f = arg.to_lowercase();
                     if !allowed_keys.is_empty() && !allowed_keys.contains(&f.as_str()) {
-                        log::warn!("Unknown flag '{}' for current context", arg);
+                        log::warn!(
+                            "Unknown flag '{}' for current context{}",
+                            arg,
+                            if allowed_keys.is_empty() {
+                                String::from("")
+                            } else {
+                                format!(", allowed key(s): {}", allowed_keys.join(", "))
+                            }
+                        );
                         continue;
                     }
                     match f.as_str() {
@@ -112,7 +120,15 @@ impl Options {
 
             let key = key.to_lowercase();
             if !allowed_keys.is_empty() && !allowed_keys.iter().any(|a| *a == key) {
-                log::warn!("Unknown key '{}' for current context", key);
+                log::warn!(
+                    "Unknown key '{}' for current context{}",
+                    key,
+                    if allowed_keys.is_empty() {
+                        String::from("")
+                    } else {
+                        format!(", allowed key(s): {}", allowed_keys.join(", "))
+                    }
+                );
                 continue;
             }
             match key.as_str() {
