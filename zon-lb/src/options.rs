@@ -1,5 +1,6 @@
-use crate::helpers::{self, ifindex, mac_to_str, parse_mac};
-use std::{collections::BTreeMap, fmt, net::IpAddr};
+use crate::helpers::{self, ifindex, mac_to_str, parse_unicast_mac};
+use anyhow::anyhow;
+use std::{collections::BTreeMap, fmt, net::IpAddr, str::FromStr};
 use zon_lb_common::EPFlags;
 
 pub const DISABLE: &str = "disable";
@@ -132,7 +133,7 @@ impl Options {
                 LOG_FILTER => {
                     props.insert(key.to_string(), value.to_string());
                 }
-                MAC_ADDR | IF_MAC_ADDR => match parse_mac(&value) {
+                MAC_ADDR | IF_MAC_ADDR => match parse_unicast_mac(&value) {
                     Ok(mac) => {
                         log::info!(
                             "Unsing {} mac: {}",

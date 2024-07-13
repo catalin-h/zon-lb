@@ -428,3 +428,16 @@ pub fn parse_mac<T: AsRef<str>>(input: T) -> Result<[u8; 6], anyhow::Error> {
 
     Ok(mac)
 }
+
+pub fn is_unicast_mac(mac: &[u8; 6]) -> bool {
+    *mac != [0_u8; 6] && (mac[0] & 0x1) == 0_u8
+}
+
+pub fn parse_unicast_mac<T: AsRef<str>>(input: T) -> Result<[u8; 6], anyhow::Error> {
+    let mac = parse_mac(input)?;
+    if is_unicast_mac(&mac) {
+        return Ok(mac);
+    }
+
+    Err(anyhow!("Not a unicast address, {}", mac_to_str(&mac)))
+}
