@@ -8,6 +8,7 @@ pub const REDIRECT: &str = "redirect";
 pub const TX: &str = "tx";
 pub const NO_NAT: &str = "no_nat";
 pub const SRC_IP: &str = "src_ip";
+pub const IP_ADDR: &str = "ip";
 pub const REPLACE: &str = "replace";
 pub const LOG_FILTER: &str = "log_filter";
 pub const FLAG_ALL: &str = "all";
@@ -141,11 +142,11 @@ impl Options {
                         log::error!("No '{}' interface, see option '{}'", value, arg)
                     }
                 },
-                SRC_IP => match value.parse::<IpAddr>() {
+                SRC_IP | IP_ADDR => match value.parse::<IpAddr>() {
                     Ok(_) => {
                         props.insert(key.to_string(), value.to_string());
                     }
-                    Err(e) => log::error!("Invalid src_ip '{}', {}", value, e),
+                    Err(e) => log::error!("Invalid {} '{}', {}", key, value, e),
                 },
                 LOG_FILTER => {
                     props.insert(key.to_string(), value.to_string());
@@ -194,6 +195,11 @@ impl Options {
     pub fn get_mac<T: AsRef<str>>(&self, key: T) -> Result<[u8; 6], anyhow::Error> {
         let mac: String = self.get_and_parse(key)?;
         parse_unicast_mac(mac)
+    }
+
+    pub fn get_ip<T: AsRef<str>>(&self, key: T) -> Result<IpAddr, anyhow::Error> {
+        let ip: IpAddr = self.get_and_parse(key)?;
+        Ok(ip)
     }
 
     pub fn get_u32<T: AsRef<str>>(&self, key: T) -> Result<u32, anyhow::Error> {
