@@ -302,8 +302,14 @@ struct NeighAddOpt {
     /// if_mac=<hw addr> mac address of the interface
     /// vlan=<VLAN id>   vlan id of the neighbor
     ///
-    /// If no options are provided the program will try to trigger a neighbor
-    /// discovery or obtain the details if the IP is local.
+    /// If no options are provided the program will assume the ip
+    /// is local and will try to search for the local interface
+    /// that has this address. If it can't find such interface it
+    /// will trigger a neighbor  discovery trying a TCP connection.
+    #[clap(verbatim_doc_comment)]
+    options: Vec<String>,
+}
+
     #[clap(verbatim_doc_comment)]
     options: Vec<String>,
 }
@@ -313,10 +319,10 @@ enum NeighAction {
     /// List neighbor entries
     List {
         /// Filter options:
-        /// * `all`  : By default only neighbors with existing interfaces are displayed.
-        ///            To list all entries must pass this argument. This filter applies last.
-        /// * `ipv4` : List only IPv4 or ARP entries
-        /// * `ipv6` : List only IPv6 neighbor entries
+        /// all   By default only neighbors with existing interfaces are displayed.
+        ///       To list all entries must pass this argument. This filter applies last.
+        /// ipv4  List only IPv4 or ARP entries
+        /// ipv6  List only IPv6 neighbor entries
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
