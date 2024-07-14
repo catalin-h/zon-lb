@@ -9,6 +9,7 @@ pub const TX: &str = "tx";
 pub const NO_NAT: &str = "no_nat";
 pub const SRC_IP: &str = "src_ip";
 pub const IP_ADDR: &str = "ip";
+pub const PORT: &str = "port";
 pub const REPLACE: &str = "replace";
 pub const LOG_FILTER: &str = "log_filter";
 pub const FLAG_ALL: &str = "all";
@@ -162,7 +163,7 @@ impl Options {
                     }
                     Err(e) => log::error!("{} parse error, {}", key, e),
                 },
-                VLAN => match u16::from_str_radix(&value, 10) {
+                VLAN | PORT => match u16::from_str_radix(&value, 10) {
                     Ok(_) => {
                         props.insert(key.to_string(), value.to_string());
                     }
@@ -186,7 +187,10 @@ impl Options {
         T: AsRef<str>,
         V: FromStr,
     {
-        let value = self.props.get(key.as_ref()).ok_or(anyhow!(""))?;
+        let value = self
+            .props
+            .get(key.as_ref())
+            .ok_or(anyhow!("No key {}", key.as_ref()))?;
         value
             .parse::<V>()
             .map_err(|_| anyhow!("{}: parse error '{}'", key.as_ref(), value))
