@@ -310,6 +310,13 @@ struct NeighAddOpt {
     options: Vec<String>,
 }
 
+#[derive(clap::Args, Debug)]
+struct NeighProbeOpt {
+    /// The neighbor IP address
+    ip_address: String,
+    /// Neighbor key pair options:
+    /// port=<TCP port> mac address of the neighbor
+    // TODO: if=<name>       interface to access the neighbor
     #[clap(verbatim_doc_comment)]
     options: Vec<String>,
 }
@@ -337,6 +344,10 @@ enum NeighAction {
     },
     /// Inserts or updates a neighbor
     Insert(NeighAddOpt),
+    /// Probes a neighbor ip using a tcp connection.
+    /// This can be used to fill ND tables because before the connection
+    /// it initiated the system triggers the neighbor discovery mechanism.
+    Probe(NeighProbeOpt),
 }
 
 #[derive(clap::Args, Debug)]
@@ -610,6 +621,7 @@ fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
         NeighAction::List { filter_options } => neighbors::list(filter_options),
         NeighAction::Remove { filter_options } => neighbors::remove(filter_options),
         NeighAction::Insert(opt) => neighbors::insert(&opt.ip_address, &opt.options),
+        NeighAction::Probe(opt) => neighbors::probe(&opt.ip_address, &opt.options),
     }
 }
 

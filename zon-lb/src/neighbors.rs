@@ -277,6 +277,12 @@ fn probe_nd(ip: IpAddr, opts: &Options) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+pub fn probe(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
+    let ip = ip.parse::<IpAddr>()?;
+    let opts = Options::from_option_args_with_keys(in_opts, &[options::PORT]);
+    probe_nd(ip, &opts)
+}
+
 pub fn insert(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     let opts = Options::from_option_args_with_keys(in_opts, &NEIGH_OPTIONS);
     let ipaddr = ip.parse::<IpAddr>()?;
