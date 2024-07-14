@@ -122,6 +122,22 @@ impl MapOpResult {
     }
 }
 
+pub fn hashmap_remove_by_key<K, V>(key: &K) -> Result<(), anyhow::Error>
+where
+    K: aya::Pod + ToMapName,
+    V: aya::Pod,
+{
+    let mut map = hashmap_mapdata::<K, V>()?;
+
+    map.remove(key).map_err(|e| {
+        anyhow!(
+            "can't remove key from map {}, {}",
+            K::map_name(),
+            e.to_string()
+        )
+    })
+}
+
 pub fn hashmap_remove_if<K, V, F>(predicate: F) -> Result<MapOpResult, anyhow::Error>
 where
     K: aya::Pod + ToMapName,
@@ -132,8 +148,6 @@ where
     let mut result = MapOpResult::new();
 
     result.total = map.iter().count() as u32;
-
-    println!("total: {}", result.total);
 
     loop {
         let keys = map
