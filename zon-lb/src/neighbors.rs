@@ -8,8 +8,14 @@ use crate::{
     ToMapName,
 };
 use anyhow::anyhow;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::{
+    io::Read,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
+    time::Duration,
+};
 use zon_lb_common::{ArpEntry, ArpKey, EPFlags, Inet6U, NDKey};
+
+const DEFAULT_PROBE_PORT: u16 = 22_u16;
 
 impl ToMapName for ArpKey {
     fn map_name() -> &'static str {
@@ -253,19 +259,31 @@ fn insert_ipv6(ip: &Ipv6Addr, opts: &Options) -> Result<(), anyhow::Error> {
 }
 
 /// Launch a TCP connection to trigger ND discovery
-pub fn trigger_nd(ip: &str) -> Result<(), anyhow::Error> {
-    let ip = ip.parse::<IpAddr>()?;
+fn probe_nd(ip: IpAddr, opts: &Options) -> Result<(), anyhow::Error> {
+    let port = opts
+        .get_u32(options::PORT)
+        .unwrap_or(DEFAULT_PROBE_PORT as u32) as u16;
+    let ska = SocketAddr::new(ip, port);
+    log::info!("[nd] probing neighbor as {} ... ", ska.to_string());
+    match TcpStream::connect_timeout(&ska, Duration::from_millis(100)) {
+        Ok(_) => {
+            log::info!("[nd] neighbor probe connected")
+        }
+        Err(e) => {
+            log::info!("[nd] neighbor probe not connected, {}", e.to_string())
+        }
+    };
+    log::info!("[nd] neighbor {} probed ", ip.to_string());
     Ok(())
 }
 
 pub fn insert(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     let opts = Options::from_option_args_with_keys(in_opts, &NEIGH_OPTIONS);
+    let ipaddr = ip.parse::<IpAddr>()?;
 
     if opts.props_empty() {
-        return trigger_nd(&ip);
+        return probe_nd(ipaddr, &opts);
     }
-
-    let ipaddr = ip.parse::<IpAddr>()?;
 
     log::info!("[nd] updating {} ...", ipaddr.to_string());
     match ipaddr {
