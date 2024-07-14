@@ -323,8 +323,9 @@ enum NeighAction {
     /// Remove neighbor entries
     Remove {
         /// Filter options:
-        /// * `all`  : By default only neighbors with non-existing interfaces are removed.
-        ///            To remove all pass this flag.
+        /// all       By default only neighbors with non-existing interfaces are removed.
+        ///           To remove all pass this flag.
+        /// ip=<addr> Removes only the entry with this ip address. Can't be used with other filters.
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },

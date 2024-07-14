@@ -1,7 +1,7 @@
 use crate::{
     helpers::{
-        hashmap_mapdata, hashmap_remove_if, if_index_to_name, mac_to_str, teardown_maps, IfCache,
-        PrintTimeStatus,
+        hashmap_mapdata, hashmap_remove_by_key, hashmap_remove_if, if_index_to_name, mac_to_str,
+        teardown_maps, IfCache, PrintTimeStatus,
     },
     info::InfoTable,
     options::{self, Options},
@@ -85,9 +85,28 @@ pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
 }
 
 pub fn remove(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
-    let rem_all = Options::from_option_args_with_keys(filter_opts, &vec![options::FLAG_ALL])
-        .props
-        .contains_key(options::FLAG_ALL);
+    let opts = Options::from_option_args_with_keys(
+        filter_opts,
+        &vec![options::FLAG_ALL, options::IP_ADDR],
+    );
+
+    if let Ok(ip) = opts.get_ip(options::IP_ADDR) {
+        match ip {
+            IpAddr::V4(v4) => hashmap_remove_by_key::<ArpKey, ArpEntry>(&ArpKey {
+                addr: u32::from_le_bytes(v4.octets()),
+            }),
+            IpAddr::V6(v6) => hashmap_remove_by_key::<NDKey, ArpEntry>(&NDKey {
+                addr32: unsafe { Inet6U::from(&v6.octets()).addr32 },
+            }),
+        }
+        .map_err(|e| anyhow!("failed to remove nd {}, {}", ip.to_string(), e.to_string()))?;
+
+        log::info!("[nd] {} successfully removed", ip.to_string());
+
+        return Ok(());
+    }
+
+    let rem_all = opts.props.contains_key(options::FLAG_ALL);
     let result = hashmap_remove_if::<ArpKey, ArpEntry, _>(|_, e| {
         rem_all || if_index_to_name(e.ifindex).is_none()
     })?;
