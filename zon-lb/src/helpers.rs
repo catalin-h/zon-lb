@@ -455,3 +455,25 @@ pub fn parse_unicast_mac<T: AsRef<str>>(input: T) -> Result<[u8; 6], anyhow::Err
 
     Err(anyhow!("Not a unicast address, {}", mac_to_str(&mac)))
 }
+
+fn cstr_to_string(cstr_buff: *const i8) -> String {
+    let str = unsafe { std::ffi::CStr::from_ptr(cstr_buff) };
+    let str = str.to_string_lossy();
+    str.to_string()
+}
+
+pub fn str_error(err: i32) -> String {
+    let mut buff = [0_i8; 256];
+    let rc = unsafe { libc::strerror_r(err, buff.as_mut_ptr(), buff.len()) };
+
+    if rc != 0 {
+        format!("errno={}, unknown", err)
+    } else {
+        cstr_to_string(buff.as_ptr())
+    }
+}
+
+pub fn str_errno() -> String {
+    let errno = unsafe { *libc::__errno_location() };
+    str_error(errno)
+}
