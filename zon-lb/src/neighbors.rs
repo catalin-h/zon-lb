@@ -1,7 +1,7 @@
 use crate::{
     helpers::{
-        hashmap_mapdata, hashmap_remove_by_key, hashmap_remove_if, if_index_to_name, mac_to_str,
-        teardown_maps, IfCache, PrintTimeStatus,
+        get_netifs, hashmap_mapdata, hashmap_remove_by_key, hashmap_remove_if, if_index_to_name,
+        mac_to_str, teardown_maps, IfCache, PrintTimeStatus,
     },
     info::InfoTable,
     options::{self, Options},
@@ -9,7 +9,6 @@ use crate::{
 };
 use anyhow::anyhow;
 use std::{
-    io::Read,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
     time::Duration,
 };
@@ -297,5 +296,20 @@ pub fn insert(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
         IpAddr::V6(v6) => insert_ipv6(&v6, &opts),
     }?;
 
+    Ok(())
+}
+
+pub fn show_ifs() -> Result<(), anyhow::Error> {
+    // todo add VLAN
+    let mut tab = InfoTable::new(vec!["address", "mac", "if:index"]);
+    let ifs = get_netifs()?;
+
+    for (ifname, ni) in ifs.into_iter() {
+        for ip in ni.ips {
+            tab.push_row(vec![ip.to_string(), mac_to_str(&ni.mac), ifname.clone()]);
+        }
+    }
+
+    tab.print("Network interfaces");
     Ok(())
 }

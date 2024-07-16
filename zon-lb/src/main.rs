@@ -348,6 +348,10 @@ enum NeighAction {
     /// This can be used to fill ND tables because before the connection
     /// it initiated the system triggers the neighbor discovery mechanism.
     Probe(NeighProbeOpt),
+    /// Shows local network interfaces details. This command can be used
+    /// to insert local neighbors. These entries are used to respond to
+    /// ARP/ND requests in the VLAN proxy scenario.
+    ShowIfs,
 }
 
 #[derive(clap::Args, Debug)]
@@ -622,6 +626,7 @@ fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
         NeighAction::Remove { filter_options } => neighbors::remove(filter_options),
         NeighAction::Insert(opt) => neighbors::insert(&opt.ip_address, &opt.options),
         NeighAction::Probe(opt) => neighbors::probe(&opt.ip_address, &opt.options),
+        NeighAction::ShowIfs => neighbors::show_ifs(),
     }
 }
 
