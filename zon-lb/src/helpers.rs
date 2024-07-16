@@ -3,10 +3,11 @@ use aya::maps::MapInfo;
 use aya::{maps::HashMap as AyaHashMap, maps::Map, maps::MapData, Ebpf};
 use aya_obj::generated::{bpf_link_type, BPF_ANY, BPF_EXIST, BPF_F_LOCK, BPF_NOEXIST};
 use bitflags;
-use libc::{clock_gettime, timespec, CLOCK_MONOTONIC};
+use libc::{clock_gettime, sockaddr_in, sockaddr_in6, sockaddr_ll, timespec, CLOCK_MONOTONIC};
 use log::{info, warn};
 use std::collections::HashMap;
 use std::fs::remove_file;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use crate::ToMapName;
@@ -476,4 +477,69 @@ pub fn str_error(err: i32) -> String {
 pub fn str_errno() -> String {
     let errno = unsafe { *libc::__errno_location() };
     str_error(errno)
+}
+
+#[derive(Default, Clone)]
+pub struct NetIf {
+    pub ifindex: u32,
+    pub mac: [u8; 6],
+    pub ips: Vec<IpAddr>,
+}
+
+pub fn get_netifs() -> Result<HashMap<String, NetIf>, anyhow::Error> {
+    let mut ifs = HashMap::new();
+    let mut ifaddrs: *mut libc::ifaddrs = core::ptr::null_mut();
+    let rc = unsafe { libc::getifaddrs(&mut ifaddrs) };
+
+    if rc != 0 {
+        return Err(anyhow!("failed to get net interfaces, {}", str_errno()));
+    }
+
+    let mut next_ifa = ifaddrs;
+
+    // TODO add:
+    // 1. MTU: use iotcl(SIOCGIFMTU) or read /sys/class/net/veth0/mtu
+    // 2. state: read /sys/class/net/veth0/operstate or read iotcl SIOCSIFFLAGS/IFF_UP
+    // see: https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-class-net
+
+    loop {
+        if next_ifa.is_null() {
+            break;
+        }
+
+        let ifa = unsafe { (*next_ifa).ifa_addr };
+
+        if ifa.is_null() {
+            next_ifa = unsafe { (*next_ifa).ifa_next };
+            continue;
+        }
+
+        let ifname = cstr_to_string(unsafe { (*next_ifa).ifa_name });
+        let netif = ifs.entry(ifname).or_insert_with(|| NetIf::default());
+
+        match unsafe { (*ifa).sa_family } as i32 {
+            libc::AF_PACKET => {
+                let lladdr = ifa as *const sockaddr_ll;
+                netif.mac = unsafe { *((*lladdr).sll_addr.as_ptr() as *const [u8; 6]) };
+                netif.ifindex = unsafe { (*lladdr).sll_ifindex } as u32;
+            }
+            libc::AF_INET => {
+                let sa = ifa as *const sockaddr_in;
+                let addr = unsafe { (*sa).sin_addr.s_addr };
+                netif.ips.push(IpAddr::from(addr.to_le_bytes()));
+            }
+            libc::AF_INET6 => {
+                let sa = ifa as *const sockaddr_in6;
+                let ip = IpAddr::from(unsafe { (*sa).sin6_addr.s6_addr });
+                netif.ips.push(ip);
+            }
+            _ => {}
+        }
+
+        next_ifa = unsafe { (*next_ifa).ifa_next };
+    }
+
+    unsafe { libc::freeifaddrs(ifaddrs) };
+
+    Ok(ifs)
 }
