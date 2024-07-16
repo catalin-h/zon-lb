@@ -1,7 +1,7 @@
 use crate::{
     helpers::{
         get_netifs, hashmap_mapdata, hashmap_remove_by_key, hashmap_remove_if, if_index_to_name,
-        mac_to_str, teardown_maps, IfCache, PrintTimeStatus,
+        mac_to_str, stou64, teardown_maps, IfCache, PrintTimeStatus,
     },
     info::InfoTable,
     options::{self, Options},
@@ -301,15 +301,21 @@ pub fn insert(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
 
 pub fn show_ifs() -> Result<(), anyhow::Error> {
     // todo add VLAN
-    let mut tab = InfoTable::new(vec!["address", "mac", "if:index"]);
+    let mut tab = InfoTable::new(vec!["address", "mac", "if", "index"]);
     let ifs = get_netifs()?;
 
     for (ifname, ni) in ifs.into_iter() {
         for ip in ni.ips {
-            tab.push_row(vec![ip.to_string(), mac_to_str(&ni.mac), ifname.clone()]);
+            tab.push_row(vec![
+                ip.to_string(),
+                mac_to_str(&ni.mac),
+                ifname.clone(),
+                ni.ifindex.to_string(),
+            ]);
         }
     }
 
+    tab.sort_by_key(3, Some(&|idx: &String| stou64(&idx, 10)));
     tab.print("Network interfaces");
     Ok(())
 }
