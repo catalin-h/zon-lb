@@ -299,13 +299,32 @@ pub fn insert(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-pub fn show_ifs() -> Result<(), anyhow::Error> {
-    // todo add VLAN
+pub fn filter_ip(ip: &IpAddr) -> bool {
+    if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
+        return false;
+    }
+
+    match ip {
+        IpAddr::V4(v4) => !v4.is_link_local(),
+        IpAddr::V6(v6) => v6.segments()[0] & 0xfe80 != 0xfe80,
+    }
+}
+
+// TODO: show if ip is a backend group address
+pub fn show_ifs(in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
+    let opts = Options::from_option_args_with_keys(in_opts, &[options::FLAG_ALL]);
+    let show_all = opts.props.contains_key(options::FLAG_ALL);
     let mut tab = InfoTable::new(vec!["address", "mac", "if", "index"]);
     let ifs = get_netifs()?;
+    let mut hidden = 0;
 
     for (ifname, ni) in ifs.into_iter() {
         for ip in ni.ips {
+            if !show_all && !filter_ip(&ip) {
+                hidden += 1;
+                continue;
+            }
+
             tab.push_row(vec![
                 ip.to_string(),
                 mac_to_str(&ni.mac),
@@ -316,6 +335,10 @@ pub fn show_ifs() -> Result<(), anyhow::Error> {
     }
 
     tab.sort_by_key(3, Some(&|idx: &String| stou64(&idx, 10)));
-    tab.print("Network interfaces");
+    tab.print(&format!(
+        "Network interfaces (hidden: {}, filter: {})",
+        hidden,
+        opts.to_options().join(", ")
+    ));
     Ok(())
 }

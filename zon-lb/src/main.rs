@@ -351,7 +351,13 @@ enum NeighAction {
     /// Shows local network interfaces details. This command can be used
     /// to insert local neighbors. These entries are used to respond to
     /// ARP/ND requests in the VLAN proxy scenario.
-    ShowIfs,
+    ShowIfs {
+        /// Filter options:
+        /// all  By default some addresses are not shown like link-local or localhost.
+        ///      This option will allow to show all available addresses.
+        #[clap(verbatim_doc_comment)]
+        filter_options: Vec<String>,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -626,7 +632,7 @@ fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
         NeighAction::Remove { filter_options } => neighbors::remove(filter_options),
         NeighAction::Insert(opt) => neighbors::insert(&opt.ip_address, &opt.options),
         NeighAction::Probe(opt) => neighbors::probe(&opt.ip_address, &opt.options),
-        NeighAction::ShowIfs => neighbors::show_ifs(),
+        NeighAction::ShowIfs { filter_options } => neighbors::show_ifs(filter_options),
     }
 }
 
