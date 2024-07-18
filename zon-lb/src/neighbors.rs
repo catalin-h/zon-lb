@@ -196,6 +196,8 @@ fn fill_neigh_entry(entry: Option<ArpEntry>, opts: &Options) -> Option<ArpEntry>
     }
 
     if updated {
+        entry.expiry =
+            get_monotonic_clock_time() as u32 + zon_lb_common::NEIGH_ENTRY_EXPIRY_INTERVAL;
         Some(entry)
     } else {
         None
