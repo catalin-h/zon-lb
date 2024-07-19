@@ -360,6 +360,8 @@ enum NeighAction {
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
+    /// Fill or update all local neighbors or local interfaces
+    Fill,
 }
 
 #[derive(clap::Args, Debug)]
@@ -635,6 +637,7 @@ fn handle_neighbors(opt: &NeighOpt) -> Result<(), anyhow::Error> {
         NeighAction::Insert(opt) => neighbors::insert(&opt.ip_address, &opt.options),
         NeighAction::Probe(opt) => neighbors::probe(&opt.ip_address, &opt.options),
         NeighAction::ShowIfs { filter_options } => neighbors::show_ifs(filter_options),
+        NeighAction::Fill => neighbors::fill(),
     }
 }
 

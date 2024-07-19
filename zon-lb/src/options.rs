@@ -182,6 +182,11 @@ impl Options {
         Self { props, flags }
     }
 
+    pub fn set<K: AsRef<str>, V: AsRef<str>>(&mut self, key: K, value: V) {
+        self.props
+            .insert(key.as_ref().to_string(), value.as_ref().to_string());
+    }
+
     pub fn get_and_parse<V, T>(&self, key: T) -> Result<V, anyhow::Error>
     where
         T: AsRef<str>,

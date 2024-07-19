@@ -103,6 +103,29 @@ impl Neighbors {
         }
     }
 
+    pub fn fill(&mut self) -> Result<(), anyhow::Error> {
+        log::info!("[nd] updating local neighbors ...");
+        let ifs = get_netifs()?;
+        let mut opts = Options::new(Default::default());
+
+        for netif in ifs.values() {
+            opts.set(options::IF_INDEX, netif.ifindex.to_string());
+            opts.set(options::IF_MAC_ADDR, mac_to_str(&netif.mac));
+            opts.set(options::MAC_ADDR, mac_to_str(&netif.mac));
+            for ip in &netif.ips {
+                if !filter_ip(&ip) {
+                    continue;
+                }
+                opts.set(options::IP_ADDR, ip.to_string());
+                match self.insert(ip, &opts) {
+                    Err(e) => log::error!("[nd] can't update {}, {}", ip, e),
+                    Ok(()) => {}
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
@@ -359,4 +382,9 @@ pub fn show_ifs(in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
         opts.to_options().join(", ")
     ));
     Ok(())
+}
+
+pub fn fill() -> Result<(), anyhow::Error> {
+    let mut neigh = Neighbors::new()?;
+    neigh.fill()
 }
