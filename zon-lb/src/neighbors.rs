@@ -1,13 +1,15 @@
 use crate::{
     helpers::{
-        get_netifs, hashmap_mapdata, hashmap_remove_by_key, hashmap_remove_if, if_index_to_name,
-        mac_to_str, stou64, teardown_maps, IfCache, PrintTimeStatus,
+        get_monotonic_clock_time, get_netifs, hashmap_mapdata, hashmap_remove_by_key,
+        hashmap_remove_if, if_index_to_name, mac_to_str, stou64, teardown_maps, IfCache,
+        PrintTimeStatus,
     },
     info::InfoTable,
     options::{self, Options},
     ToMapName,
 };
 use anyhow::anyhow;
+use aya::maps::{HashMap as AyaHashMap, MapData};
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
     time::Duration,
@@ -26,6 +28,81 @@ impl ToMapName for NDKey {
     fn map_name() -> &'static str {
         "ZLB_ND"
     }
+}
+
+pub struct Neighbors {
+    arp: AyaHashMap<MapData, ArpKey, ArpEntry>,
+    nd: AyaHashMap<MapData, NDKey, ArpEntry>,
+}
+
+impl Neighbors {
+    pub fn new() -> Result<Self, anyhow::Error> {
+        let arp = hashmap_mapdata::<ArpKey, ArpEntry>()?;
+        let nd = hashmap_mapdata::<NDKey, ArpEntry>()?;
+        Ok(Self { arp, nd })
+    }
+
+    fn insert_ipv4(&mut self, ip: &Ipv4Addr, opts: &Options) -> Result<(), anyhow::Error> {
+        let key = ArpKey {
+            addr: u32::from_le_bytes(ip.octets()),
+        };
+        let entry = match self.arp.get(&key, 0) {
+            Ok(entry) => Some(entry),
+            Err(_) => None,
+        };
+
+        let entry = match fill_neigh_entry(entry, opts) {
+            None => {
+                log::info!("[nd] no updates !");
+                return Ok(());
+            }
+            Some(entry) => entry,
+        };
+
+        self.arp.insert(&key, entry, 0).map_err(|e| {
+            anyhow!(
+                "can't update arp neighbor {}, {}",
+                ip.to_string(),
+                e.to_string()
+            )
+        })
+    }
+
+    fn insert_ipv6(&mut self, ip: &Ipv6Addr, opts: &Options) -> Result<(), anyhow::Error> {
+        let key = NDKey {
+            addr32: unsafe { Inet6U::from(ip.octets()).addr32 },
+        };
+
+        let entry = match self.nd.get(&key, 0) {
+            Ok(entry) => Some(entry),
+            Err(_) => None,
+        };
+
+        let entry = match fill_neigh_entry(entry, opts) {
+            None => {
+                log::info!("[nd] no updates !");
+                return Ok(());
+            }
+            Some(entry) => entry,
+        };
+
+        self.nd.insert(&key, entry, 0).map_err(|e| {
+            anyhow!(
+                "can't update neighbor {}, {}",
+                ip.to_string(),
+                e.to_string()
+            )
+        })
+    }
+
+    pub fn insert(&mut self, ipaddr: &IpAddr, opts: &Options) -> Result<(), anyhow::Error> {
+        log::info!("[nd] updating {} ...", ipaddr.to_string());
+        match ipaddr {
+            IpAddr::V4(v4) => self.insert_ipv4(&v4, &opts),
+            IpAddr::V6(v6) => self.insert_ipv6(&v6, &opts),
+        }
+    }
+
 }
 
 pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
@@ -204,61 +281,6 @@ fn fill_neigh_entry(entry: Option<ArpEntry>, opts: &Options) -> Option<ArpEntry>
     }
 }
 
-fn insert_ipv4(ip: &Ipv4Addr, opts: &Options) -> Result<(), anyhow::Error> {
-    let mut arp = hashmap_mapdata::<ArpKey, ArpEntry>()?;
-    let key = ArpKey {
-        addr: u32::from_le_bytes(ip.octets()),
-    };
-    let entry = match arp.get(&key, 0) {
-        Ok(entry) => Some(entry),
-        Err(_) => None,
-    };
-
-    let entry = match fill_neigh_entry(entry, opts) {
-        None => {
-            log::info!("[nd] no updates !");
-            return Ok(());
-        }
-        Some(entry) => entry,
-    };
-
-    arp.insert(&key, entry, 0).map_err(|e| {
-        anyhow!(
-            "can't update arp neigh {}, {}",
-            ip.to_string(),
-            e.to_string()
-        )
-    })
-}
-
-fn insert_ipv6(ip: &Ipv6Addr, opts: &Options) -> Result<(), anyhow::Error> {
-    let mut nd = hashmap_mapdata::<NDKey, ArpEntry>()?;
-    let key = NDKey {
-        addr32: unsafe { Inet6U::from(ip.octets()).addr32 },
-    };
-
-    let entry = match nd.get(&key, 0) {
-        Ok(entry) => Some(entry),
-        Err(_) => None,
-    };
-
-    let entry = match fill_neigh_entry(entry, opts) {
-        None => {
-            log::info!("[nd] no updates !");
-            return Ok(());
-        }
-        Some(entry) => entry,
-    };
-
-    nd.insert(&key, entry, 0).map_err(|e| {
-        anyhow!(
-            "can't update arp neigh {}, {}",
-            ip.to_string(),
-            e.to_string()
-        )
-    })
-}
-
 /// Launch a TCP connection to trigger ND discovery
 fn probe_nd(ip: IpAddr, opts: &Options) -> Result<(), anyhow::Error> {
     let port = opts
@@ -292,13 +314,7 @@ pub fn insert(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
         return probe_nd(ipaddr, &opts);
     }
 
-    log::info!("[nd] updating {} ...", ipaddr.to_string());
-    match ipaddr {
-        IpAddr::V4(v4) => insert_ipv4(&v4, &opts),
-        IpAddr::V6(v6) => insert_ipv6(&v6, &opts),
-    }?;
-
-    Ok(())
+    Neighbors::new()?.insert(&ipaddr, &opts)
 }
 
 pub fn filter_ip(ip: &IpAddr) -> bool {
