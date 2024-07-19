@@ -57,6 +57,7 @@ impl NetIf {
 struct Config {
     netif: BTreeMap<String, NetIf>,
     backend: BTreeMap<String, EP>,
+    // TODO: add settings: launch fill local neighbors or send probes to backends
 }
 
 impl Config {

@@ -1,3 +1,4 @@
+use crate::ToMapName;
 use anyhow::{anyhow, Context, Result};
 use aya::maps::MapInfo;
 use aya::{maps::HashMap as AyaHashMap, maps::Map, maps::MapData, Ebpf};
@@ -9,8 +10,6 @@ use std::collections::HashMap;
 use std::fs::remove_file;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-
-use crate::ToMapName;
 
 bitflags::bitflags! {
 /// Flags for BPF_MAP_UPDATE_ELEM command
@@ -47,6 +46,7 @@ pub(crate) fn pinned_link_bpffs_path(ifname: &str, map_name: &str) -> Option<Pat
     pinned_link_name(ifname, map_name).map(|rel_link| Path::new(crate::BPFFS).join(rel_link))
 }
 
+// TODO: maybe return result instead of options in order to pass the error
 pub(crate) fn mapdata_from_pinned_map(ifname: &str, map_name: &str) -> Option<MapData> {
     pinned_link_bpffs_path(ifname, map_name).map_or(None, |path| match MapData::from_pin(&path) {
         Err(_) => None,
@@ -96,6 +96,7 @@ where
     K: aya::Pod + ToMapName,
     V: aya::Pod,
 {
+    // TODO: maybe return result instead of options in order to pass the error
     let map = mapdata_from_pinned_map("", K::map_name())
         .ok_or(anyhow!("Failed to find map: {} in bpffs", K::map_name()))?;
     let map = Map::HashMap(map);

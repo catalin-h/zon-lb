@@ -330,6 +330,7 @@ enum NeighAction {
         ///       To list all entries must pass this argument. This filter applies last.
         /// ipv4  List only IPv4 or ARP entries
         /// ipv6  List only IPv6 neighbor entries
+        // TODO: list by netmask
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
@@ -339,6 +340,7 @@ enum NeighAction {
         /// all       By default only neighbors with non-existing interfaces are removed.
         ///           To remove all pass this flag.
         /// ip=<addr> Removes only the entry with this ip address. Can't be used with other filters.
+        // TODO: add remove by netmask
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
