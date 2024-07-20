@@ -20,6 +20,7 @@ pub const IF_MAC_ADDR: &str = "if_mac";
 pub const IF_NAME: &str = "if";
 pub const IF_INDEX: &str = "ifidx";
 pub const VLAN: &str = "vlan";
+pub const IP_MASK: &str = "ipmask";
 
 #[derive(Clone)]
 pub struct Options {
@@ -143,7 +144,7 @@ impl Options {
                         log::error!("No '{}' interface, see option '{}'", value, arg)
                     }
                 },
-                SRC_IP | IP_ADDR => match value.parse::<IpAddr>() {
+                SRC_IP | IP_ADDR | IP_MASK => match value.parse::<IpAddr>() {
                     Ok(_) => {
                         props.insert(key.to_string(), value.to_string());
                     }
