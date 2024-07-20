@@ -326,11 +326,13 @@ enum NeighAction {
     /// List neighbor entries
     List {
         /// Filter options:
-        /// all   By default only neighbors with existing interfaces are displayed.
-        ///       To list all entries must pass this argument. This filter applies last.
-        /// ipv4  List only IPv4 or ARP entries
-        /// ipv6  List only IPv6 neighbor entries
-        // TODO: list by netmask
+        /// all    By default only neighbors with existing
+        ///        interfaces are displayed.
+        ///        To list all entries must pass this argument.
+        ///        This filter applies last.
+        /// ipv4   List only IPv4 or ARP entries
+        /// ipv6   List only IPv6 neighbor entries
+        /// ipmask List all IPs with this mask (not the same as netmask)
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },

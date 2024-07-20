@@ -1,8 +1,8 @@
 use crate::{
     helpers::{
         get_monotonic_clock_time, get_netifs, hashmap_mapdata, hashmap_remove_by_key,
-        hashmap_remove_if, if_index_to_name, mac_to_str, stou64, teardown_maps, IfCache,
-        PrintTimeStatus,
+        hashmap_remove_if, if_index_to_name, mac_to_str, netmask_matches, stou64, teardown_maps,
+        IfCache, PrintTimeStatus,
     },
     info::InfoTable,
     options::{self, Options},
@@ -133,21 +133,34 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     let mut tab = InfoTable::new(vec!["ip", "mac", "if", "if_mac", "vlan", "status"]);
     let options = Options::from_option_args_with_keys(
         filter_opts,
-        &vec![options::FLAG_ALL, options::FLAG_IPV4, options::FLAG_IPV6],
+        &vec![
+            options::FLAG_ALL,
+            options::FLAG_IPV4,
+            options::FLAG_IPV6,
+            options::IP_MASK,
+        ],
     );
+    let no_all = !options.props.contains_key(options::FLAG_ALL);
+    let ipmask = options.get_ip(options::IP_MASK);
     let mut hidden = 0;
     let pts = PrintTimeStatus::new(0);
     if options.flags.contains(EPFlags::IPV4) || !options.flags.contains(EPFlags::IPV6) {
         let arp = hashmap_mapdata::<ArpKey, ArpEntry>()?;
         for (key, value) in arp.iter().filter_map(|f| f.ok()) {
             let name = ifc.name(value.ifindex);
-            if !options.props.contains_key(options::FLAG_ALL) && name.contains("(na)") {
+            if no_all && name.contains("(na)") {
                 hidden += 1;
                 continue;
             }
-
+            let ip = Ipv4Addr::from(key.addr.to_be());
+            if let Ok(mask) = ipmask {
+                if !netmask_matches(&mask, &IpAddr::from(ip)) {
+                    hidden += 1;
+                    continue;
+                }
+            }
             tab.push_row(vec![
-                Ipv4Addr::from(key.addr.to_be()).to_string(),
+                ip.to_string(),
                 mac_to_str(&value.mac),
                 name,
                 mac_to_str(&value.if_mac),
@@ -161,12 +174,22 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
         let nd = hashmap_mapdata::<NDKey, ArpEntry>()?;
         for (key, value) in nd.iter().filter_map(|f| f.ok()) {
             let name = ifc.name(value.ifindex);
-            if !options.props.contains_key(options::FLAG_ALL) && name.contains("(na)") {
+            if no_all && name.contains("(na)") {
                 hidden += 1;
                 continue;
             }
+            let ip = Ipv6Addr::from(unsafe { Inet6U::from(&key.addr32).addr8 });
+            match ipmask {
+                Ok(mask) => {
+                    if !netmask_matches(&mask, &IpAddr::from(ip)) {
+                        hidden += 1;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
             tab.push_row(vec![
-                Ipv6Addr::from(unsafe { Inet6U::from(&key.addr32).addr8 }).to_string(),
+                ip.to_string(),
                 mac_to_str(&value.mac),
                 name,
                 mac_to_str(&value.if_mac),

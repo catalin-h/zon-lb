@@ -9,6 +9,7 @@ use log::{info, warn};
 use std::collections::HashMap;
 use std::fs::remove_file;
 use std::net::IpAddr;
+use std::ops::BitAnd;
 use std::path::{Path, PathBuf};
 
 bitflags::bitflags! {
@@ -543,4 +544,23 @@ pub fn get_netifs() -> Result<HashMap<String, NetIf>, anyhow::Error> {
     unsafe { libc::freeifaddrs(ifaddrs) };
 
     Ok(ifs)
+}
+
+pub fn netmask_matches(netmask: &IpAddr, ipaddr: &IpAddr) -> bool {
+    match netmask {
+        IpAddr::V4(mask) => {
+            if let IpAddr::V4(addr) = ipaddr {
+                mask.bitand(addr).eq(mask)
+            } else {
+                false
+            }
+        }
+        IpAddr::V6(mask) => {
+            if let IpAddr::V6(addr) = ipaddr {
+                mask.bitand(addr).eq(mask)
+            } else {
+                false
+            }
+        }
+    }
 }
