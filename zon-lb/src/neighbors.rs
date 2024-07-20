@@ -215,7 +215,7 @@ pub fn teardown_all_maps() -> Result<(), anyhow::Error> {
 pub fn remove(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     let opts = Options::from_option_args_with_keys(
         filter_opts,
-        &vec![options::FLAG_ALL, options::IP_ADDR],
+        &vec![options::FLAG_ALL, options::IP_ADDR, options::IP_MASK],
     );
 
     if let Ok(ip) = opts.get_ip(options::IP_ADDR) {
@@ -234,18 +234,34 @@ pub fn remove(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
         return Ok(());
     }
 
+    let ipmask = opts.get_ip(options::IP_MASK);
     let rem_all = opts.props.contains_key(options::FLAG_ALL);
-    let result = hashmap_remove_if::<ArpKey, ArpEntry, _>(|_, e| {
-        rem_all || if_index_to_name(e.ifindex).is_none()
+    let result = hashmap_remove_if::<ArpKey, ArpEntry, _>(|k, e| {
+        if rem_all {
+            return true;
+        }
+        if let Ok(mask) = ipmask {
+            let ip = Ipv4Addr::from(k.addr.to_be());
+            return netmask_matches(&mask, &IpAddr::from(ip));
+        }
+        // default rule
+        if_index_to_name(e.ifindex).is_none()
     })?;
     log::info!(
         "remove arp (ipv4) entries, count/errors: {}/{}",
         result.count,
         result.errors
     );
-
-    let result = hashmap_remove_if::<NDKey, ArpEntry, _>(|_, e| {
-        rem_all || if_index_to_name(e.ifindex).is_none()
+    let result = hashmap_remove_if::<NDKey, ArpEntry, _>(|key, e| {
+        if rem_all {
+            return true;
+        }
+        if let Ok(mask) = ipmask {
+            let ip = Ipv6Addr::from(unsafe { Inet6U::from(&key.addr32).addr8 });
+            return netmask_matches(&mask, &IpAddr::from(ip));
+        }
+        // default rule
+        if_index_to_name(e.ifindex).is_none()
     })?;
     log::info!(
         "remove ND (ipv6) entries, count/errors: {}/{}",
@@ -363,7 +379,7 @@ pub fn insert(ip: &str, in_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     Neighbors::new()?.insert(&ipaddr, &opts)
 }
 
-pub fn filter_ip(ip: &IpAddr) -> bool {
+fn filter_ip(ip: &IpAddr) -> bool {
     if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
         return false;
     }
