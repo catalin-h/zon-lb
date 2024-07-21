@@ -224,7 +224,7 @@ impl ConfigWriter {
     }
 
     fn write(mut self, cfg: &Config) -> Result<(), anyhow::Error> {
-        log::info!("Writing config ...");
+        log::info!("Loading config ...");
 
         for (name, nif) in cfg.netif.iter() {
             self.if_init(name)?;
