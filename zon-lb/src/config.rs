@@ -1,6 +1,7 @@
 use crate::{
     backends::{Backend as BCKND, EndPoint, Group, ToEndPoint},
     helpers::if_index_to_name,
+    neighbors,
     prog::Prog,
     protocols::Protocol,
     Options,
@@ -54,10 +55,36 @@ impl NetIf {
 }
 
 #[derive(Serialize, Deserialize)]
+enum CleanOptions {
+    None,
+}
+
+impl Default for CleanOptions {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// Actions to do when loading backends
+#[derive(Serialize, Deserialize, Default)]
+struct Actions {
+    #[serde(default)]
+    nd: NeighborActions,
+    clean: CleanOptions,
+}
+
+/// Neighbors actions: to launch fill local neighbors or send probes to backends
+#[derive(Serialize, Deserialize, Default)]
+struct NeighborActions {
+    #[serde(default)]
+    fill: bool,
+}
+
+#[derive(Serialize, Deserialize)]
 struct Config {
+    actions: Actions,
     netif: BTreeMap<String, NetIf>,
     backend: BTreeMap<String, EP>,
-    // TODO: add settings: launch fill local neighbors or send probes to backends
 }
 
 impl Config {
@@ -65,6 +92,7 @@ impl Config {
         Self {
             netif: BTreeMap::new(),
             backend: BTreeMap::new(),
+            actions: Default::default(),
         }
     }
 
@@ -262,6 +290,13 @@ impl ConfigWriter {
                     )
                 }
                 Err(e) => log::error!("Can't add backend {} for group {}, {}", ep, key.gid, e),
+            }
+        }
+
+        if cfg.actions.nd.fill {
+            match neighbors::fill() {
+                Ok(()) => log::info!("all local neigbors updates"),
+                Err(e) => log::error!("can't update local neighbors, {}", e),
             }
         }
 
