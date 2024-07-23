@@ -540,8 +540,8 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
 // TODO: check the feature flags and see if the ipv6 is enabled or not
 fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
-    let ether_type = ptr_at::<[EtherType; 5]>(&ctx, ETH_ALEN << 1)?.cast_mut();
-    let ether_type = unsafe { &mut *ether_type };
+    let ether_type = ptr_at::<[EtherType; 5]>(&ctx, ETH_ALEN << 1)?;
+    let ether_type = unsafe { &*ether_type };
 
     // BUG: Unfortunately the bpf-linker does not allow mixing
     // match-arms that call return with function calls and match-arms
