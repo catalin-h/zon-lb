@@ -50,12 +50,21 @@ sudo ./zon-lb ./zonlb.toml load
 In order for VLAN proxying to work the zon-lb must have a arp/neighbor entry
 of the group LB IP address. This is required since VLANs are logically separated
 network segments and neighbot solicitations are answered only within that segment.
-To initialize the neighbor entry just run a =ping= to the other pair veth from
+To initialize the local neighbors list entries the config must have
+the following setting:
+
+#+begin_src toml
+[actions.nd]
+fill = true
+#+end_src
+
+Another method it to just run a =ping= to the other pair veth from
 default netns:
 #+begin_src sh
 ping -c1 -s0 10.0.0.2
 ping -c1 -s0 2001:db8::2
 #+end_src
+
 Note that any other connectivity tool was enough since what we are interested is
 to =trigger= a neighbor solicitation (Icmpv6) or ARP (IPv4) request so that zon-lb
 can intercept the =request= and figure out the hardware address assigned to the

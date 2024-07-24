@@ -1,3 +1,6 @@
+[actions.nd]
+fill = true
+
 [netif.veth0.1]
 ip = "2001:db8::0:1"
 proto = 6
