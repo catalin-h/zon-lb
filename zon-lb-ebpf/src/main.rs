@@ -421,6 +421,8 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let feat = Features::new();
     let log_on = feat.log_enabled(Level::Info);
 
+    // TODO: add arp to stats
+
     if log_on {
         info!(
             ctx,
@@ -539,6 +541,11 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 }
 
 // TODO: check the feature flags and see if the ipv6 is enabled or not
+// TODO: investigate ~1Gbits/s performance degradation on normal redirect
+// and 2 netns on both IPv4 and IPv6.
+// Best perf. setup: server (TCP window size:128K default), client (-w 64K)
+// - disable vlan_update: no
+// - disable arp: no
 fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     let ether_type = ptr_at::<[EtherType; 5]>(&ctx, ETH_ALEN << 1)?;
     let ether_type = unsafe { &*ether_type };

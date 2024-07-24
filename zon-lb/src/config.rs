@@ -74,6 +74,7 @@ struct Actions {
 }
 
 /// Neighbors actions: to launch fill local neighbors or send probes to backends
+/// TODO: set log level
 #[derive(Serialize, Deserialize, Default)]
 struct NeighborActions {
     #[serde(default)]
