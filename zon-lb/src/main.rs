@@ -205,8 +205,9 @@ struct DebugOpt {
     ifname: String,
     /// Additional options to debug the program.
     /// Current options are:
-    /// * `replace`  starts reading the log after replacing current program
-    /// * `log_filter=<arg>`  Sets the log filter to `arg`. Possible values are `OFF|ERROR|INFO|DEBUG|TRACE`.
+    /// replace           Starts reading the log after replacing current program
+    /// log_filter=<arg>  Sets the log filter to `arg`.
+    ///                   Possible values are `OFF|ERROR|INFO|DEBUG|TRACE`.
     #[clap(verbatim_doc_comment)]
     options: Vec<String>,
 }
