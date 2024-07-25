@@ -70,6 +70,7 @@ impl Default for CleanOptions {
 struct Actions {
     #[serde(default)]
     nd: NeighborActions,
+    #[serde(default)]
     clean: CleanOptions,
 }
 
@@ -83,6 +84,7 @@ struct NeighborActions {
 
 #[derive(Serialize, Deserialize)]
 struct Config {
+    #[serde(default)]
     actions: Actions,
     netif: BTreeMap<String, NetIf>,
     backend: BTreeMap<String, EP>,
