@@ -422,7 +422,7 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let log_on = feat.log_enabled(Level::Info);
 
     // TODO: add arp to stats
-
+    // TODO: use only info! and ditch error! to generate less code
     if log_on {
         info!(
             ctx,
