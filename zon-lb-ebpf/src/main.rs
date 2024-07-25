@@ -549,32 +549,31 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
     let ether_type = ptr_at::<[EtherType; 5]>(&ctx, ETH_ALEN << 1)?;
     let ether_type = unsafe { &*ether_type };
+    let l2ctx = L2Context {
+        ethlen: EthHdr::LEN,
+        vlanhdr: 0,
+    };
 
     // BUG: Unfortunately the bpf-linker does not allow mixing
     // match-arms that call return with function calls and match-arms
     // that just return values. Looks like only match-arms that return
     // compile time constant lile `Ok(xdp_action::XDP_PASS)` are allowed.`
-    let (idx, vlanhdr, next_ether_type) = match ether_type[0] {
-        EtherType::Ipv4 => (0, 0, ether_type[0]),
-        EtherType::Ipv6 => (0, 0, ether_type[0]),
-        EtherType::VlanDot1Q => (
-            2,
-            ((ether_type[1] as u32) << 16) | (ether_type[0] as u32),
-            ether_type[2],
-        ),
-        // TODO: needs additional u32 storage
-        EtherType::VlanDot1AD => (0, 0, ether_type[0]),
-        _ => (0, 0, ether_type[0]),
-    };
+    //    let (idx, vlanhdr, next_ether_type) =
+    if ether_type[0] as u16 != EtherType::VlanDot1Q as u16 {
+        return match ether_type[0] {
+            EtherType::Ipv4 => ipv4_lb(&ctx, l2ctx),
+            EtherType::Ipv6 => ipv6_lb(&ctx, l2ctx),
+            EtherType::Arp => arp_snoop(&ctx, l2ctx),
+            _ => Ok(xdp_action::XDP_PASS),
+        };
+    }
 
     let l2ctx = L2Context {
-        // NOTE: the base Ethernet header size does not change
-        // but for each VLAN header type must add 4 bytes.
-        ethlen: EthHdr::LEN + (idx << 1),
-        vlanhdr,
+        ethlen: EthHdr::LEN + 4,
+        vlanhdr: ((ether_type[1] as u32) << 16) | (ether_type[0] as u32),
     };
 
-    match next_ether_type {
+    match ether_type[0] {
         EtherType::Ipv4 => ipv4_lb(&ctx, l2ctx),
         EtherType::Ipv6 => ipv6_lb(&ctx, l2ctx),
         EtherType::Arp => arp_snoop(&ctx, l2ctx),
