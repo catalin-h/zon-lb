@@ -164,6 +164,12 @@ impl L4Context {
             // below IPv6.
             // See: https://www.rfc-editor.org/rfc/rfc8200.html#page-25
             // TODO: handle No Next Header => pass
+            // NOTE: To support IPv6 fragments must create map for translating the packet
+            // identification (32-bit) + src_ip + dst_ip to L4 data. The identification data
+            // exists in every fragment exention header but only the first fragment contains
+            // the L4 ports.
+            // For IPv4 use the header Indentitiona field (16-bit) + src_ip + dst_ip as key
+            // to get the L4 data.
             _ => (0, 0, 0),
         };
 
