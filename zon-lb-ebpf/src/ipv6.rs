@@ -504,23 +504,77 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
     Ok(xdp_action::XDP_TX)
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Ipv6ExtBase {
+    next_header: IpProto,
+    len_8b: u8,
+}
+
+// NOTE: IPv6 header isn't fixed and the L4 header offset can
+// be computed iterating over the extension headers until we
+// reach a non-extension next_hdr value. For now we assume
+// there are no extensions or fragments.
+// TODO: For IPv6 there can be up to 7 linked header types: Hop-by-Hop Options (0),
+// Routing (43), Fragment(44), Encapsulating Security Payload (50), Authentication
+// Header (51), Destination Options (can appear twice, 60).
+// It makes sense to make make 6 calls until reaching a next header we can handle.
+// NOTE: Value 59 (No Next Header) in the Next Header field indicates that
+// there is no next header whatsoever following this one, not even a header
+// of an upper-layer protocol. It means that, from the header's point of view,
+// the IPv6 packet ends right after it: the payload should be empty.
+// NOTE: All IPv6 extension headers except for 50 and 51 have the format:
+// 0                   1                   2                   3
+//  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+// |     Type      |    Length     |    Options and padding ...
+// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+// where Length represents size of both the header and options in 8-bytes units.
+// NOTE: that extention headers 50 and 51 are not per-fragment headers and always
+// are placed _after_ fragment header which is placed last in the per-fragment header
+// list:
+// +------------------+-------------------------+---//----------------+
+// |  Per-Fragment    | Extension & Upper-Layer |   Fragmentable      |
+// |    Headers       |       Headers           |      Part           |
+// +------------------+-------------------------+---//----------------+
+// The Per-Fragment headers must consist of the IPv6 header plus any
+// extension headers that must be processed by nodes en route to the
+// destination, that is, all headers up to and including the Routing
+// header if present, else the Hop-by-Hop Options header if present,
+// else no extension headers.
+// In other words the headers that needs to pe processed are these in this order:
+// IPv6 header, Hop-by-Hop, Destination Options, Routing and Fragment.
+pub fn compute_l4_offset(
+    ctx: &XdpContext,
+    mut next_hdr: IpProto,
+    ethlen: usize,
+) -> Result<(usize, IpProto), ()> {
+    let mut offset = ethlen + Ipv6Hdr::LEN;
+
+    for _ in 0..4 {
+        match next_hdr {
+            IpProto::HopOpt | IpProto::Ipv6Route | IpProto::Ipv6Frag | IpProto::Ipv6Opts => {
+                let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, offset)?;
+                offset += unsafe { (*exthdr).len_8b << 3 } as usize;
+                next_hdr = unsafe { (*exthdr).next_header };
+            }
+            IpProto::Ipv6NoNxt => return Err(()),
+            _ => {}
+        };
+    }
+
+    Ok((offset, next_hdr))
+}
+
 pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
     let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
+    let (l4off, next_hdr) = compute_l4_offset(ctx, ipv6hdr.next_hdr, l2ctx.ethlen)?;
+    let l4ctx = L4Context::new_with_offset(ctx, l4off, next_hdr)?;
 
-    // NOTE: IPv6 header isn't fixed and the L4 header offset can
-    // be computed iterating over the extension headers until we
-    // reach a non-extension next_hdr value. For now we assume
-    // there are no extensions or fragments.
-    // TODO: For IPv6 there can be only 6 linked header types: Hop-by-Hop Options,
-    // Fragment, Destination Options, Routing, Authentication and Encapsulating
-    // Security Payload. I makes sense to make make 6 calls until reaching a
-    // next header we can handle.
-    let l4ctx = L4Context::new_with_offset(ctx, Ipv6Hdr::LEN + l2ctx.ethlen, ipv6hdr.next_hdr)?;
-
-    let icmp_type = if ipv6hdr.next_hdr == IpProto::Ipv6Icmp {
+    let icmp_type = if next_hdr == IpProto::Ipv6Icmp {
         let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
         let icmp_type = unsafe { (*icmphdr).type_ };
         match icmp_type {
@@ -552,7 +606,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             ip_be_src: Inet6U::from(src_addr),
             port_be_src: l4ctx.src_port,
             port_lb_dst: l4ctx.dst_port,
-            next_hdr: ipv6hdr.next_hdr as u32,
+            next_hdr: next_hdr as u32,
         })
     } {
         // Update the total processed packets when they are from a tracked connection
@@ -620,7 +674,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Don't track echo replies as there can be a response from the actual source.
     // To avoid messing with the packet routing allow tracking only ICMP requests.
-    if ipv6hdr.next_hdr == IpProto::Ipv6Icmp && icmp_type == icmpv6::ECHO_REPLY {
+    if next_hdr == IpProto::Ipv6Icmp && icmp_type == icmpv6::ECHO_REPLY {
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -628,7 +682,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ZLB_LB6.get(&EP6 {
             address: Inet6U::from(dst_addr),
             port: l4ctx.dst_port as u16,
-            proto: ipv6hdr.next_hdr as u16,
+            proto: next_hdr as u16,
         })
     } {
         Some(group) => group,
@@ -714,7 +768,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ip_be_src: Inet6U::from(&be.address),
         port_be_src: be.port as u32,
         port_lb_dst: l4ctx.src_port, // use the source port of the endpoint
-        next_hdr: ipv6hdr.next_hdr as u32,
+        next_hdr: next_hdr as u32,
     };
 
     if feat.log_enabled(Level::Info) {
