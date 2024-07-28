@@ -553,9 +553,18 @@ pub fn compute_l4_offset(
 
     for _ in 0..4 {
         match next_hdr {
-            IpProto::HopOpt | IpProto::Ipv6Route | IpProto::Ipv6Frag | IpProto::Ipv6Opts => {
+            IpProto::HopOpt | IpProto::Ipv6Route | IpProto::Ipv6Opts => {
                 let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, offset)?;
-                offset += unsafe { (*exthdr).len_8b << 3 } as usize;
+                let len = unsafe { (*exthdr).len_8b } as usize;
+                offset += len << 3;
+                next_hdr = unsafe { (*exthdr).next_header };
+            }
+            IpProto::Ipv6Frag => {
+                // For Fragment ext header this field is reserved and
+                // initialized to zero for transmission; ignored on
+                // reception as the len is implicitly 1 (8 bytes).
+                let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, offset)?;
+                offset += 8;
                 next_hdr = unsafe { (*exthdr).next_header };
             }
             IpProto::Ipv6NoNxt => return Err(()),
