@@ -559,7 +559,9 @@ pub fn compute_l4_offset(
                 next_hdr = unsafe { (*exthdr).next_header };
             }
             IpProto::Ipv6NoNxt => return Err(()),
-            _ => {}
+            _ => {
+                break;
+            }
         };
     }
 
