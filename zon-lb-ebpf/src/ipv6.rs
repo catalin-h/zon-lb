@@ -511,6 +511,41 @@ struct Ipv6ExtBase {
     len_8b: u8,
 }
 
+/// Fragment extention header:
+///
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |  Next Header  |   Reserved    |      Fragment Offset    |Res|M|
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |                         Identification                        |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+///
+/// * Fragment Offset : 13-bit unsigned integer.  The offset, in
+/// 8-octet units, of the data following this header, relative
+/// to the start of the Fragmentable Part of the original packet.
+/// * Identification  : For every packet that is to be fragmented,
+/// the source node generates an Identification value.
+/// * M flag         : 1 = more fragments; 0 = last fragment.
+///
+/// See RFC8200.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Ipv6FragExtHdr {
+    base: Ipv6ExtBase,
+    /// Compact both offset and More flag
+    offset_m: u16,
+    id: u32,
+}
+
+impl Ipv6FragExtHdr {
+    fn offset(&self) -> u16 {
+        self.offset_m.swap_bytes() & 0xfff8
+    }
+
+    fn more(&self) -> u16 {
+        (self.offset_m >> 8) & 0x1
+    }
+}
+
 // NOTE: IPv6 header isn't fixed and the L4 header offset can
 // be computed iterating over the extension headers until we
 // reach a non-extension next_hdr value. For now we assume
@@ -563,9 +598,18 @@ pub fn compute_l4_offset(
                 // For Fragment ext header this field is reserved and
                 // initialized to zero for transmission; ignored on
                 // reception as the len is implicitly 1 (8 bytes).
-                let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, offset)?;
+                let exthdr = ptr_at::<Ipv6FragExtHdr>(&ctx, offset)?;
+                let exthdr = unsafe { &*exthdr };
                 offset += 8;
-                next_hdr = unsafe { (*exthdr).next_header };
+                next_hdr = exthdr.base.next_header;
+                info!(
+                    ctx,
+                    "pkt frag id: 0x{:x} off:M {}:{}",
+                    exthdr.id,
+                    exthdr.offset(),
+                    exthdr.more()
+                );
+                break;
             }
             IpProto::Ipv6NoNxt => return Err(()),
             _ => {
