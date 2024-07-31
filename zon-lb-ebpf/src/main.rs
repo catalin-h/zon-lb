@@ -133,53 +133,35 @@ struct L4Context {
 }
 
 impl L4Context {
-    fn new_with_offset(ctx: &XdpContext, offset: usize, proto: IpProto) -> Result<Self, ()> {
-        let (src_port, dst_port, check_off) = match proto {
+    fn new_for_ipv4(ctx: &XdpContext, offset: usize, proto: IpProto) -> Result<Self, ()> {
+        Ok(match proto {
             IpProto::Tcp => {
                 let tcphdr = ptr_at::<TcpHdr>(&ctx, offset)?;
-                (
-                    unsafe { (*tcphdr).source as u32 },
-                    unsafe { (*tcphdr).dest as u32 },
-                    offset_of!(TcpHdr, check),
-                )
+                Self {
+                    offset,
+                    check_off: offset_of!(TcpHdr, check),
+                    src_port: unsafe { (*tcphdr).source as u32 },
+                    dst_port: unsafe { (*tcphdr).dest as u32 },
+                    proto: IpProto::Tcp,
+                }
             }
             IpProto::Udp => {
                 let udphdr = ptr_at::<UdpHdr>(&ctx, offset)?;
-                (
-                    unsafe { (*udphdr).source as u32 },
-                    unsafe { (*udphdr).dest as u32 },
-                    offset_of!(UdpHdr, check),
-                )
+                Self {
+                    offset,
+                    check_off: offset_of!(UdpHdr, check),
+                    src_port: unsafe { (*udphdr).source as u32 },
+                    dst_port: unsafe { (*udphdr).dest as u32 },
+                    proto,
+                }
             }
-            IpProto::Ipv6Icmp => (0, 0, offset_of!(IcmpHdr, checksum)),
-            // TODO: handle extention headers or at least fragments as they may contain
-            // actual valid tcp or udp packets.
-            // NOTE: unlike with IPv4, routers never fragment a packet.
-            // NOTE: unlike IPv4, fragmentation in IPv6 is performed only by source
-            // nodes, not by routers along a packet's delivery path. Must handle ipv6
-            // fragments in case the source decides to fragment the packet due to MTU.
-            // NOTE: IPv6 requires that every link in the Internet have an MTU of 1280
-            // octets or greater. This is known as the IPv6 minimum link MTU.
-            // On any link that cannot convey a 1280-octet packet in one piece,
-            // link-specific fragmentation and reassembly must be provided at a layer
-            // below IPv6.
-            // See: https://www.rfc-editor.org/rfc/rfc8200.html#page-25
-            // TODO: handle No Next Header => pass
-            // NOTE: To support IPv6 fragments must create map for translating the packet
-            // identification (32-bit) + src_ip + dst_ip to L4 data. The identification data
-            // exists in every fragment exention header but only the first fragment contains
-            // the L4 ports.
-            // For IPv4 use the header Indentitiona field (16-bit) + src_ip + dst_ip as key
-            // to get the L4 data.
-            _ => (0, 0, 0),
-        };
-
-        Ok(Self {
-            offset,
-            check_off,
-            src_port,
-            dst_port,
-            proto,
+            _ => Self {
+                offset,
+                check_off: 0,
+                src_port: 0,
+                dst_port: 0,
+                proto,
+            },
         })
     }
 
@@ -677,7 +659,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
     let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
     let l4hdr_offset = l4hdr_offset + l2ctx.ethlen;
-    let l4ctx = L4Context::new_with_offset(ctx, l4hdr_offset, ipv4hdr.proto)?;
+    let l4ctx = L4Context::new_for_ipv4(ctx, l4hdr_offset, ipv4hdr.proto)?;
     let feat = Features::new();
 
     if feat.log_enabled(Level::Info) {
