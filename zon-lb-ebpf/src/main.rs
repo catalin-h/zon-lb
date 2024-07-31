@@ -129,6 +129,7 @@ struct L4Context {
     check_off: usize,
     src_port: u32,
     dst_port: u32,
+    proto: IpProto,
 }
 
 impl L4Context {
@@ -178,6 +179,7 @@ impl L4Context {
             check_off,
             src_port,
             dst_port,
+            proto,
         })
     }
 

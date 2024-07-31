@@ -11,12 +11,14 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::{error, info, Level};
-use core::mem;
+use core::mem::{self, offset_of};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u32};
 use network_types::{
     eth::EthHdr,
     icmp::IcmpHdr,
     ip::{IpProto, Ipv6Hdr},
+    tcp::TcpHdr,
+    udp::UdpHdr,
 };
 use zon_lb_common::{
     stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, NAT6Key, NAT6Value, EP6,
@@ -579,23 +581,69 @@ impl Ipv6FragExtHdr {
 // else no extension headers.
 // In other words the headers that needs to pe processed are these in this order:
 // IPv6 header, Hop-by-Hop, Destination Options, Routing and Fragment.
-pub fn compute_l4_offset(
+// BUG: linker: must use inline(never), which version ? llvm ?
+#[inline(never)]
+pub fn compute_l4_context(
     ctx: &XdpContext,
     mut next_hdr: IpProto,
     ethlen: usize,
-) -> Result<(usize, IpProto), ()> {
+) -> Result<L4Context, ()> {
     let mut offset = ethlen + Ipv6Hdr::LEN;
 
     for _ in 0..4 {
         match next_hdr {
+            IpProto::Tcp => {
+                let tcphdr = ptr_at::<TcpHdr>(&ctx, offset)?;
+                return Ok(L4Context {
+                    offset,
+                    check_off: offset_of!(TcpHdr, check),
+                    src_port: unsafe { (*tcphdr).source as u32 },
+                    dst_port: unsafe { (*tcphdr).dest as u32 },
+                    proto: IpProto::Tcp,
+                });
+            }
+            IpProto::Udp => {
+                let udphdr = ptr_at::<UdpHdr>(&ctx, offset)?;
+                return Ok(L4Context {
+                    offset,
+                    check_off: offset_of!(UdpHdr, check),
+                    src_port: unsafe { (*udphdr).source as u32 },
+                    dst_port: unsafe { (*udphdr).dest as u32 },
+                    proto: IpProto::Udp,
+                });
+            }
+            IpProto::Ipv6Icmp => {
+                return Ok(L4Context {
+                    offset,
+                    check_off: offset_of!(IcmpHdr, checksum),
+                    src_port: 0,
+                    dst_port: 0,
+                    proto: IpProto::Ipv6Icmp,
+                })
+            }
             IpProto::HopOpt | IpProto::Ipv6Route | IpProto::Ipv6Opts => {
                 let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, offset)?;
                 let len = unsafe { (*exthdr).len_8b } as usize;
                 offset += len << 3;
                 next_hdr = unsafe { (*exthdr).next_header };
+                continue;
             }
             IpProto::Ipv6Frag => {
-                // For Fragment ext header this field is reserved and
+                // NOTE: Unlike with IPv4, routers never fragment a packet.
+                // NOTE: Unlike IPv4, fragmentation in IPv6 is performed only by source
+                // nodes, not by routers along a packet's delivery path. Must handle ipv6
+                // fragments in case the source decides to fragment the packet due to MTU.
+                // NOTE: IPv6 requires that every link in the Internet have an MTU of 1280
+                // octets or greater. This is known as the IPv6 minimum link MTU.
+                // On any link that cannot convey a 1280-octet packet in one piece,
+                // link-specific fragmentation and reassembly must be provided at a layer
+                // below IPv6.
+                // See: https://www.rfc-editor.org/rfc/rfc8200.html#page-25
+                // NOTE: To support IPv6 fragments must use a map for translating the packet
+                // identification (32-bit) + src_ip + dst_ip to L4 data. The identification data
+                // exists in every fragment exention header but only the first fragment contains
+                // the L4 ports.
+                // NOTE: For Fragment ext header this field is reserved and
                 // initialized to zero for transmission; ignored on
                 // reception as the len is implicitly 1 (8 bytes).
                 let exthdr = ptr_at::<Ipv6FragExtHdr>(&ctx, offset)?;
@@ -618,17 +666,24 @@ pub fn compute_l4_offset(
         };
     }
 
-    Ok((offset, next_hdr))
+    Ok(L4Context {
+        offset,
+        check_off: 0,
+        src_port: 0,
+        dst_port: 0,
+        proto: next_hdr,
+    })
 }
 
 pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
+    let l4ctx = compute_l4_context(ctx, ipv6hdr.next_hdr, l2ctx.ethlen)?;
+    let next_hdr = l4ctx.proto;
     let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
-    let (l4off, next_hdr) = compute_l4_offset(ctx, ipv6hdr.next_hdr, l2ctx.ethlen)?;
-    let l4ctx = L4Context::new_with_offset(ctx, l4off, next_hdr)?;
 
+    // TODO: move this if in main protocol match case
     let icmp_type = if next_hdr == IpProto::Ipv6Icmp {
         let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
         let icmp_type = unsafe { (*icmphdr).type_ };
