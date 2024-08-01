@@ -618,49 +618,40 @@ impl Ipv6L4Context {
 // IPv6 header, Hop-by-Hop, Destination Options, Routing and Fragment.
 // BUG: linker: must use inline(never), which version ? llvm ?
 #[inline(never)]
-pub fn compute_l4_context(
+fn compute_l4_context(
     ctx: &XdpContext,
-    mut next_hdr: IpProto,
+    ipv6hdr: &Ipv6Hdr,
     ethlen: usize,
-) -> Result<L4Context, ()> {
-    let mut offset = ethlen + Ipv6Hdr::LEN;
+) -> Result<Ipv6L4Context, ()> {
+    let mut l4ctx = Ipv6L4Context::new(ethlen, ipv6hdr.next_hdr);
 
     for _ in 0..4 {
-        match next_hdr {
+        match l4ctx.next_hdr {
             IpProto::Tcp => {
-                let tcphdr = ptr_at::<TcpHdr>(&ctx, offset)?;
-                return Ok(L4Context {
-                    offset,
-                    check_off: offset_of!(TcpHdr, check),
-                    src_port: unsafe { (*tcphdr).source as u32 },
-                    dst_port: unsafe { (*tcphdr).dest as u32 },
-                    proto: IpProto::Tcp,
-                });
+                let tcphdr = ptr_at::<TcpHdr>(&ctx, l4ctx.base.offset)?;
+                l4ctx.check_offset(offset_of!(TcpHdr, check));
+                l4ctx.sport(unsafe { (*tcphdr).source });
+                l4ctx.dport(unsafe { (*tcphdr).dest });
+                return Ok(l4ctx);
             }
             IpProto::Udp => {
-                let udphdr = ptr_at::<UdpHdr>(&ctx, offset)?;
-                return Ok(L4Context {
-                    offset,
-                    check_off: offset_of!(UdpHdr, check),
-                    src_port: unsafe { (*udphdr).source as u32 },
-                    dst_port: unsafe { (*udphdr).dest as u32 },
-                    proto: IpProto::Udp,
-                });
+                let udphdr = ptr_at::<UdpHdr>(&ctx, l4ctx.base.offset)?;
+                l4ctx.check_offset(offset_of!(UdpHdr, check));
+                l4ctx.sport(unsafe { (*udphdr).source });
+                l4ctx.dport(unsafe { (*udphdr).dest });
+                return Ok(l4ctx);
             }
             IpProto::Ipv6Icmp => {
-                return Ok(L4Context {
-                    offset,
-                    check_off: offset_of!(IcmpHdr, checksum),
-                    src_port: 0,
-                    dst_port: 0,
-                    proto: IpProto::Ipv6Icmp,
-                })
+                let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.base.offset)?;
+                l4ctx.check_offset(offset_of!(IcmpHdr, checksum));
+                l4ctx.icmp_type = unsafe { (*icmphdr).type_ };
+                return Ok(l4ctx);
             }
             IpProto::HopOpt | IpProto::Ipv6Route | IpProto::Ipv6Opts => {
-                let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, offset)?;
+                let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, l4ctx.base.offset)?;
                 let len = unsafe { (*exthdr).len_8b } as usize;
-                offset += len << 3;
-                next_hdr = unsafe { (*exthdr).next_header };
+                l4ctx.base.offset += len << 3;
+                l4ctx.next_hdr = unsafe { (*exthdr).next_header };
                 continue;
             }
             IpProto::Ipv6Frag => {
@@ -681,10 +672,10 @@ pub fn compute_l4_context(
                 // NOTE: For Fragment ext header this field is reserved and
                 // initialized to zero for transmission; ignored on
                 // reception as the len is implicitly 1 (8 bytes).
-                let exthdr = ptr_at::<Ipv6FragExtHdr>(&ctx, offset)?;
+                let exthdr = ptr_at::<Ipv6FragExtHdr>(&ctx, l4ctx.base.offset)?;
                 let exthdr = unsafe { &*exthdr };
-                offset += 8;
-                next_hdr = exthdr.base.next_header;
+                l4ctx.base.offset += 8;
+                l4ctx.next_hdr = exthdr.base.next_header;
                 info!(
                     ctx,
                     "pkt frag id: 0x{:x} off:M {}:{}",
@@ -692,7 +683,13 @@ pub fn compute_l4_context(
                     exthdr.offset(),
                     exthdr.more()
                 );
-                break;
+
+                if exthdr.offset() == 0 {
+                    // The id will be needed to cache the L4 info entry after
+                    // checking if this packet belongs to a LB flow.
+                    l4ctx.frag_id = exthdr.id;
+                } else {
+                }
             }
             IpProto::Ipv6NoNxt => return Err(()),
             _ => {
@@ -701,40 +698,30 @@ pub fn compute_l4_context(
         };
     }
 
-    Ok(L4Context {
-        offset,
-        check_off: 0,
-        src_port: 0,
-        dst_port: 0,
-        proto: next_hdr,
-    })
+    Ok(l4ctx)
 }
 
 pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
-    let l4ctx = compute_l4_context(ctx, ipv6hdr.next_hdr, l2ctx.ethlen)?;
-    let next_hdr = l4ctx.proto;
+    let l4ctx = compute_l4_context(ctx, ipv6hdr, l2ctx.ethlen)?;
     let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
-
-    // TODO: move this if in main protocol match case
-    let icmp_type = if next_hdr == IpProto::Ipv6Icmp {
-        let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
-        let icmp_type = unsafe { (*icmphdr).type_ };
-        match icmp_type {
-            icmpv6::ND_ADVERT | icmpv6::ND_SOLICIT => return neighbor_solicit(ctx, l2ctx, l4ctx),
-            icmpv6::ECHO_REPLY | icmpv6::ECHO_REQUEST => { /* Handle bellow */ }
-            _ => return Ok(xdp_action::XDP_PASS),
-        }
-        icmp_type
-    } else {
-        0_u8
-    };
 
     let feat = Features::new();
     log_ipv6_packet(ctx, &feat, ipv6hdr);
 
+    // TODO: move this if in main protocol match case
+    match l4ctx.icmp_type {
+        icmpv6::ND_ADVERT | icmpv6::ND_SOLICIT => return neighbor_solicit(ctx, l2ctx, l4ctx.base),
+        icmpv6::ECHO_REPLY | icmpv6::ECHO_REQUEST => {
+            info!(ctx, " echo6 "); /* Handled bellow */
+        }
+        _ => {
+            info!(ctx, " echo other {} ", l4ctx.icmp_type);
+            return Ok(xdp_action::XDP_PASS);
+        }
+    }
     // === reply ===
 
     // NOTE: looks like the 512bye stack can be exhausted pretty rapidly
@@ -749,22 +736,22 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ZLB_CONNTRACK6.get(&NAT6Key {
             ip_lb_dst: Inet6U::from(dst_addr),
             ip_be_src: Inet6U::from(src_addr),
-            port_be_src: l4ctx.src_port,
-            port_lb_dst: l4ctx.dst_port,
-            next_hdr: next_hdr as u32,
+            port_be_src: l4ctx.base.src_port,
+            port_lb_dst: l4ctx.base.dst_port,
+            next_hdr: l4ctx.next_hdr as u32,
         })
     } {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
         // Unlikely
-        if nat.ip_src.eq32(src_addr) && l4ctx.src_port == l4ctx.dst_port {
+        if nat.ip_src.eq32(src_addr) && l4ctx.base.src_port == l4ctx.base.dst_port {
             if feat.log_enabled(Level::Error) {
                 error!(
                     ctx,
                     "[out] drop same src {:i}:{}",
                     unsafe { nat.ip_src.addr8 },
-                    (l4ctx.src_port as u16).to_be()
+                    (l4ctx.base.src_port as u16).to_be()
                 );
             }
             stats_inc(stats::XDP_DROP);
@@ -778,10 +765,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         update_inet_csum(
             ctx,
             ipv6hdr,
-            &l4ctx,
+            &l4ctx.base,
             &nat.lb_ip,
             &nat.ip_src,
-            l4ctx.dst_port << 16 | nat.port_lb,
+            l4ctx.base.dst_port << 16 | nat.port_lb,
         )?;
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
@@ -819,15 +806,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Don't track echo replies as there can be a response from the actual source.
     // To avoid messing with the packet routing allow tracking only ICMP requests.
-    if next_hdr == IpProto::Ipv6Icmp && icmp_type == icmpv6::ECHO_REPLY {
+    if l4ctx.icmp_type == icmpv6::ECHO_REPLY {
         return Ok(xdp_action::XDP_PASS);
     }
 
     let group = match unsafe {
         ZLB_LB6.get(&EP6 {
             address: Inet6U::from(dst_addr),
-            port: l4ctx.dst_port as u16,
-            proto: next_hdr as u16,
+            port: l4ctx.base.dst_port as u16,
+            proto: l4ctx.next_hdr as u16,
         })
     } {
         Some(group) => group,
@@ -864,7 +851,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     let be = {
-        let index = (inet6_hash16(&src_addr) ^ l4ctx.src_port as u16) % group.becount;
+        let index = (inet6_hash16(&src_addr) ^ l4ctx.base.src_port as u16) % group.becount;
         match unsafe {
             ZLB_BACKENDS.get(&BEKey {
                 gid: group.gid,
@@ -912,8 +899,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ip_lb_dst: Inet6U::from(lb_addr),
         ip_be_src: Inet6U::from(&be.address),
         port_be_src: be.port as u32,
-        port_lb_dst: l4ctx.src_port, // use the source port of the endpoint
-        next_hdr: next_hdr as u32,
+        port_lb_dst: l4ctx.base.src_port, // use the source port of the endpoint
+        next_hdr: l4ctx.next_hdr as u32,
     };
 
     if feat.log_enabled(Level::Info) {
@@ -958,7 +945,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         // TODO: use as temp value at insert point
         let nat6value = NAT6Value {
             ip_src: Inet6U::from(src_addr),
-            port_lb: l4ctx.dst_port,
+            port_lb: l4ctx.base.dst_port,
             ifindex: if_index,
             mac_addresses,
             vlan_hdr: l2ctx.vlanhdr,
@@ -975,7 +962,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                         ctx,
                         "[ctrk] [{:i}]:{} added vlanhdr: {:x}",
                         unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
-                        (l4ctx.src_port as u16).to_be(),
+                        (l4ctx.base.src_port as u16).to_be(),
                         l2ctx.vlanhdr
                     )
                 }
@@ -986,7 +973,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                         ctx,
                         "[ctrk] [{:i}]:{} not added, err: {}",
                         unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
-                        (l4ctx.src_port as u16).to_be(),
+                        (l4ctx.base.src_port as u16).to_be(),
                         ret
                     )
                 }
@@ -998,10 +985,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     update_inet_csum(
         ctx,
         ipv6hdr,
-        &l4ctx,
+        &l4ctx.base,
         &nat6key.ip_lb_dst,
         &nat6key.ip_be_src,
-        (be.port as u32) << 16 | l4ctx.src_port,
+        (be.port as u32) << 16 | l4ctx.base.src_port,
     )?;
 
     if !redirect {

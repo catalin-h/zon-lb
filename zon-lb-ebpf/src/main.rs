@@ -129,7 +129,6 @@ struct L4Context {
     check_off: usize,
     src_port: u32,
     dst_port: u32,
-    proto: IpProto,
 }
 
 impl L4Context {
@@ -142,7 +141,6 @@ impl L4Context {
                     check_off: offset_of!(TcpHdr, check),
                     src_port: unsafe { (*tcphdr).source as u32 },
                     dst_port: unsafe { (*tcphdr).dest as u32 },
-                    proto: IpProto::Tcp,
                 }
             }
             IpProto::Udp => {
@@ -152,7 +150,6 @@ impl L4Context {
                     check_off: offset_of!(UdpHdr, check),
                     src_port: unsafe { (*udphdr).source as u32 },
                     dst_port: unsafe { (*udphdr).dest as u32 },
-                    proto,
                 }
             }
             _ => Self {
@@ -160,7 +157,6 @@ impl L4Context {
                 check_off: 0,
                 src_port: 0,
                 dst_port: 0,
-                proto,
             },
         })
     }
