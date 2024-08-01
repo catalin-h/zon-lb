@@ -548,6 +548,41 @@ impl Ipv6FragExtHdr {
     }
 }
 
+struct Ipv6L4Context {
+    base: L4Context,
+    frag_id: u32,
+    next_hdr: IpProto,
+    icmp_type: u8,
+}
+
+impl Ipv6L4Context {
+    fn new(ethlen: usize, next_hdr: IpProto) -> Self {
+        Self {
+            base: L4Context {
+                offset: ethlen + Ipv6Hdr::LEN,
+                check_off: 0,
+                src_port: 0,
+                dst_port: 0,
+            },
+            frag_id: 0,
+            next_hdr,
+            icmp_type: 0,
+        }
+    }
+
+    fn check_offset(&mut self, off: usize) {
+        self.base.check_off = off;
+    }
+
+    fn sport(&mut self, port: u16) {
+        self.base.src_port = port as u32;
+    }
+
+    fn dport(&mut self, port: u16) {
+        self.base.dst_port = port as u32;
+    }
+}
+
 // NOTE: IPv6 header isn't fixed and the L4 header offset can
 // be computed iterating over the extension headers until we
 // reach a non-extension next_hdr value. For now we assume
