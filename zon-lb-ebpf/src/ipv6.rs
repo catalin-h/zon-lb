@@ -691,8 +691,8 @@ fn compute_l4_context(
                 } else {
                 }
             }
-            IpProto::Ipv6NoNxt => return Err(()),
             _ => {
+                // This includes also IpProto::Ipv6NoNxt
                 break;
             }
         };
