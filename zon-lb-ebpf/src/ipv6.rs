@@ -21,8 +21,8 @@ use network_types::{
     udp::UdpHdr,
 };
 use zon_lb_common::{
-    stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, NAT6Key, NAT6Value, EP6,
-    FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_GROUPS,
+    stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, Ipv6FragId, Ipv6FragInfo, NAT6Key,
+    NAT6Value, EP6, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_GROUPS,
     NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
@@ -54,6 +54,13 @@ type LHMND = LruHashMap<[u32; 4usize], NeighborEntry>;
 /// for LB interested IPs.
 #[map]
 static mut ZLB_ND: LHMND = LHMND::pinned(MAX_ARP_ENTRIES, 0);
+
+/// The Ipv6 Fragment cache used to save the transport info from
+/// first IP packer fragment.
+type FRAG6LHM = LruHashMap<Ipv6FragId, Ipv6FragInfo>;
+
+#[map]
+static mut ZLB_FRAG6: FRAG6LHM = FRAG6LHM::pinned(MAX_ARP_ENTRIES, 0);
 
 #[inline(always)]
 fn inet6_hash32(addr: &[u32; 4usize]) -> u32 {
@@ -113,6 +120,10 @@ fn update_inet_csum(
     port_combo: u32,
 ) -> Result<(), ()> {
     if l4ctx.check_off == 0 {
+        unsafe {
+            (*ipv6hdr).src_addr.in6_u.u6_addr32 = src.addr32;
+            (*ipv6hdr).dst_addr.in6_u.u6_addr32 = dst.addr32;
+        }
         return Ok(());
     }
 
@@ -581,6 +592,37 @@ impl Ipv6L4Context {
     }
 }
 
+fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &Ipv6L4Context) {
+    if l4ctx.frag_id == 0 {
+        return;
+    }
+
+    match unsafe {
+        ZLB_FRAG6.insert(
+            &Ipv6FragId {
+                id: l4ctx.frag_id,
+                src: Inet6U::from(&ipv6hdr.src_addr.in6_u.u6_addr32),
+                dst: Inet6U::from(&ipv6hdr.dst_addr.in6_u.u6_addr32),
+            },
+            &Ipv6FragInfo {
+                src_port: l4ctx.base.src_port as u16,
+                dst_port: l4ctx.base.dst_port as u16,
+                reserved: 0,
+            },
+            0,
+        )
+    } {
+        Ok(()) => {}
+        Err(_) => {}
+    };
+
+    // BUG: aya compiler generates code that exeeds the stack size:
+    // 'the BPF_PROG_LOAD syscall failed. Verifier output: combined
+    // stack size of 3 calls is 544. Too large'
+    // Calling the same log function outside works.
+    // info!(ctx, "fino");
+}
+
 // NOTE: IPv6 header isn't fixed and the L4 header offset can
 // be computed iterating over the extension headers until we
 // reach a non-extension next_hdr value. For now we assume
@@ -701,6 +743,24 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                     // checking if this packet belongs to a LB flow.
                     l4ctx.frag_id = exthdr.id;
                 } else {
+                    // Retrieve cached l4 info and don't set the checksum offset
+                    // as there no need to compute the checksum for fragments.
+                    // Fragments that are not recognized are passed along.
+                    match unsafe {
+                        ZLB_FRAG6.get(&Ipv6FragId {
+                            id: exthdr.id,
+                            src: Inet6U::from(src_addr),
+                            dst: Inet6U::from(dst_addr),
+                        })
+                    } {
+                        // Missing first fragment
+                        None => return Err(()),
+                        Some(entry) => {
+                            l4ctx.sport(entry.src_port);
+                            l4ctx.dport(entry.dst_port);
+                            break;
+                        }
+                    }
                 }
             }
             _ => {
@@ -749,6 +809,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
 
         log_nat6(ctx, &nat, &feat);
+
+        // Save fragment before updating addresses
+        cache_frag_info(ipv6hdr, &l4ctx);
 
         // TBD: for crc32 use crc32_off
 
@@ -839,6 +902,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         return Ok(xdp_action::XDP_PASS);
     }
+
+    cache_frag_info(ipv6hdr, &l4ctx);
 
     let be = {
         let index = (inet6_hash16(&src_addr) ^ l4ctx.base.src_port as u16) % group.becount;
