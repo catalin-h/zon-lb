@@ -9,6 +9,7 @@ pub const MAX_CONNTRACKS: u32 = 10; // tmp dev, actual = 1 << 15;
 
 // ARP table it should at least the number of supported backends
 pub const MAX_ARP_ENTRIES: u32 = MAX_BACKENDS;
+pub const MAX_FRAG6_ENTRIES: u32 = 128; // It depends on number of cores x 2 (ingres + egress) x parallel flows ?
 
 pub const FIB_ENTRY_EXPIRY_INTERVAL: u32 = 120;
 pub const NEIGH_ENTRY_EXPIRY_INTERVAL: u32 = 120;
@@ -521,10 +522,57 @@ pub struct NDKey {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for NDKey {}
 
-// TODO: add hasher function
+// TODO: Add hasher function for choosing the backend.
 
-// TODO: use IPv6 header Flow label in order to track connections.
+// NOTE: Use IPv6 header Flow label in order to track connections.
 // The usage of the 3-tuple of the Flow Label, Source Address, and
 // Destination Address fields enables efficient IPv6 flow classification,
 //  where only IPv6 main header fields in fixed positions are used.
 // See: https://www.rfc-editor.org/rfc/rfc6437
+// NOTE: IPv6 flow label can be used to find a conntrack entry enven
+// if the transport information is not available. However, the flow label
+// is not always set by the source, it can be disabled, it can be changed
+// by intermediary nodes or the receiving endpoint doesn't enable flow label
+// reflection (net.ipv6.flowlabel_reflect) or using the same flow label
+// on return. For e.g. the ICMPv6 echo reply message will have a different
+// flow label than the request and to enable flow lable reflection on Linux
+// only to ICMP packet set net.ipv6.flowlabel_reflect=4 on the receiver endpoint.
+// NOTE: If the flow label is not very usefull for connection tracking it can
+// be usefull for identifying the conntrack of IPv6 fragments as all fragments
+// received by LB have the same Flow Label.
+// However, note that the Flow Label is 20-bit where as the fragment identifier
+// is 32-bit and the latter is always set as it is used to identify fragments
+// instead of flows.
+
+/// In order to forward all fragments from a bigger (than interface MTU)
+/// IPv6 packet must cache the Transport header details in order to fetch
+/// the backend group or the conntrack entry as only the first fragment
+/// (offset 0) contains the L4 info. The Ipv4 doesn't have this issue as
+/// all IP fragments contain the L4 info.
+///
+/// From Ipv6 RFC8200:
+/// For every packet that is to be fragmented, the source node generates
+/// an Identification value.  The Identification must be different than
+/// that of any other fragmented packet sent recently* with the same
+/// Source Address and Destination Address.  If a Routing header is
+/// present, the Destination Address of concern is that of the final
+/// destination.
+/// See: https://datatracker.ietf.org/doc/html/rfc8200#section-4.5
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Ipv6FragId {
+    /// The packet identification field from the Ipv6 fragment extention header.
+    pub id: u32,
+    /// Source address
+    pub src: Inet6U,
+    /// Destination address
+    pub dst: Inet6U,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Ipv6FragInfo {
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub reserved: u32,
+}
