@@ -552,7 +552,6 @@ struct Ipv6L4Context {
     base: L4Context,
     frag_id: u32,
     next_hdr: IpProto,
-    icmp_type: u8,
 }
 
 impl Ipv6L4Context {
@@ -566,7 +565,6 @@ impl Ipv6L4Context {
             },
             frag_id: 0,
             next_hdr,
-            icmp_type: 0,
         }
     }
 
@@ -616,14 +614,14 @@ impl Ipv6L4Context {
 // else no extension headers.
 // In other words the headers that needs to pe processed are these in this order:
 // IPv6 header, Hop-by-Hop, Destination Options, Routing and Fragment.
-// BUG: linker: must use inline(never), which version ? llvm ?
-#[inline(never)]
-fn compute_l4_context(
-    ctx: &XdpContext,
-    ipv6hdr: &Ipv6Hdr,
-    ethlen: usize,
-) -> Result<Ipv6L4Context, ()> {
-    let mut l4ctx = Ipv6L4Context::new(ethlen, ipv6hdr.next_hdr);
+pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
+    let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
+    let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
+    let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
+    let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
+    let mut l4ctx = Ipv6L4Context::new(l2ctx.ethlen, ipv6hdr.next_hdr);
+    let mut is_icmp_reply = false;
+    let feat = Features::new();
 
     for _ in 0..4 {
         match l4ctx.next_hdr {
@@ -632,20 +630,31 @@ fn compute_l4_context(
                 l4ctx.check_offset(offset_of!(TcpHdr, check));
                 l4ctx.sport(unsafe { (*tcphdr).source });
                 l4ctx.dport(unsafe { (*tcphdr).dest });
-                return Ok(l4ctx);
+                break;
             }
             IpProto::Udp => {
                 let udphdr = ptr_at::<UdpHdr>(&ctx, l4ctx.base.offset)?;
                 l4ctx.check_offset(offset_of!(UdpHdr, check));
                 l4ctx.sport(unsafe { (*udphdr).source });
                 l4ctx.dport(unsafe { (*udphdr).dest });
-                return Ok(l4ctx);
+                break;
             }
             IpProto::Ipv6Icmp => {
                 let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.base.offset)?;
                 l4ctx.check_offset(offset_of!(IcmpHdr, checksum));
-                l4ctx.icmp_type = unsafe { (*icmphdr).type_ };
-                return Ok(l4ctx);
+
+                match unsafe { (*icmphdr).type_ } {
+                    icmpv6::ND_ADVERT | icmpv6::ND_SOLICIT => {
+                        return neighbor_solicit(ctx, l2ctx, l4ctx.base)
+                    }
+                    icmpv6::ECHO_REPLY => {
+                        is_icmp_reply = true;
+                    }
+                    icmpv6::ECHO_REQUEST => { /* handled below */ }
+                    _ => return Ok(xdp_action::XDP_PASS),
+                }
+
+                break;
             }
             IpProto::HopOpt | IpProto::Ipv6Route | IpProto::Ipv6Opts => {
                 let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, l4ctx.base.offset)?;
@@ -676,13 +685,16 @@ fn compute_l4_context(
                 let exthdr = unsafe { &*exthdr };
                 l4ctx.base.offset += 8;
                 l4ctx.next_hdr = exthdr.base.next_header;
-                info!(
-                    ctx,
-                    "pkt frag id: 0x{:x} off:M {}:{}",
-                    exthdr.id,
-                    exthdr.offset(),
-                    exthdr.more()
-                );
+
+                if feat.log_enabled(Level::Info) {
+                    info!(
+                        ctx,
+                        "pkt frag id: 0x{:x} off:M {}:{}",
+                        exthdr.id,
+                        exthdr.offset(),
+                        exthdr.more()
+                    );
+                }
 
                 if exthdr.offset() == 0 {
                     // The id will be needed to cache the L4 info entry after
@@ -698,30 +710,8 @@ fn compute_l4_context(
         };
     }
 
-    Ok(l4ctx)
-}
-
-pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
-    let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
-    let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
-    let l4ctx = compute_l4_context(ctx, ipv6hdr, l2ctx.ethlen)?;
-    let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
-    let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
-
-    let feat = Features::new();
     log_ipv6_packet(ctx, &feat, ipv6hdr);
 
-    // TODO: move this if in main protocol match case
-    match l4ctx.icmp_type {
-        icmpv6::ND_ADVERT | icmpv6::ND_SOLICIT => return neighbor_solicit(ctx, l2ctx, l4ctx.base),
-        icmpv6::ECHO_REPLY | icmpv6::ECHO_REQUEST => {
-            info!(ctx, " echo6 "); /* Handled bellow */
-        }
-        _ => {
-            info!(ctx, " echo other {} ", l4ctx.icmp_type);
-            return Ok(xdp_action::XDP_PASS);
-        }
-    }
     // === reply ===
 
     // NOTE: looks like the 512bye stack can be exhausted pretty rapidly
@@ -806,7 +796,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Don't track echo replies as there can be a response from the actual source.
     // To avoid messing with the packet routing allow tracking only ICMP requests.
-    if l4ctx.icmp_type == icmpv6::ECHO_REPLY {
+    if is_icmp_reply {
         return Ok(xdp_action::XDP_PASS);
     }
 
