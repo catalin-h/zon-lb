@@ -25,14 +25,22 @@ impl TxPorts {
             .ok_or(anyhow!("No tx port map, must reload program"))?;
         let ports = Map::DevMap(ports);
         let mut ports: DevMap<_> = ports.try_into()?;
-        let len = ports.len();
-        // TODO: setting an ifindex that currently does not exist will return an error.
+
+        // NOTE: setting an ifindex that currently does not exist will return an error.
         // To set only the interfaces that exist must iterate over all interfaces.
-        // Next, must use netdev crate to iterate and retrieve the indecses.
-        for p in 1..len {
-            match ports.set(p, p, None, 0) {
-                Ok(()) => info!("Map tx port: {} to ifindex: {}", p, p),
-                Err(_) => {} //error!("Failed to map tx port: {} to ifindex: {}, {}", p, p, e),
+        for (name, netif) in get_netifs()? {
+            match ports.set(netif.ifindex, netif.ifindex, None, 0) {
+                Ok(()) => info!(
+                    "Map {}:{} to tx port: {} ",
+                    name, netif.ifindex, netif.ifindex
+                ),
+                Err(e) => log::error!(
+                    "Failed to map {}:{} to tx port: {}, {}",
+                    name,
+                    netif.ifindex,
+                    netif.ifindex,
+                    e
+                ),
             }
         }
         Ok(())
