@@ -1130,13 +1130,14 @@ fn fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) ->
         info!(
             ctx,
             "[redirect] output, lkp_ret: {}, fw if: {}, src: {:i}, \
-            gw: {:i}, dmac: {:mac}, smac: {:mac}",
+            gw: {:i}, dmac: {:mac}, smac: {:mac}, mtu: {}",
             rc,
             fib_param.ifindex,
             unsafe { Inet6U::from(&fib_param.src).addr8 },
             unsafe { Inet6U::from(&fib_param.dst).addr8 },
             fib_param.dest_mac(),
             fib_param.src_mac(),
+            fib_param.tot_len
         );
     }
 
