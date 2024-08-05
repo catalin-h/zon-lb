@@ -1,6 +1,6 @@
 use crate::{
     is_unicast_mac, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, Features, L2Context,
-    L4Context, ZLB_BACKENDS,
+    L4Context, AF_INET6, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -1070,26 +1070,54 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     return redirect_ipv6(ctx, &feat, ipv6hdr, &l2ctx);
 }
 
+#[map]
+static ZLB_FIB_LKP_RES: HashMap<u32, BpfFibLookUp> = HashMap::with_max_entries(256, 0);
+
+#[inline(always)]
 fn fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) -> Result<u32, ()> {
     // Must re-check the ip header here because the packet might
     // be adjusted because the vlan header was stripped when first
     // attempt to redirect with cache values.
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv6hdr = unsafe { &*ipv6hdr };
-
-    let fib_param = BpfFibLookUp::new_inet6(
-        ipv6hdr.payload_len.to_be(),
-        unsafe { (*ctx.ctx).ingress_ifindex },
-        ipv6hdr.priority() as u32,
-        unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 },
-        unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 },
-    );
-    let p_fib_param = &fib_param as *const BpfFibLookUp as *mut bpf_fib_lookup_param_t;
+    let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
+    let p_fib_param = match { ZLB_FIB_LKP_RES.get_ptr_mut(&if_index) } {
+        Some(ptr) => {
+            unsafe {
+                (*ptr).family = AF_INET6;
+                (*ptr).tot_len = ipv6hdr.payload_len.to_be();
+                (*ptr).tos = ipv6hdr.priority() as u32;
+                // BUG: aya loader throws `error relocating function` if direct
+                // assignment is used
+                for i in 0..3 {
+                    (*ptr).src[i] = ipv6hdr.src_addr.in6_u.u6_addr32[i];
+                    (*ptr).dst[i] = ipv6hdr.dst_addr.in6_u.u6_addr32[i];
+                }
+            }
+            ptr
+        }
+        None => {
+            let param = BpfFibLookUp::new_inet6(
+                ipv6hdr.payload_len.to_be(),
+                unsafe { (*ctx.ctx).ingress_ifindex },
+                ipv6hdr.priority() as u32,
+                unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 },
+                unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 },
+            );
+            match { ZLB_FIB_LKP_RES.insert(&if_index, &param, 0) } {
+                Ok(_) => match { ZLB_FIB_LKP_RES.get_ptr_mut(&if_index) } {
+                    Some(p) => p,
+                    None => return Err(()),
+                },
+                Err(_) => return Err(()),
+            }
+        }
+    };
 
     let rc = unsafe {
         bpf_fib_lookup(
             ctx.as_ptr(),
-            p_fib_param,
+            p_fib_param as *mut bpf_fib_lookup_param_t,
             mem::size_of::<BpfFibLookUp>() as i32,
             0,
         )
@@ -1097,6 +1125,7 @@ fn fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) ->
 
     stats_inc(stats::FIB_LOOKUPS);
 
+    let fib_param = unsafe { &*p_fib_param };
     if feat.log_enabled(Level::Info) {
         info!(
             ctx,
@@ -1207,7 +1236,7 @@ fn redirect_ipv6(
     fib6_lookup_redirect(ctx, l2ctx, feat)
 }
 
-fn update_fib6_cache(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
+fn update_fib6_cache(ctx: &XdpContext, feat: &Features, fib_param: &BpfFibLookUp) {
     let fib6 = FibEntry {
         ifindex: fib_param.ifindex,
         macs: fib_param.ethdr_macs(),
