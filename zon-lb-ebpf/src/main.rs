@@ -1145,6 +1145,7 @@ fn update_fib(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
         macs: fib_param.ethdr_macs(),
         ip_src: fib_param.src,
         expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + FIB_ENTRY_EXPIRY_INTERVAL,
+        mtu: fib_param.tot_len as u32,
     };
 
     // NOTE: after updating the value or key struct size must remove the pinned map

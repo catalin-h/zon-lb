@@ -445,8 +445,14 @@ pub struct FibEntry {
     pub ip_src: [u32; 4],
     /// The expiry timestamp
     pub expiry: u32,
-    // TODO: The VLAN ID for the IP address (key)
-    //pub vlan_id_be: u32,
+    /// The MTU computed for current interface (16bit)
+    pub mtu: u32,
+    // TODO: available from struct bpf_fib_lookup
+    // The VLAN header: protocol type (e.g. 801.1Q) and
+    // tag control information (TCI)
+    // pub vlan_hdr: u32,
+    // Route metric value
+    // pub rt_metric: u32,
 }
 
 #[cfg(feature = "user")]
