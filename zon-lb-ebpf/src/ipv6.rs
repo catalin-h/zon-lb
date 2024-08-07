@@ -1073,6 +1073,91 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 #[map]
 static ZLB_FIB_LKP_RES: HashMap<u32, BpfFibLookUp> = HashMap::with_max_entries(256, 0);
 
+fn fetch_fib6(
+    ctx: &XdpContext,
+    ipv6hdr: &Ipv6Hdr,
+    src: &[u32; 4],
+    dst: &[u32; 4],
+) -> Result<(*const FibEntry, u32), ()> {
+    let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
+
+    match unsafe { ZLB_FIB6.get_ptr(&dst) } {
+        Some(entry) => {
+            if now <= unsafe { (*entry).expiry } {
+                return Ok((entry, bindings::BPF_FIB_LKUP_RET_SUCCESS as u32));
+            }
+        }
+        None => {}
+    }
+
+    let fib_param = BpfFibLookUp::new_inet6(
+        ipv6hdr.payload_len.to_be(),
+        unsafe { (*ctx.ctx).ingress_ifindex },
+        ipv6hdr.priority() as u32,
+        src,
+        dst,
+    );
+    let p_fib_param = &fib_param as *const BpfFibLookUp;
+    let rc = unsafe {
+        bpf_fib_lookup(
+            ctx.as_ptr(),
+            p_fib_param as *mut bpf_fib_lookup_param_t,
+            mem::size_of::<BpfFibLookUp>() as i32,
+            0,
+        )
+    };
+
+    stats_inc(stats::FIB_LOOKUPS);
+    let expiry = if rc != bindings::BPF_FIB_LKUP_RET_SUCCESS as i64 {
+        stats_inc(stats::FIB_LOOKUP_FAILS);
+        // Retry on next try but create the entry
+        now - 1
+    } else {
+        // TODO: make the expiry time a runvar
+        now + FIB_ENTRY_EXPIRY_INTERVAL
+    };
+
+    let feat = Features::new();
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "[fib] lkp_ret: {}, fw if: {}, src: {:i}, \
+            gw: {:i}, dmac: {:mac}, smac: {:mac}, mtu: {}",
+            rc,
+            fib_param.ifindex,
+            unsafe { Inet6U::from(&fib_param.src).addr8 },
+            unsafe { Inet6U::from(&fib_param.dst).addr8 },
+            fib_param.dest_mac(),
+            fib_param.src_mac(),
+            fib_param.tot_len
+        );
+    }
+
+    let entry = FibEntry {
+        ifindex: fib_param.ifindex,
+        macs: fib_param.ethdr_macs(),
+        ip_src: fib_param.src, // not used for now
+        expiry,
+        mtu: fib_param.tot_len as u32,
+    };
+
+    // NOTE: after updating the value or key struct size must remove the pinned map
+    // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
+    match unsafe { ZLB_FIB6.insert(&dst, &entry, 0) } {
+        Ok(()) => {}
+        Err(_) => {
+            stats_inc(stats::FIB_ERROR_UPDATE);
+            return Err(());
+        }
+    }
+
+    match unsafe { ZLB_FIB6.get_ptr(&dst) } {
+        Some(entry) => Ok((entry, rc as u32)),
+        None => Err(()),
+    }
+}
+
 #[inline(always)]
 fn fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) -> Result<u32, ()> {
     // Must re-check the ip header here because the packet might
