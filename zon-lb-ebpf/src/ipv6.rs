@@ -1037,21 +1037,23 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         };
     }
 
-    update_inet_csum(
-        ctx,
-        ipv6hdr,
-        &l4ctx.base,
-        &nat6key.ip_lb_dst,
-        &nat6key.ip_be_src,
-        (be.port as u32) << 16 | l4ctx.base.src_port,
-    )?;
-
     if !redirect {
+        update_inet_csum(
+            ctx,
+            ipv6hdr,
+            &l4ctx.base,
+            &nat6key.ip_lb_dst,
+            &nat6key.ip_be_src,
+            (be.port as u32) << 16 | l4ctx.base.src_port,
+        )?;
+
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
             if feat.log_enabled(Level::Info) {
                 info!(ctx, "in => xdp_tx");
             }
+
+            // TODO: swap eth addresses
 
             stats_inc(stats::XDP_TX);
 
@@ -1067,7 +1069,65 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    return redirect_ipv6(ctx, &feat, ipv6hdr, &l2ctx);
+    // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
+    let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, &lb_addr, &be.address)?;
+    match fib_rc {
+        bindings::BPF_FIB_LKUP_RET_SUCCESS => {
+            if unsafe { (*fib).mtu as u16 >= ipv6hdr.payload_len } { /* go ahead an update the packet */
+            } else { /* send packet to big */
+            }
+        }
+        bindings::BPF_FIB_LKUP_RET_FRAG_NEEDED => { /* send  packet to big */ }
+        bindings::BPF_FIB_LKUP_RET_BLACKHOLE
+        | bindings::BPF_FIB_LKUP_RET_UNREACHABLE
+        | bindings::BPF_FIB_LKUP_RET_PROHIBIT => {
+            stats_inc(stats::XDP_DROP);
+            return Ok(xdp_action::XDP_DROP);
+        }
+        _ => {
+            stats_inc(stats::XDP_PASS);
+            return Ok(xdp_action::XDP_PASS);
+        }
+    };
+
+    update_inet_csum(
+        ctx,
+        ipv6hdr,
+        &l4ctx.base,
+        &nat6key.ip_lb_dst,
+        &nat6key.ip_be_src,
+        (be.port as u32) << 16 | l4ctx.base.src_port,
+    )?;
+
+    let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+
+    // NOTE: look like aya can't convert the '*eth = entry.macs' into
+    // a 3 load instructions block that doesn't panic the bpf verifier
+    // with 'invalid access to packet'. The same statement when modifying
+    // stack data passes the verifier check.
+    unsafe {
+        (*eth)[0] = (*fib).macs[0];
+        (*eth)[1] = (*fib).macs[1];
+        (*eth)[2] = (*fib).macs[2];
+    };
+
+    // TODO: use the vlan info from fib lookup to update the frame vlan.
+    // Till then assume we redirect to backends outside of any VLAN.
+    l2ctx.vlan_update(ctx, 0, &feat)?;
+
+    // In case of redirect failure just try to query the FIB again
+    let action = redirect_txport(ctx, &feat, unsafe { (*fib).ifindex });
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "[redirect] oif:{}, action={}",
+            unsafe { (*fib).ifindex },
+            action
+        );
+    }
+
+    return Ok(action);
 }
 
 #[map]
