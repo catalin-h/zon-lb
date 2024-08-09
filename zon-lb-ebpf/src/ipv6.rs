@@ -1218,8 +1218,8 @@ fn fetch_fib6(
     }
 }
 
-#[inline(always)]
-fn fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) -> Result<u32, ()> {
+#[inline(never)]
+fn _fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) -> Result<u32, ()> {
     // Must re-check the ip header here because the packet might
     // be adjusted because the vlan header was stripped when first
     // attempt to redirect with cache values.
@@ -1302,7 +1302,7 @@ fn fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) ->
             info!(ctx, "[redirect] action => {}", action);
         }
 
-        update_fib6_cache(ctx, &feat, fib_param);
+        _update_fib6_cache(ctx, &feat, fib_param);
 
         return Ok(action);
     }
@@ -1340,7 +1340,7 @@ fn fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) ->
     Ok(xdp_action::XDP_PASS)
 }
 
-fn redirect_ipv6(
+fn _redirect_ipv6(
     ctx: &XdpContext,
     feat: &Features,
     ipv6hdr: &Ipv6Hdr,
@@ -1379,10 +1379,10 @@ fn redirect_ipv6(
     }
 
     // NOTE: to avoid verifier stack overflow error just do a tail call
-    fib6_lookup_redirect(ctx, l2ctx, feat)
+    _fib6_lookup_redirect(ctx, l2ctx, feat)
 }
 
-fn update_fib6_cache(ctx: &XdpContext, feat: &Features, fib_param: &BpfFibLookUp) {
+fn _update_fib6_cache(ctx: &XdpContext, feat: &Features, fib_param: &BpfFibLookUp) {
     let fib6 = FibEntry {
         ifindex: fib_param.ifindex,
         macs: fib_param.ethdr_macs(),
