@@ -143,10 +143,9 @@ fn update_inet_csum(
     // port_combo = dst_port << 16 | src_port;
     // NOTE: the destination port remains the same.
     if port_combo != 0 {
-        if let Ok(ptr) = ptr_at::<u32>(ctx, l4ctx.offset) {
-            csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
-            unsafe { *(ptr.cast_mut()) = port_combo };
-        }
+        csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
+        let ptr = ptr_at::<u32>(ctx, l4ctx.offset)?;
+        unsafe { *(ptr.cast_mut()) = port_combo };
     }
 
     // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
