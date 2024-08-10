@@ -926,10 +926,41 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     };
 
-    let redirect = be.flags.contains(EPFlags::XDP_REDIRECT);
+    // Fast exit if packet is not redirected
+    if !be.flags.contains(EPFlags::XDP_REDIRECT) {
+        update_inet_csum(
+            ctx,
+            ipv6hdr,
+            &l4ctx.base,
+            &Inet6U::from(dst_addr),
+            &Inet6U::from(&be.address),
+            (be.port as u32) << 16 | l4ctx.base.src_port,
+        )?;
+
+        // Send back the packet to the same interface
+        if be.flags.contains(EPFlags::XDP_TX) {
+            if feat.log_enabled(Level::Info) {
+                info!(ctx, "in => xdp_tx");
+            }
+
+            // TODO: swap eth addresses
+
+            stats_inc(stats::XDP_TX);
+
+            return Ok(xdp_action::XDP_TX);
+        }
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "in => xdp_pass");
+        }
+
+        stats_inc(stats::XDP_PASS);
+
+        return Ok(xdp_action::XDP_PASS);
+    }
 
     // TBD: need to check BE.src_ip == 0 ?
-    let lb_addr = if redirect && be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
+    let lb_addr = if be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
         // TODO: check the ND table and update or insert
         // smac/dmac and derived ip src and redirect ifindex
         &be.src_ip
@@ -968,7 +999,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // NOTE: Always use 64-bits values for faster data transfer and
     // fewer instructions during initialization
-    let mac_addresses = if redirect {
+    let mac_addresses = {
+        // TODO: mac can be checked here
+        // TODO: use a single eth ptr
         let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
         let macs = unsafe { macs.as_ref() }.ok_or(())?;
         let macs = [
@@ -976,8 +1009,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             macs[0] >> 16,
         ];
         unsafe { *(macs.as_ptr() as *const [u32; 3]) }
-    } else {
-        [0; 3]
     };
 
     let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
@@ -1036,38 +1067,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         };
     }
 
-    if !redirect {
-        update_inet_csum(
-            ctx,
-            ipv6hdr,
-            &l4ctx.base,
-            &nat6key.ip_lb_dst,
-            &nat6key.ip_be_src,
-            (be.port as u32) << 16 | l4ctx.base.src_port,
-        )?;
-
-        // Send back the packet to the same interface
-        if be.flags.contains(EPFlags::XDP_TX) {
-            if feat.log_enabled(Level::Info) {
-                info!(ctx, "in => xdp_tx");
-            }
-
-            // TODO: swap eth addresses
-
-            stats_inc(stats::XDP_TX);
-
-            return Ok(xdp_action::XDP_TX);
-        }
-
-        if feat.log_enabled(Level::Info) {
-            info!(ctx, "in => xdp_pass");
-        }
-
-        stats_inc(stats::XDP_PASS);
-
-        return Ok(xdp_action::XDP_PASS);
-    }
-
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, &lb_addr, &be.address)?;
     match fib_rc {
@@ -1098,6 +1097,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         (be.port as u32) << 16 | l4ctx.base.src_port,
     )?;
 
+    // TODO: move this before inet checksum and use a single eth header ptr
     let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
 
     // NOTE: look like aya can't convert the '*eth = entry.macs' into
