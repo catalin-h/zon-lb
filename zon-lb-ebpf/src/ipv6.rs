@@ -997,33 +997,29 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         );
     }
 
-    // NOTE: Always use 64-bits values for faster data transfer and
-    // fewer instructions during initialization
-    let mac_addresses = {
-        // TODO: mac can be checked here
-        // TODO: use a single eth ptr
-        let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
-        let macs = unsafe { macs.as_ref() }.ok_or(())?;
-        let macs = [
-            (macs[1] & 0xffff_ffff) << 16 | macs[0] >> 48 | macs[0] << 48,
-            macs[0] >> 16,
-        ];
-        unsafe { *(macs.as_ptr() as *const [u32; 3]) }
-    };
-
+    // NOTE: use a single eth ptr
+    let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+    let macs = unsafe { &mut *macs };
     let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
+    let mac_addresses = [
+        macs[2] << 16 | macs[1] >> 16,
+        macs[0] << 16 | macs[2] >> 16,
+        macs[1] << 16 | macs[0] >> 16,
+    ];
 
     // Update the nat entry only if the source details changes.
     // This will boost performance and less error prone on tests like iperf.
-    let do_insert = if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
+    // TODO: check every x sec for each src address + src_port + proto if NAT was set
+    let do_insert = match unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
         // TODO: use a inet 32-bit hash instead of
         // the 3 comparations or 32B/32B total matching bytes ?
-        nat.ifindex != if_index
-            || !nat.ip_src.eq32(src_addr)
-            || nat.mac_addresses != mac_addresses
-            || nat.vlan_hdr != l2ctx.vlanhdr
-    } else {
-        true
+        Some(&nat) => {
+            nat.ifindex != if_index
+                || !nat.ip_src.eq32(src_addr)
+                || nat.mac_addresses != mac_addresses
+                || !nat.vlan_hdr == l2ctx.vlanhdr
+        }
+        None => true,
     };
 
     if do_insert {
@@ -1097,17 +1093,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         (be.port as u32) << 16 | l4ctx.base.src_port,
     )?;
 
-    // TODO: move this before inet checksum and use a single eth header ptr
-    let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
-
     // NOTE: look like aya can't convert the '*eth = entry.macs' into
     // a 3 load instructions block that doesn't panic the bpf verifier
     // with 'invalid access to packet'. The same statement when modifying
     // stack data passes the verifier check.
+
     unsafe {
-        (*eth)[0] = (*fib).macs[0];
-        (*eth)[1] = (*fib).macs[1];
-        (*eth)[2] = (*fib).macs[2];
+        macs[2] = (*fib).macs[2];
+        macs[1] = (*fib).macs[1];
+        macs[0] = (*fib).macs[0];
     };
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
