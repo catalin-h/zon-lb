@@ -1065,9 +1065,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, &lb_addr, &be.address)?;
+    let fib = unsafe { &*fib };
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
-            if unsafe { (*fib).mtu as u16 >= ipv6hdr.payload_len } { /* go ahead an update the packet */
+            if fib.mtu as u16 >= ipv6hdr.payload_len { /* go ahead an update the packet */
             } else { /* send packet to big */
             }
         }
@@ -1098,26 +1099,19 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // with 'invalid access to packet'. The same statement when modifying
     // stack data passes the verifier check.
 
-    unsafe {
-        macs[2] = (*fib).macs[2];
-        macs[1] = (*fib).macs[1];
-        macs[0] = (*fib).macs[0];
-    };
+    macs[2] = fib.macs[2];
+    macs[1] = fib.macs[1];
+    macs[0] = fib.macs[0];
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
     // Till then assume we redirect to backends outside of any VLAN.
     l2ctx.vlan_update(ctx, 0, &feat)?;
 
     // In case of redirect failure just try to query the FIB again
-    let action = redirect_txport(ctx, &feat, unsafe { (*fib).ifindex });
+    let action = redirect_txport(ctx, &feat, fib.ifindex);
 
     if feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "[redirect] oif:{}, action={}",
-            unsafe { (*fib).ifindex },
-            action
-        );
+        info!(ctx, "[redirect] oif:{}, action={}", fib.ifindex, action);
     }
 
     return Ok(action);
