@@ -157,6 +157,47 @@ fn update_inet_csum(
     Ok(())
 }
 
+fn update_destination_inet_csum(
+    ctx: &XdpContext,
+    ipv6hdr: &mut Ipv6Hdr,
+    l4ctx: &L4Context,
+    dst: &[u32; 4usize],
+    port_combo: u32,
+) -> Result<(), ()> {
+    // TODO: move this to the place of usage as this function can't be inlined
+    if l4ctx.check_off == 0 {
+        (*ipv6hdr).src_addr.in6_u.u6_addr32 = unsafe { (*ipv6hdr).dst_addr.in6_u.u6_addr32 };
+        (*ipv6hdr).dst_addr.in6_u.u6_addr32 = *dst;
+        return Ok(());
+    }
+
+    let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
+    let mut csum = unsafe { !(*check) } as u32;
+
+    let from = unsafe { &mut ipv6hdr.src_addr.in6_u.u6_addr32 };
+
+    for i in (0..4).rev() {
+        if dst[i] != from[i] {
+            csum = csum_update_u32(from[i], dst[i], csum);
+        }
+    }
+
+    // TODO: reduce hop limit by one on xmit and redirect
+    // The IPv6 header does not have a csum field that needs to be
+    // recalculated every time the hop limit is decreased as it happens
+    // when the TTL from IPv4 header is reduced by one.
+
+    if port_combo != 0 {
+        csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
+        let ptr = ptr_at::<u32>(ctx, l4ctx.offset)?;
+        unsafe { *(ptr.cast_mut()) = port_combo };
+    }
+
+    unsafe { *check = !csum_fold_32_to_16(csum) };
+
+    Ok(())
+}
+
 // NOTE: Log some details inside functions in order to avoid
 // program rejection from bpf verifier due to stack overflow.
 // The AYA logger seems to require a lot of stack variables
@@ -928,12 +969,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
-        update_inet_csum(
+        update_destination_inet_csum(
             ctx,
             ipv6hdr,
             &l4ctx.base,
-            &Inet6U::from(dst_addr),
-            &Inet6U::from(&be.address),
+            &be.address,
             (be.port as u32) << 16 | l4ctx.base.src_port,
         )?;
 
