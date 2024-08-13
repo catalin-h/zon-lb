@@ -969,6 +969,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     };
 
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "[fwd-bknd] [{:i}]:{}",
+            unsafe { Inet6U::from(&be.address).addr8 },
+            be.port.to_be()
+        );
+    }
+
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
         update_destination_inet_csum(
@@ -1029,15 +1038,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         port_lb_dst: l4ctx.base.src_port, // use the source port of the endpoint
         next_hdr: l4ctx.next_hdr as u32,
     };
-
-    if feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "[ctrk] fw be: [{:i}]:{}",
-            unsafe { nat6key.ip_be_src.addr8 },
-            be.port.to_be()
-        );
-    }
 
     // NOTE: use a single eth ptr
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
