@@ -83,7 +83,8 @@ fn compute_checksum(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize])
     // different; for 16B IPv6 with many zeros this will reduce the csum
     // and copy to minimum.
     // NOTE: looks like loop unroll requires some stack allocation.
-    for i in 0..4 {
+    // BUG: bpf_linker: can't make unroll loop without the if statement
+    for i in (0..4).rev() {
         if to[i] != from[i] {
             csum = csum_update_u32(from[i], to[i], csum);
             from[i] = to[i];
@@ -93,8 +94,34 @@ fn compute_checksum(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize])
     csum
 }
 
-#[inline(always)]
-fn update_ipv6hdr(hdr: &mut Ipv6Hdr, check: u32, src: &Inet6U, dst: &Inet6U) -> u32 {
+/// Compute and update the L4 inet checksum while also updating the IPv6 header
+/// src/dst addresses and L4 src/dst ports.
+///
+/// BUG: can't use #[inline(never)] for now because of the bpf_linker
+/// NOTE: Support only inet protocols that rely on inet checksum
+/// TODO: make this a macro_rule
+/// TODO: pass &[u32;4] instead of Inet6U
+/// BUG: NOTE: bpf_linker will throw an error when passing mutable ipv6hdr and
+/// also passing imutable ref to src/dst from ipv6hdr. Must split the two cases
+/// in order to properly link the code.
+fn update_inet_csum(
+    ctx: &XdpContext,
+    ipv6hdr: &mut Ipv6Hdr,
+    l4ctx: &L4Context,
+    src: &[u32; 4usize],
+    dst: &[u32; 4usize],
+    port_combo: u32,
+) -> Result<(), ()> {
+    // TODO: move this to the place of usage as this function can't be inlined
+    if l4ctx.check_off == 0 {
+        (*ipv6hdr).src_addr.in6_u.u6_addr32 = *src;
+        (*ipv6hdr).dst_addr.in6_u.u6_addr32 = *dst;
+        return Ok(());
+    }
+
+    let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
+    let mut csum = unsafe { !(*check) } as u32;
+
     // NOTE: optimization: cache friendly parallel scan over 8 x 32-bit values.
     // NOTE: looks like loop unroll requires some stack allocation.
     // NOTE: Don't use this statement to get the mutable reference from ptr as it
@@ -102,35 +129,10 @@ fn update_ipv6hdr(hdr: &mut Ipv6Hdr, check: u32, src: &Inet6U, dst: &Inet6U) -> 
     // let hdr = &mut unsafe { *ipv6hdr.cast_mut() };
     // To correctly get the mutable ref place the &mut inside the unsafe {}:
     // let hdr = unsafe { &mut (*ipv6hdr.cast_mut()) };
-    let csum = unsafe { compute_checksum(check, &mut hdr.src_addr.in6_u.u6_addr32, &src.addr32) };
-    unsafe { compute_checksum(csum, &mut hdr.dst_addr.in6_u.u6_addr32, &dst.addr32) }
-}
-
-/// Compute and update the L4 inet checksum while also updating the IPv6 header
-/// src/dst addresses and L4 src/dst ports.
-///
-/// BUG: can't use #[inline(never)] for now because of the bpf_linker
-/// NOTE: Support only inet protocols that rely on inet checksum
-fn update_inet_csum(
-    ctx: &XdpContext,
-    ipv6hdr: &mut Ipv6Hdr,
-    l4ctx: &L4Context,
-    src: &Inet6U,
-    dst: &Inet6U,
-    port_combo: u32,
-) -> Result<(), ()> {
-    if l4ctx.check_off == 0 {
-        unsafe {
-            (*ipv6hdr).src_addr.in6_u.u6_addr32 = src.addr32;
-            (*ipv6hdr).dst_addr.in6_u.u6_addr32 = dst.addr32;
-        }
-        return Ok(());
-    }
-
-    let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
-    let mut csum = unsafe { !(*check) } as u32;
-
-    csum = update_ipv6hdr(ipv6hdr, csum, src, dst);
+    let from = unsafe { &mut ipv6hdr.src_addr.in6_u.u6_addr32 };
+    csum = compute_checksum(csum, from, src);
+    let from = unsafe { &mut ipv6hdr.dst_addr.in6_u.u6_addr32 };
+    csum = compute_checksum(csum, from, dst);
 
     // TODO: reduce hop limit by one on xmit and redirect
     // The IPv6 header does not have a csum field that needs to be
@@ -859,8 +861,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             ctx,
             ipv6hdr,
             &l4ctx.base,
-            &nat.lb_ip,
-            &nat.ip_src,
+            unsafe { &nat.lb_ip.addr32 },
+            unsafe { &nat.ip_src.addr32 },
             l4ctx.base.dst_port << 16 | nat.port_lb,
         )?;
 
@@ -1129,8 +1131,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx,
         ipv6hdr,
         &l4ctx.base,
-        &nat6key.ip_lb_dst,
-        &nat6key.ip_be_src,
+        unsafe { &nat6key.ip_lb_dst.addr32 },
+        unsafe { &nat6key.ip_be_src.addr32 },
         (be.port as u32) << 16 | l4ctx.base.src_port,
     )?;
 
