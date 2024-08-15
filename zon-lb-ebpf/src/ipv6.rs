@@ -816,7 +816,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // === reply ===
 
-    // NOTE: looks like the 512bye stack can be exhausted pretty rapidly
+    // NOTE: looks like the 512B stack can be exhausted pretty rapidly
     // for 1pv6 lb due to larger structs. One way to avoid the verifier error
     // `combined stack size of 2 calls is 544. Too large` is to:
     // * use temp variables during map searches: e.g. ZLB_CONNTRACK6.get(&NAT6Key {..
@@ -824,15 +824,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // * use per cpu array maps
     // * try remove some log prints
 
-    if let Some(&nat) = unsafe {
-        ZLB_CONNTRACK6.get(&NAT6Key {
-            ip_lb_dst: Inet6U::from(dst_addr),
-            ip_be_src: Inet6U::from(src_addr),
-            port_be_src: l4ctx.base.src_port,
-            port_lb_dst: l4ctx.base.dst_port,
-            next_hdr: l4ctx.next_hdr as u32,
-        })
-    } {
+    let mut nat6key = NAT6Key {
+        ip_lb_dst: Inet6U::from(dst_addr),
+        ip_be_src: Inet6U::from(src_addr),
+        port_be_src: l4ctx.base.src_port,
+        port_lb_dst: l4ctx.base.dst_port,
+        next_hdr: l4ctx.next_hdr as u32,
+    };
+
+    if let Some(&nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
@@ -1031,13 +1031,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // required to created the key to query the connection tracking map.
     // TBD: NOTE: can't use the same key as above because the verifier will
     // complain about stack size above 512.
-    let nat6key = NAT6Key {
-        ip_lb_dst: Inet6U::from(lb_addr),
-        ip_be_src: Inet6U::from(&be.address),
-        port_be_src: be.port as u32,
-        port_lb_dst: l4ctx.base.src_port, // use the source port of the endpoint
-        next_hdr: l4ctx.next_hdr as u32,
-    };
+    nat6key.ip_lb_dst = Inet6U::from(lb_addr);
+    nat6key.ip_be_src = Inet6U::from(&be.address);
+    nat6key.port_be_src = be.port as u32;
+    // use the source port of the endpoint
+    nat6key.port_lb_dst = l4ctx.base.src_port;
 
     // NOTE: use a single eth ptr
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
