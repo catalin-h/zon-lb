@@ -1116,7 +1116,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // TBD: use lock or atomic update ?
     // TBD: use BPF_F_LOCK ?
-    match unsafe {
+    let rc = match unsafe {
         ZLB_CONNTRACK6.insert(
             &nat6key,
             // NOTE: optimization: use as temp value at insert point
@@ -1132,30 +1132,23 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             0,
         )
     } {
-        Ok(()) => {
-            if feat.log_enabled(Level::Info) {
-                info!(
-                    ctx,
-                    "[ctrk] [{:i}]:{} added vlanhdr: {:x}",
-                    unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
-                    (l4ctx.base.src_port as u16).to_be(),
-                    l2ctx.vlanhdr
-                )
-            }
-        }
+        Ok(()) => 0, // add stats for insert
         Err(ret) => {
-            if feat.log_enabled(Level::Error) {
-                error!(
-                    ctx,
-                    "[ctrk] [{:i}]:{} not added, err: {}",
-                    unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
-                    (l4ctx.base.src_port as u16).to_be(),
-                    ret
-                )
-            }
             stats_inc(stats::CT_ERROR_UPDATE);
+            ret
         }
     };
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "[ctrk] [{:i}]:{} vlanhdr: {:x}i, rc={}",
+            unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
+            (l4ctx.base.src_port as u16).to_be(),
+            l2ctx.vlanhdr,
+            rc
+        )
+    }
 
     return Ok(action);
 }
