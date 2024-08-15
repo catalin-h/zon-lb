@@ -1065,20 +1065,24 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     };
 
     if do_insert {
-        // TODO: use as temp value at insert point
-        let nat6value = NAT6Value {
-            ip_src: Inet6U::from(src_addr),
-            port_lb: l4ctx.base.dst_port,
-            ifindex: if_index,
-            mac_addresses,
-            vlan_hdr: l2ctx.vlanhdr,
-            flags: be.flags,
-            lb_ip: Inet6U::from(dst_addr), // save the original LB IP
-        };
-
         // TBD: use lock or atomic update ?
         // TBD: use BPF_F_LOCK ?
-        match unsafe { ZLB_CONNTRACK6.insert(&nat6key, &nat6value, 0) } {
+        match unsafe {
+            ZLB_CONNTRACK6.insert(
+                &nat6key,
+                // NOTE: optimization: use as temp value at insert point
+                &NAT6Value {
+                    ip_src: Inet6U::from(src_addr),
+                    port_lb: l4ctx.base.dst_port,
+                    ifindex: if_index,
+                    mac_addresses,
+                    vlan_hdr: l2ctx.vlanhdr,
+                    flags: be.flags,
+                    lb_ip: Inet6U::from(dst_addr), // save the original LB IP
+                },
+                0,
+            )
+        } {
             Ok(()) => {
                 if feat.log_enabled(Level::Info) {
                     info!(
