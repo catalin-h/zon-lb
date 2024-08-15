@@ -1016,96 +1016,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         // smac/dmac and derived ip src and redirect ifindex
         &be.src_ip
     } else {
-        dst_addr
+        unsafe { &nat6key.ip_lb_dst.addr32 }
     };
-
-    // NOTE: Don't insert entry if no connection tracking is enabled for this backend.
-    // For e.g. if the backend can reply directly to the source endpoint.
-    // if !be.flags.contains(EPFlags::NO_CONNTRACK) {
-    // NOTE: the LB will use the source port since there can be multiple
-    // connection to the same backend and it needs to track all of them.
-    // TBD: BUG: can't copy ipv6 addresses as [u32; 4] directly because aya
-    // generates code that the verifier rejects. Maybe the address is not
-    // aligned to 8B (see comment from Inet6U) ?
-    // NOTE: don't care if 2 ipv6 addresses (16B) are copied because they
-    // required to created the key to query the connection tracking map.
-    // TBD: NOTE: can't use the same key as above because the verifier will
-    // complain about stack size above 512.
-    nat6key.ip_lb_dst = Inet6U::from(lb_addr);
-    nat6key.ip_be_src = Inet6U::from(&be.address);
-    nat6key.port_be_src = be.port as u32;
-    // use the source port of the endpoint
-    nat6key.port_lb_dst = l4ctx.base.src_port;
-
-    // NOTE: use a single eth ptr
-    let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
-    let macs = unsafe { &mut *macs };
-    let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
-    let mac_addresses = [
-        macs[2] << 16 | macs[1] >> 16,
-        macs[0] << 16 | macs[2] >> 16,
-        macs[1] << 16 | macs[0] >> 16,
-    ];
-
-    // Update the nat entry only if the source details changes.
-    // This will boost performance and less error prone on tests like iperf.
-    // TODO: check every x sec for each src address + src_port + proto if NAT was set
-    let do_insert = match unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
-        // TODO: use a inet 32-bit hash instead of
-        // the 3 comparations or 32B/32B total matching bytes ?
-        Some(&nat) => {
-            nat.ifindex != if_index
-                || !nat.ip_src.eq32(src_addr)
-                || nat.mac_addresses != mac_addresses
-                || !nat.vlan_hdr == l2ctx.vlanhdr
-        }
-        None => true,
-    };
-
-    if do_insert {
-        // TBD: use lock or atomic update ?
-        // TBD: use BPF_F_LOCK ?
-        match unsafe {
-            ZLB_CONNTRACK6.insert(
-                &nat6key,
-                // NOTE: optimization: use as temp value at insert point
-                &NAT6Value {
-                    ip_src: Inet6U::from(src_addr),
-                    port_lb: l4ctx.base.dst_port,
-                    ifindex: if_index,
-                    mac_addresses,
-                    vlan_hdr: l2ctx.vlanhdr,
-                    flags: be.flags,
-                    lb_ip: Inet6U::from(dst_addr), // save the original LB IP
-                },
-                0,
-            )
-        } {
-            Ok(()) => {
-                if feat.log_enabled(Level::Info) {
-                    info!(
-                        ctx,
-                        "[ctrk] [{:i}]:{} added vlanhdr: {:x}",
-                        unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
-                        (l4ctx.base.src_port as u16).to_be(),
-                        l2ctx.vlanhdr
-                    )
-                }
-            }
-            Err(ret) => {
-                if feat.log_enabled(Level::Error) {
-                    error!(
-                        ctx,
-                        "[ctrk] [{:i}]:{} not added, err: {}",
-                        unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
-                        (l4ctx.base.src_port as u16).to_be(),
-                        ret
-                    )
-                }
-                stats_inc(stats::CT_ERROR_UPDATE);
-            }
-        };
-    }
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, lb_addr, &be.address)?;
@@ -1133,8 +1045,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx,
         ipv6hdr,
         &l4ctx.base,
-        unsafe { &nat6key.ip_lb_dst.addr32 },
-        unsafe { &nat6key.ip_be_src.addr32 },
+        lb_addr,
+        &be.address,
         (be.port as u32) << 16 | l4ctx.base.src_port,
     )?;
 
@@ -1142,6 +1054,14 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // a 3 load instructions block that doesn't panic the bpf verifier
     // with 'invalid access to packet'. The same statement when modifying
     // stack data passes the verifier check.
+
+    let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+    let macs = unsafe { &mut *macs };
+    let mac_addresses = [
+        macs[2] << 16 | macs[1] >> 16,
+        macs[0] << 16 | macs[2] >> 16,
+        macs[1] << 16 | macs[0] >> 16,
+    ];
 
     macs[2] = fib.macs[2];
     macs[1] = fib.macs[1];
@@ -1157,6 +1077,85 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     if feat.log_enabled(Level::Info) {
         info!(ctx, "[redirect] oif:{}, action={}", fib.ifindex, action);
     }
+
+    /* === connection tracking === */
+
+    // TODO: Don't insert entry if no connection tracking is enabled for this backend.
+    // For e.g. if the backend can reply directly to the source endpoint.
+    // if !be.flags.contains(EPFlags::NO_CONNTRACK) {
+    // NOTE: The LB will use the source port since there can be multiple
+    // connection to the same backend and it needs to track all of them.
+    // On reply the source port is used to identify the connection track entry.
+
+    let ip_src = nat6key.ip_be_src;
+    let lb_ip = nat6key.ip_lb_dst;
+
+    nat6key.ip_lb_dst = Inet6U::from(lb_addr);
+    nat6key.ip_be_src = Inet6U::from(&be.address);
+    nat6key.port_be_src = be.port as u32;
+    nat6key.port_lb_dst = l4ctx.base.src_port;
+
+    // Update the nat entry only if the source details changes.
+    // This will boost performance and less error prone on tests like iperf.
+    // TODO: check every x sec for each src address + src_port + proto if NAT was set
+    match unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
+        // TODO: use a inet 32-bit hash instead of
+        // the 3 comparations or 32B/32B total matching bytes ?
+        Some(&nat) => {
+            if nat.ifindex != unsafe { (*ctx.ctx).ingress_ifindex }
+                || !nat.ip_src.eq32(unsafe { &ip_src.addr32 })
+                || nat.mac_addresses != mac_addresses
+                || !nat.vlan_hdr == l2ctx.vlanhdr
+            { /* do insert */
+            } else {
+                return Ok(action);
+            }
+        }
+        None => { /* do insert */ }
+    }
+
+    // TBD: use lock or atomic update ?
+    // TBD: use BPF_F_LOCK ?
+    match unsafe {
+        ZLB_CONNTRACK6.insert(
+            &nat6key,
+            // NOTE: optimization: use as temp value at insert point
+            &NAT6Value {
+                ip_src,
+                port_lb: l4ctx.base.dst_port,
+                ifindex: (*ctx.ctx).ingress_ifindex,
+                mac_addresses,
+                vlan_hdr: l2ctx.vlanhdr,
+                flags: be.flags,
+                lb_ip,
+            },
+            0,
+        )
+    } {
+        Ok(()) => {
+            if feat.log_enabled(Level::Info) {
+                info!(
+                    ctx,
+                    "[ctrk] [{:i}]:{} added vlanhdr: {:x}",
+                    unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
+                    (l4ctx.base.src_port as u16).to_be(),
+                    l2ctx.vlanhdr
+                )
+            }
+        }
+        Err(ret) => {
+            if feat.log_enabled(Level::Error) {
+                error!(
+                    ctx,
+                    "[ctrk] [{:i}]:{} not added, err: {}",
+                    unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
+                    (l4ctx.base.src_port as u16).to_be(),
+                    ret
+                )
+            }
+            stats_inc(stats::CT_ERROR_UPDATE);
+        }
+    };
 
     return Ok(action);
 }
