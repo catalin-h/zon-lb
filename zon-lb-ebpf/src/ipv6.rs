@@ -1106,7 +1106,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
-    let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, &lb_addr, &be.address)?;
+    let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, lb_addr, &be.address)?;
     let fib = unsafe { &*fib };
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
