@@ -225,11 +225,7 @@ fn log_nat6(ctx: &XdpContext, nat: &NAT6Value, feat: &Features) {
 // inside the function. For eg. passing the Ipv6Hdr as pointer
 // will prevent the function from containing aya allocations.
 #[inline(never)]
-fn log_ipv6_packet(ctx: &XdpContext, feat: &Features, ipv6hdr: &Ipv6Hdr) {
-    if !feat.log_enabled(Level::Info) {
-        return;
-    }
-
+fn log_ipv6_packet(ctx: &XdpContext, ipv6hdr: &Ipv6Hdr) {
     // NOTE: Looks like the log macro occupies a lot of stack
     // TBD: maybe remove this log ?
     info!(
@@ -812,7 +808,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         };
     }
 
-    log_ipv6_packet(ctx, &feat, ipv6hdr);
+    if feat.log_enabled(Level::Info) {
+        log_ipv6_packet(ctx, ipv6hdr);
+    }
 
     // === reply ===
 
