@@ -4,7 +4,7 @@ use crate::{
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
-    helpers::{bpf_fib_lookup, bpf_ktime_get_ns},
+    helpers::{bpf_fib_lookup, bpf_ktime_get_coarse_ns},
     macros::map,
     maps::{HashMap, LruHashMap, LruPerCpuHashMap},
     programs::XdpContext,
@@ -61,6 +61,10 @@ type FRAG6LHM = LruHashMap<Ipv6FragId, Ipv6FragInfo>;
 
 #[map]
 static mut ZLB_FRAG6: FRAG6LHM = FRAG6LHM::pinned(MAX_ARP_ENTRIES, 0);
+
+fn coarse_ktime() -> u32 {
+    (unsafe { bpf_ktime_get_coarse_ns() } / 1_000_000_000) as u32
+}
 
 #[inline(always)]
 fn inet6_hash32(addr: &[u32; 4usize]) -> u32 {
@@ -315,7 +319,7 @@ fn update_neighbors_cache(
     };
 
     // Set the expiry to 2 min but it can be used as last resort
-    let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + NEIGH_ENTRY_EXPIRY_INTERVAL;
+    let expiry = coarse_ktime() + NEIGH_ENTRY_EXPIRY_INTERVAL;
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
     let ndentry = NeighborEntry {
         ifindex,
@@ -1017,8 +1021,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         unsafe { &nat6key.ip_lb_dst.addr32 }
     };
 
+    let now = coarse_ktime();
+
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
-    let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, lb_addr, &be.address)?;
+    let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, lb_addr, &be.address, now)?;
     let fib = unsafe { &*fib };
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
@@ -1081,8 +1087,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     /* === connection tracking === */
-
-    let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
 
     // NOTE: looks like it is faster to use get pointers with map.get_ptr() than
     // references with map.get().
@@ -1182,9 +1186,8 @@ fn fetch_fib6(
     ipv6hdr: &Ipv6Hdr,
     src: &[u32; 4],
     dst: &[u32; 4],
+    now: u32,
 ) -> Result<(*const FibEntry, u32), ()> {
-    let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
-
     match unsafe { ZLB_FIB6.get_ptr(&dst) } {
         Some(entry) => {
             if now <= unsafe { (*entry).expiry } {
@@ -1392,7 +1395,7 @@ fn _redirect_ipv6(
 ) -> Result<u32, ()> {
     if let Some(&entry) = unsafe { ZLB_FIB6.get(&ipv6hdr.dst_addr.in6_u.u6_addr32) } {
         // NOTE: check expiry before using this entry
-        let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
+        let now = coarse_ktime();
 
         if now <= entry.expiry {
             let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
@@ -1432,7 +1435,7 @@ fn _update_fib6_cache(ctx: &XdpContext, feat: &Features, fib_param: &BpfFibLookU
         macs: fib_param.ethdr_macs(),
         ip_src: fib_param.src, // not used for now
         // TODO: make the expiry time a runvar
-        expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + FIB_ENTRY_EXPIRY_INTERVAL,
+        expiry: coarse_ktime() + FIB_ENTRY_EXPIRY_INTERVAL,
         mtu: fib_param.tot_len as u32,
     };
 
