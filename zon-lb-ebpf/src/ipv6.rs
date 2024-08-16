@@ -6,7 +6,7 @@ use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
     helpers::{bpf_fib_lookup, bpf_ktime_get_ns},
     macros::map,
-    maps::{HashMap, LruHashMap},
+    maps::{HashMap, LruHashMap, LruPerCpuHashMap},
     programs::XdpContext,
     EbpfContext,
 };
@@ -1050,6 +1050,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         (be.port as u32) << 16 | l4ctx.base.src_port,
     )?;
 
+    let flow = unsafe { *(ipv6hdr as *const Ipv6Hdr as *const u32) };
+
     // NOTE: look like aya can't convert the '*eth = entry.macs' into
     // a 3 load instructions block that doesn't panic the bpf verifier
     // with 'invalid access to packet'. The same statement when modifying
@@ -1069,6 +1071,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
     // Till then assume we redirect to backends outside of any VLAN.
+    // NOTE: This call can shrink or enlarge the packet so all pointers
+    // to headers are invalidated.
     l2ctx.vlan_update(ctx, 0, &feat)?;
 
     // In case of redirect failure just try to query the FIB again
@@ -1079,6 +1083,22 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     /* === connection tracking === */
+
+    let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
+
+    // NOTE: looks like it is faster to use get pointers with map.get_ptr() than
+    // references with map.get().
+    match ZLB_CT_CACHE.get_ptr(&flow) {
+        Some(next_check) => {
+            if unsafe { *next_check } + 30 > now {
+                return Ok(action);
+            } else {
+                /* do check conntrack */
+            }
+        }
+        None => { /* do check conntrack */ }
+    }
+    let _ = ZLB_CT_CACHE.insert(&flow, &now, 0);
 
     // TODO: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
@@ -1152,6 +1172,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     return Ok(action);
 }
+
+#[map]
+static ZLB_CT_CACHE: LruPerCpuHashMap<u32, u32> = LruPerCpuHashMap::with_max_entries(256, 0);
 
 #[map]
 static ZLB_FIB_LKP_RES: HashMap<u32, BpfFibLookUp> = HashMap::with_max_entries(256, 0);
