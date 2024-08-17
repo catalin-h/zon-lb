@@ -1180,6 +1180,19 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 #[map]
 static ZLB_CT_CACHE: LruPerCpuHashMap<u32, u32> = LruPerCpuHashMap::with_max_entries(256, 0);
 
+#[repr(C, packed(4))]
+struct Icmpv6Ptb {
+    type_: u8,
+    code: u8,
+    csum: u16,
+    mtu: u32,
+    ipv6hdr: Ipv6Hdr,
+    pdata: [u32; 4],
+}
+
+const PTB_SIZE: u32 = mem::size_of::<Icmpv6Ptb>() as u32;
+const PTB_WSIZE: usize = (PTB_SIZE >> 2) as usize;
+
 #[map]
 static ZLB_FIB_LKP_RES: HashMap<u32, BpfFibLookUp> = HashMap::with_max_entries(256, 0);
 
