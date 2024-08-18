@@ -834,7 +834,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         next_hdr: l4ctx.next_hdr as u32,
     };
 
-    // BUG: can't use match expr. here as aya generates code that
+    // BUG: can't use match expr. here or map.get_ptr() as aya generates code that
     // throws the `relocating function` error
     if let Some(&nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
         // Update the total processed packets when they are from a tracked connection
