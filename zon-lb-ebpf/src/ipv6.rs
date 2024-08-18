@@ -1030,11 +1030,17 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let fib = unsafe { &*fib };
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
-            if fib.mtu as u16 >= ipv6hdr.payload_len { /* go ahead an update the packet */
-            } else { /* send packet to big */
+            if fib.mtu as u16 >= ipv6hdr.payload_len.to_be() {
+                /* go ahead an update the packet */
+            } else {
+                /* send packet to big */
+                return send_ptb(ctx, ipv6hdr, &l4ctx.base, fib.mtu);
             }
         }
-        bindings::BPF_FIB_LKUP_RET_FRAG_NEEDED => { /* send  packet to big */ }
+        bindings::BPF_FIB_LKUP_RET_FRAG_NEEDED => {
+            /* send  packet to big */
+            return send_ptb(ctx, ipv6hdr, &l4ctx.base, fib.mtu);
+        }
         bindings::BPF_FIB_LKUP_RET_BLACKHOLE
         | bindings::BPF_FIB_LKUP_RET_UNREACHABLE
         | bindings::BPF_FIB_LKUP_RET_PROHIBIT => {
@@ -1180,14 +1186,109 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 #[map]
 static ZLB_CT_CACHE: LruPerCpuHashMap<u32, u32> = LruPerCpuHashMap::with_max_entries(256, 0);
 
+#[inline(never)]
+fn send_ptb(
+    ctx: &XdpContext,
+    ipv6hdr: &mut Ipv6Hdr,
+    l4ctx: &L4Context,
+    size: u32,
+) -> Result<u32, ()> {
+    info!(
+        ctx,
+        "PTB, actual:{} max:{}",
+        ipv6hdr.payload_len.to_be(),
+        size
+    );
+
+    // NOTE: the bellow pointer getter are unlikely to fail because
+    // on IPv6 the minimum MTU is 1280.
+
+    let phdr = ptr_at::<ProtoHdr>(&ctx, l4ctx.offset)?;
+    let phdr = unsafe { *phdr };
+
+    let ptb = ptr_at::<Icmpv6Ptb>(&ctx, l4ctx.offset)?;
+    let ptb = unsafe { &mut *ptb.cast_mut() };
+
+    ptb.type_ = 2; // Packet To Big error id
+    ptb.code = 0; // always zero
+    ptb.csum = 0; // initialize the checksum with 0
+    ptb.mtu = size.to_be();
+
+    // Copy the original IPv6 header as data for the Icmpv6 PTB message
+    ptb.ipv6hdr = *ipv6hdr;
+    ptb.protohdr = phdr;
+
+    // Update the Ethernet header
+    let eth = ptr_at::<EthHdr>(&ctx, 0)?.cast_mut();
+    let eth = unsafe { &mut *eth };
+    core::mem::swap(&mut eth.src_addr, &mut eth.dst_addr);
+
+    // Update the Ipv6 header
+    core::mem::swap(&mut ipv6hdr.src_addr, &mut ipv6hdr.dst_addr);
+    ipv6hdr.next_hdr = IpProto::Ipv6Icmp;
+    ipv6hdr.payload_len = (PTB_SIZE as u16).to_be();
+
+    // Build the Icmpv6 checksum
+    // a) Icmpv6 pseudo-header
+    let mut csum = (IpProto::Ipv6Icmp as u32).to_be();
+    csum = csum_add_u32(ipv6hdr.payload_len as u32, csum);
+    let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
+    let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
+    for i in 0..4 {
+        csum = csum_add_u32(src_addr[i], csum);
+        csum = csum_add_u32(dst_addr[i], csum);
+    }
+
+    // b) actual Icmpv6 packet
+    let data = ptr_at::<[u32; PTB_WSIZE]>(&ctx, l4ctx.offset)?;
+    let data = unsafe { &*data };
+    for i in 0..PTB_WSIZE {
+        csum = csum_add_u32(data[i], csum);
+    }
+
+    // NOTE: always negate before coverting to u32
+    ptb.csum = !csum_fold_32_to_16(csum);
+
+    // NOTE: looks like there is no need to adjust the frame size and
+    // setting the IP header payload length field is enough.
+    // However, if it is necessary the adjustment is done as follows:
+    // let delta = PTB_SIZE as i32 - ptb.ipv6hdr.payload_len.to_be() as i32;
+    // let rc = unsafe { bpf_xdp_adjust_tail(ctx.ctx, delta) };
+    // info!(ctx, "adjust tail by delta: {}, rc={}", delta, rc);
+
+    return Ok(xdp_action::XDP_TX);
+}
+
+/// This type must hold the largest supported protocol header.
+/// For now Tcp has the biggest header.
+type ProtoHdr = [u32; TcpHdr::LEN >> 2];
+
+/// The ICMPv6 Racket Too Big message as defined in RFC 4443:
+///
+/// 0               1                   2                   3
+/// 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |     Type:2    |     Code:0    |          Checksum             |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |                             MTU                               |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |                    As much of invoking packet                 |
+/// +               as possible without the ICMPv6 packet           +
+/// |               exceeding the minimum IPv6 MTU [IPv6]           |
+///
+/// See: https://datatracker.ietf.org/doc/html/rfc4443#section-3.2
+///
 #[repr(C, packed(4))]
 struct Icmpv6Ptb {
     type_: u8,
     code: u8,
     csum: u16,
     mtu: u32,
+    /// The quoted IpV6 header is required as mentioned in RFC 4443.
     ipv6hdr: Ipv6Hdr,
-    pdata: [u32; 4],
+    /// The quoted protocol header field is also required in order
+    /// to find the connection session or process.
+    protohdr: ProtoHdr,
 }
 
 const PTB_SIZE: u32 = mem::size_of::<Icmpv6Ptb>() as u32;
