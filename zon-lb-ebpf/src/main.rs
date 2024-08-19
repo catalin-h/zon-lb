@@ -675,20 +675,20 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         );
     }
 
+    let mut natkey = NAT4Key {
+        ip_be_src: src_addr,
+        ip_lb_dst: dst_addr,
+        port_be_src: l4ctx.src_port as u16,
+        port_lb_dst: l4ctx.dst_port as u16,
+        proto: ipv4hdr.proto as u32,
+    };
+
     // TBD: monitor RST flag to remove the conntrack entry
     // TODO: Check conntrack first for non-connection oriented, eg. icmp.
     // Alternatively add another key element to differentiate between connections
     // for e.g. the request.
     // Also we can ignore all non-connection protocols like icmp.
-    if let Some(&nat) = unsafe {
-        ZLB_CONNTRACK4.get(&NAT4Key {
-            ip_be_src: src_addr,
-            ip_lb_dst: dst_addr,
-            port_be_src: l4ctx.src_port as u16,
-            port_lb_dst: l4ctx.dst_port as u16,
-            proto: ipv4hdr.proto as u32,
-        })
-    } {
+    if let Some(&nat) = unsafe { ZLB_CONNTRACK4.get(&natkey) } {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
@@ -859,13 +859,10 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     if !be.flags.contains(EPFlags::NO_CONNTRACK) {
         // NOTE: the LB will use the source port since there can be multiple
         // connection to the same backend and it needs to track all of them.
-        let nat4key = NAT4Key {
-            ip_be_src: be.address[0],
-            ip_lb_dst: lb_addr,
-            port_be_src: be.port,
-            port_lb_dst: l4ctx.src_port as u16, // use the source port of the endpoint
-            proto: ipv4hdr.proto as u32,
-        };
+        natkey.ip_be_src = be.address[0];
+        natkey.ip_lb_dst = lb_addr;
+        natkey.port_be_src = be.port;
+        natkey.port_lb_dst = l4ctx.src_port as u16;
 
         // NOTE: Always use 64-bits values for faster data transfer and
         // fewer instructions during initialization
@@ -883,7 +880,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // Update the nat entry only if the source details changes.
         // This will boost performance and less error prone on tests like iperf.
-        let do_insert = if let Some(nat4) = unsafe { ZLB_CONNTRACK4.get(&nat4key) } {
+        let do_insert = if let Some(nat4) = unsafe { ZLB_CONNTRACK4.get(&natkey) } {
             nat4.ifindex != if_index
                 || nat4.ip_src != src_addr
                 || nat4.mac_addresses != mac_addresses
@@ -905,7 +902,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
             // TBD: use lock or atomic update ?
             // TBD: use BPF_F_LOCK ?
-            match unsafe { ZLB_CONNTRACK4.insert(&nat4key, &nat4value, 0) } {
+            match unsafe { ZLB_CONNTRACK4.insert(&natkey, &nat4value, 0) } {
                 Ok(()) => {
                     if feat.log_enabled(Level::Info) {
                         info!(ctx, "[ctrk] {:i} added", src_addr.to_be())
