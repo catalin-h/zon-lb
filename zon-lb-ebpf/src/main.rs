@@ -844,97 +844,27 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             be.port.to_be()
         );
     }
-    let redirect = be.flags.contains(EPFlags::XDP_REDIRECT);
 
-    let lb_addr = if redirect && be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
-        // TODO: check the arp table and update or insert
-        // smac/dmac and derived ip src and redirect ifindex
-        be.src_ip[0]
-    } else {
-        dst_addr
-    };
+    // Fast exit if packet is not redirected
+    if !be.flags.contains(EPFlags::XDP_REDIRECT) {
+        // Update both IP and Transport layers checksums along with the source
+        // and destination addresses and ports and others like TTL
+        update_inet_csum(
+            ctx,
+            ipv4hdr,
+            &l4ctx,
+            dst_addr,
+            be.address[0],
+            (be.port as u32) << 16 | l4ctx.src_port,
+        )?;
 
-    // NOTE: Don't insert entry if no connection tracking is enabled for this backend.
-    // For e.g. if the backend can reply directly to the source endpoint.
-    if !be.flags.contains(EPFlags::NO_CONNTRACK) {
-        // NOTE: the LB will use the source port since there can be multiple
-        // connection to the same backend and it needs to track all of them.
-        natkey.ip_be_src = be.address[0];
-        natkey.ip_lb_dst = lb_addr;
-        natkey.port_be_src = be.port;
-        natkey.port_lb_dst = l4ctx.src_port as u16;
-
-        // NOTE: Always use 64-bits values for faster data transfer and
-        // fewer instructions during initialization
-        let mac_addresses = if redirect {
-            let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
-            let macs = unsafe { macs.as_ref() }.ok_or(())?;
-            let macs = [
-                (macs[1] & 0xffff_ffff) << 16 | macs[0] >> 48 | macs[0] << 48,
-                macs[0] >> 16,
-            ];
-            unsafe { *(macs.as_ptr() as *const [u32; 3]) }
-        } else {
-            [0; 3]
-        };
-
-        // Update the nat entry only if the source details changes.
-        // This will boost performance and less error prone on tests like iperf.
-        let do_insert = if let Some(nat4) = unsafe { ZLB_CONNTRACK4.get(&natkey) } {
-            nat4.ifindex != if_index
-                || nat4.ip_src != src_addr
-                || nat4.mac_addresses != mac_addresses
-                || nat4.vlan_hdr != l2ctx.vlanhdr
-        } else {
-            true
-        };
-
-        if do_insert {
-            let nat4value = NAT4Value {
-                ip_src: src_addr,
-                port_lb: l4ctx.dst_port,
-                ifindex: if_index,
-                mac_addresses,
-                vlan_hdr: l2ctx.vlanhdr,
-                flags: be.flags,
-                lb_ip: dst_addr, // save the original LB IP
-            };
-
-            // TBD: use lock or atomic update ?
-            // TBD: use BPF_F_LOCK ?
-            match unsafe { ZLB_CONNTRACK4.insert(&natkey, &nat4value, 0) } {
-                Ok(()) => {
-                    if feat.log_enabled(Level::Info) {
-                        info!(ctx, "[ctrk] {:i} added", src_addr.to_be())
-                    }
-                }
-                Err(ret) => {
-                    if feat.log_enabled(Level::Error) {
-                        error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr.to_be(), ret)
-                    }
-                    stats_inc(stats::CT_ERROR_UPDATE);
-                }
-            };
-        }
-    }
-
-    // Update both IP and Transport layers checksums along with the source
-    // and destination addresses and ports and others like TTL.
-    update_inet_csum(
-        ctx,
-        ipv4hdr,
-        &l4ctx,
-        lb_addr,
-        be.address[0],
-        (be.port as u32) << 16 | l4ctx.src_port,
-    )?;
-
-    if !redirect {
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
             if feat.log_enabled(Level::Info) {
                 info!(ctx, "in => xdp_tx");
             }
+
+            // TODO: swap mac addresses
 
             stats_inc(stats::XDP_TX);
 
@@ -949,6 +879,91 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         return Ok(xdp_action::XDP_PASS);
     }
+
+    let lb_addr = if be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
+        // TODO: check the arp table and update or insert
+        // smac/dmac and derived ip src and redirect ifindex
+        be.src_ip[0]
+    } else {
+        dst_addr
+    };
+
+    // TBD: Don't insert entry if no connection tracking is enabled for this backend.
+    // For e.g. if the backend can reply directly to the source endpoint.
+    // if !be.flags.contains(EPFlags::NO_CONNTRACK) {
+    // This is done by tunneling and encapsulate the current packet in:
+    // - ipv4 GRE
+    // - ip6tnl
+    // - fou
+
+    // NOTE: the LB will use the source port since there can be multiple
+    // connection to the same backend and it needs to track all of them.
+    natkey.ip_be_src = be.address[0];
+    natkey.ip_lb_dst = lb_addr;
+    natkey.port_be_src = be.port;
+    natkey.port_lb_dst = l4ctx.src_port as u16;
+
+    // NOTE: Always use 64-bits values for faster data transfer and
+    // fewer instructions during initialization
+    let mac_addresses = {
+        let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
+        let macs = unsafe { macs.as_ref() }.ok_or(())?;
+        let macs = [
+            (macs[1] & 0xffff_ffff) << 16 | macs[0] >> 48 | macs[0] << 48,
+            macs[0] >> 16,
+        ];
+        unsafe { *(macs.as_ptr() as *const [u32; 3]) }
+    };
+
+    // Update the nat entry only if the source details changes.
+    // This will boost performance and less error prone on tests like iperf.
+    let do_insert = if let Some(nat4) = unsafe { ZLB_CONNTRACK4.get(&natkey) } {
+        nat4.ifindex != if_index
+            || nat4.ip_src != src_addr
+            || nat4.mac_addresses != mac_addresses
+            || nat4.vlan_hdr != l2ctx.vlanhdr
+    } else {
+        true
+    };
+
+    if do_insert {
+        let nat4value = NAT4Value {
+            ip_src: src_addr,
+            port_lb: l4ctx.dst_port,
+            ifindex: if_index,
+            mac_addresses,
+            vlan_hdr: l2ctx.vlanhdr,
+            flags: be.flags,
+            lb_ip: dst_addr, // save the original LB IP
+        };
+
+        // TBD: use lock or atomic update ?
+        // TBD: use BPF_F_LOCK ?
+        match unsafe { ZLB_CONNTRACK4.insert(&natkey, &nat4value, 0) } {
+            Ok(()) => {
+                if feat.log_enabled(Level::Info) {
+                    info!(ctx, "[ctrk] {:i} added", src_addr.to_be())
+                }
+            }
+            Err(ret) => {
+                if feat.log_enabled(Level::Error) {
+                    error!(ctx, "[ctrk] {:i} not added, err: {}", src_addr.to_be(), ret)
+                }
+                stats_inc(stats::CT_ERROR_UPDATE);
+            }
+        };
+    }
+
+    // Update both IP and Transport layers checksums along with the source
+    // and destination addresses and ports and others like TTL.
+    update_inet_csum(
+        ctx,
+        ipv4hdr,
+        &l4ctx,
+        lb_addr,
+        be.address[0],
+        (be.port as u32) << 16 | l4ctx.src_port,
+    )?;
 
     // NOTE: the next function uses
     // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
