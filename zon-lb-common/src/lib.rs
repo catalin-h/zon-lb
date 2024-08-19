@@ -60,7 +60,13 @@ pub mod stats {
     pub const CT_ERROR_UPDATE: u32 = 13;
     pub const FIB_ERROR_UPDATE: u32 = 14;
 
-    pub const MAX: u32 = 15;
+    pub const IP_FRAGMENTS: u32 = 15;
+    pub const IPV6_FRAGMENTS: u32 = 16;
+    pub const IP_FRAGMENT_ERRORS: u32 = 17;
+    pub const IPV6_FRAGMENT_ERRORS: u32 = 18;
+
+    pub const MAX: u32 = 19;
+
 }
 
 // TODO: add per backend statistics

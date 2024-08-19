@@ -224,6 +224,19 @@ fn log_nat6(ctx: &XdpContext, nat: &NAT6Value, feat: &Features) {
     );
 }
 
+#[inline(never)]
+fn log_fragexthdr(ctx: &XdpContext, exthdr: &Ipv6FragExtHdr, feat: &Features) {
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "pkt frag id: 0x{:x} off:M {}:{}",
+            exthdr.id,
+            exthdr.offset(),
+            exthdr.more()
+        );
+    }
+}
+
 // NOTE: It is important to pass args by ref and not as
 // pointers in order to contain the aya log stack allocations
 // inside the function. For eg. passing the Ipv6Hdr as pointer
@@ -770,15 +783,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 l4ctx.base.offset += 8;
                 l4ctx.next_hdr = exthdr.base.next_header;
 
-                if feat.log_enabled(Level::Info) {
-                    info!(
-                        ctx,
-                        "pkt frag id: 0x{:x} off:M {}:{}",
-                        exthdr.id,
-                        exthdr.offset(),
-                        exthdr.more()
-                    );
-                }
+                // BUG: move the logging inside function to avoid bpf_linker error
+                // after adding the call to stats_inc(IPV6_FRAGMENTS);
+                log_fragexthdr(ctx, &exthdr, &feat);
+
+                stats_inc(stats::IPV6_FRAGMENTS);
 
                 if exthdr.offset() == 0 {
                     // The id will be needed to cache the L4 info entry after
@@ -796,7 +805,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                         })
                     } {
                         // Missing first fragment
-                        None => return Err(()),
+                        None => {
+                            stats_inc(stats::IPV6_FRAGMENT_ERRORS);
+                            return Err(());
+                        }
                         Some(entry) => {
                             l4ctx.sport(entry.src_port);
                             l4ctx.dport(entry.dst_port);

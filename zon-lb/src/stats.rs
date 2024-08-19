@@ -19,6 +19,10 @@ static STATS_NAMES: [&str; stats::MAX as usize] = [
     "lb_error_bad_backend",
     "conntrack_error_update",
     "arp_error_update",
+    "ip_fragments",
+    "ipv6_fragments",
+    "ip_fragment_errors",
+    "ipv6_fragment_errors",
 ];
 
 pub struct Stats {
