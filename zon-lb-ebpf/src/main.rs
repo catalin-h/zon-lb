@@ -888,6 +888,17 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         dst_addr
     };
 
+    // Update both IP and Transport layers checksums along with the source
+    // and destination addresses and ports and others like TTL.
+    update_inet_csum(
+        ctx,
+        ipv4hdr,
+        &l4ctx,
+        lb_addr,
+        be.address[0],
+        (be.port as u32) << 16 | l4ctx.src_port,
+    )?;
+
     // TBD: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
     // if !be.flags.contains(EPFlags::NO_CONNTRACK) {
@@ -953,17 +964,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             }
         };
     }
-
-    // Update both IP and Transport layers checksums along with the source
-    // and destination addresses and ports and others like TTL.
-    update_inet_csum(
-        ctx,
-        ipv4hdr,
-        &l4ctx,
-        lb_addr,
-        be.address[0],
-        (be.port as u32) << 16 | l4ctx.src_port,
-    )?;
 
     // NOTE: the next function uses
     // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
