@@ -569,6 +569,8 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
         );
     }
 
+    stats_inc(stats::ICMPV6_ND_SOL_ADVERT);
+
     Ok(xdp_action::XDP_TX)
 }
 
@@ -1267,6 +1269,8 @@ fn send_ptb(
     // let delta = PTB_SIZE as i32 - ptb.ipv6hdr.payload_len.to_be() as i32;
     // let rc = unsafe { bpf_xdp_adjust_tail(ctx.ctx, delta) };
     // info!(ctx, "adjust tail by delta: {}, rc={}", delta, rc);
+
+    stats_inc(stats::ICMPV6_PTB);
 
     return Ok(xdp_action::XDP_TX);
 }

@@ -65,8 +65,13 @@ pub mod stats {
     pub const IP_FRAGMENT_ERRORS: u32 = 17;
     pub const IPV6_FRAGMENT_ERRORS: u32 = 18;
 
-    pub const MAX: u32 = 19;
+    pub const ARP_REPLY: u32 = 19;
+    pub const ICMPV6_PTB: u32 = 20;
+    pub const ICMPV6_ND_SOL_ADVERT: u32 = 21;
+    // destination unreachable, fragmentation required
+    pub const ICMP_DU_FR: u32 = 22;
 
+    pub const MAX: u32 = 23;
 }
 
 // TODO: add per backend statistics

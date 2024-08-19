@@ -523,6 +523,8 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         );
     }
 
+    stats_inc(stats::ARP_REPLY);
+
     Ok(xdp_action::XDP_TX)
 }
 
