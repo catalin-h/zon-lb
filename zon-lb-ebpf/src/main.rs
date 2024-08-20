@@ -899,6 +899,14 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         (be.port as u32) << 16 | l4ctx.src_port,
     )?;
 
+    let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+    let macs = unsafe { &mut *macs };
+    let mac_addresses = [
+        macs[2] << 16 | macs[1] >> 16,
+        macs[0] << 16 | macs[2] >> 16,
+        macs[1] << 16 | macs[0] >> 16,
+    ];
+
     // TBD: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
     // if !be.flags.contains(EPFlags::NO_CONNTRACK) {
@@ -913,18 +921,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     natkey.ip_lb_dst = lb_addr;
     natkey.port_be_src = be.port;
     natkey.port_lb_dst = l4ctx.src_port as u16;
-
-    // NOTE: Always use 64-bits values for faster data transfer and
-    // fewer instructions during initialization
-    let mac_addresses = {
-        let macs = ptr_at::<[u64; 2]>(&ctx, 0)?;
-        let macs = unsafe { macs.as_ref() }.ok_or(())?;
-        let macs = [
-            (macs[1] & 0xffff_ffff) << 16 | macs[0] >> 48 | macs[0] << 48,
-            macs[0] >> 16,
-        ];
-        unsafe { *(macs.as_ptr() as *const [u32; 3]) }
-    };
 
     // Update the nat entry only if the source details changes.
     // This will boost performance and less error prone on tests like iperf.
