@@ -780,13 +780,13 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     }
 
-    let ep4 = EP4 {
-        address: dst_addr,
-        port: (l4ctx.dst_port as u16),
-        proto: ipv4hdr.proto as u16,
-    };
-
-    let group = match unsafe { ZLB_LB4.get(&ep4) } {
+    let group = match unsafe {
+        ZLB_LB4.get(&EP4 {
+            address: dst_addr,
+            port: (l4ctx.dst_port as u16),
+            proto: ipv4hdr.proto as u16,
+        })
+    } {
         Some(group) => *group,
         None => {
             if feat.log_enabled(Level::Info) {
@@ -991,19 +991,23 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         None => { /* do insert */ }
     }
 
-    let nat4value = NAT4Value {
-        ip_src,
-        port_lb: l4ctx.dst_port,
-        ifindex: if_index,
-        mac_addresses,
-        vlan_hdr: l2ctx.vlanhdr,
-        flags: be.flags,
-        lb_ip,
-    };
-
     // TBD: use lock or atomic update ?
     // TBD: use BPF_F_LOCK ?
-    let rc = match unsafe { ZLB_CONNTRACK4.insert(&natkey, &nat4value, 0) } {
+    let rc = match unsafe {
+        ZLB_CONNTRACK4.insert(
+            &natkey,
+            &NAT4Value {
+                ip_src,
+                port_lb: l4ctx.dst_port,
+                ifindex: if_index,
+                mac_addresses,
+                vlan_hdr: l2ctx.vlanhdr,
+                flags: be.flags,
+                lb_ip,
+            },
+            0,
+        )
+    } {
         Ok(()) => 0,
         Err(ret) => {
             stats_inc(stats::CT_ERROR_UPDATE);
