@@ -62,7 +62,7 @@ type FRAG6LHM = LruHashMap<Ipv6FragId, Ipv6FragInfo>;
 #[map]
 static mut ZLB_FRAG6: FRAG6LHM = FRAG6LHM::pinned(MAX_ARP_ENTRIES, 0);
 
-fn coarse_ktime() -> u32 {
+pub fn coarse_ktime() -> u32 {
     (unsafe { bpf_ktime_get_coarse_ns() } / 1_000_000_000) as u32
 }
 
@@ -1468,7 +1468,7 @@ fn _fib6_lookup_redirect(ctx: &XdpContext, l2ctx: &L2Context, feat: &Features) -
     if rc == bindings::BPF_FIB_LKUP_RET_SUCCESS as i64 {
         let action = unsafe {
             let eth = ptr_at::<EthHdr>(&ctx, 0)?;
-            fib_param.fill_ethdr_macs(eth.cast_mut());
+            fib_param._fill_ethdr_macs(eth.cast_mut());
 
             // TODO: use the vlan info from fib lookup to update the frame vlan.
             // Till then assume we redirect to backends outside of any VLAN.
