@@ -1007,6 +1007,90 @@ fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_actio
     }
 }
 
+fn fetch_fib4(
+    ctx: &XdpContext,
+    ipv4hdr: &Ipv4Hdr,
+    src: u32,
+    dst: u32,
+    now: u32,
+) -> Result<(*const FibEntry, u32), ()> {
+    match unsafe { ZLB_FIB4.get_ptr(&dst) } {
+        Some(entry) => {
+            if now <= unsafe { (*entry).expiry } {
+                return Ok((entry, bindings::BPF_FIB_LKUP_RET_SUCCESS as u32));
+            }
+        }
+        None => {}
+    }
+
+    let fib_param = BpfFibLookUp::new_inet(
+        ipv4hdr.tot_len.to_be(),
+        unsafe { (*ctx.ctx).ingress_ifindex },
+        ipv4hdr.tos as u32,
+        src,
+        dst,
+    );
+    let p_fib_param = &fib_param as *const BpfFibLookUp;
+    let rc = unsafe {
+        bpf_fib_lookup(
+            ctx.as_ptr(),
+            p_fib_param as *mut bpf_fib_lookup_param_t,
+            mem::size_of::<BpfFibLookUp>() as i32,
+            0,
+        )
+    };
+
+    stats_inc(stats::FIB_LOOKUPS);
+    let expiry = if rc != bindings::BPF_FIB_LKUP_RET_SUCCESS as i64 {
+        stats_inc(stats::FIB_LOOKUP_FAILS);
+        // Retry on next try but create the entry
+        now - 1
+    } else {
+        // TODO: make the expiry time a runvar
+        now + FIB_ENTRY_EXPIRY_INTERVAL
+    };
+
+    let feat = Features::new();
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "[fib] lkp_ret: {}, fw if: {}, src: {:i}, \
+            gw: {:i}, dmac: {:mac}, smac: {:mac}, mtu: {}",
+            rc,
+            fib_param.ifindex,
+            fib_param.src[0].to_be(),
+            fib_param.dst[0].to_be(),
+            fib_param.dest_mac(),
+            fib_param.src_mac(),
+            fib_param.tot_len
+        );
+    }
+
+    let entry = FibEntry {
+        ifindex: fib_param.ifindex,
+        macs: fib_param.ethdr_macs(),
+        ip_src: fib_param.src, // not used for now
+        expiry,
+        mtu: fib_param.tot_len as u32,
+    };
+
+    // NOTE: after updating the value or key struct size must remove the pinned map
+    // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
+    match unsafe { ZLB_FIB4.insert(&dst, &entry, 0) } {
+        Ok(()) => {}
+        Err(_) => {
+            stats_inc(stats::FIB_ERROR_UPDATE);
+            return Err(());
+        }
+    }
+
+    match unsafe { ZLB_FIB4.get_ptr(&dst) } {
+        Some(entry) => Ok((entry, rc as u32)),
+        None => Err(()),
+    }
+}
+
 fn redirect_ipv4(
     ctx: &XdpContext,
     feat: Features,
