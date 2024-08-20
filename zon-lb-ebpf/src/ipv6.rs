@@ -1187,14 +1187,14 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         info!(
             ctx,
             "[ctrk] [{:i}]:{} vlanhdr: {:x}i, rc={}",
-            unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
+            unsafe { ip_src.addr8 },
             (l4ctx.base.src_port as u16).to_be(),
             l2ctx.vlanhdr,
             rc
         )
     }
 
-    return Ok(action);
+    Ok(action)
 }
 
 #[map]
