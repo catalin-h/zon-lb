@@ -1279,7 +1279,7 @@ fn send_ptb(
 /// For now Tcp has the biggest header.
 type ProtoHdr = [u32; TcpHdr::LEN >> 2];
 
-/// The ICMPv6 Racket Too Big message as defined in RFC 4443:
+/// The ICMPv6 Packet Too Big message as defined in RFC 4443:
 ///
 /// 0               1                   2                   3
 /// 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
@@ -1294,7 +1294,7 @@ type ProtoHdr = [u32; TcpHdr::LEN >> 2];
 ///
 /// See: https://datatracker.ietf.org/doc/html/rfc4443#section-3.2
 ///
-#[repr(C, packed(4))]
+#[repr(C)]
 struct Icmpv6Ptb {
     type_: u8,
     code: u8,
