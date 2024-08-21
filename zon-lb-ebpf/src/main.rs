@@ -646,6 +646,51 @@ fn update_inet_csum(
     Ok(())
 }
 
+/// This type must hold the first 64-bit of the protocol header
+/// according to RFC 1191.
+type ProtoHdr = [u32; 2];
+
+/// ICMP Datagram Too Big as mentioned in RFC 1191
+///
+/// When a router is unable to forward a datagram because it exceeds the
+/// MTU of the next-hop network and its Don't Fragment bit is set, the
+/// router is required to return an ICMP Destination Unreachable message
+/// to the source of the datagram, with the Code indicating
+/// fragmentation needed and DF set.  To support the Path MTU Discovery
+/// technique specified in this memo, the router MUST include the MTU of
+/// that next-hop network in the low-order 16 bits of the ICMP header
+/// field that is labelled "unused" in the ICMP specification [7].  The
+/// high-order 16 bits remain unused, and MUST be set to zero.  Thus, the
+/// message has the following format:
+///
+/// 0                   1                   2                   3
+/// 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |   Type = 3    |   Code = 4    |           Checksum            |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |           unused = 0          |         Next-Hop MTU          |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |      Internet Header + 64 bits of Original Datagram Data      |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// (RFC 1191)
+#[repr(C)]
+struct IcmpDtb {
+    type_: u8,
+    code: u8,
+    csum: u16,
+    _unused: u16,
+    mtu: u16,
+    /// The quoted IpV4 header is required as mentioned in RFC 1191.
+    ipv4hdr: Ipv4Hdr,
+    /// The quoted protocol header field is also required in order
+    /// to find the connection session or process.
+    protohdr: ProtoHdr,
+}
+
+const DTB_SIZE: u32 = mem::size_of::<IcmpDtb>() as u32;
+const DTB_WSIZE: usize = (DTB_SIZE >> 2) as usize;
+
+/// Send Datagram Too Big message or ICMP destination unreachable
 // TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
