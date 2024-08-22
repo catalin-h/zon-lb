@@ -4,7 +4,7 @@ use crate::{
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
-    helpers::{bpf_fib_lookup, bpf_ktime_get_coarse_ns},
+    helpers::{bpf_check_mtu, bpf_fib_lookup, bpf_ktime_get_coarse_ns},
     macros::map,
     maps::{HashMap, LruHashMap, LruPerCpuHashMap},
     programs::XdpContext,
@@ -310,6 +310,13 @@ struct Icmpv6NdHdr {
     lladopt: Icmpv6LLAddrOption,
 }
 
+pub fn check_mtu(ctx: &XdpContext, ifindex: u32) -> u16 {
+    let mut mtu = 0_u32;
+    let _ = unsafe { bpf_check_mtu(ctx.as_ptr(), ifindex, &mut mtu, 0, 0) };
+
+    return mtu as u16;
+}
+
 /// Update the neighbour entry for source IPv6 address
 /// BUG: the bpf_linker need this inline(always) in order to avoid link errors
 /// or to increase the stack size over 512.
@@ -334,12 +341,14 @@ fn update_neighbors_cache(
     // Set the expiry to 2 min but it can be used as last resort
     let expiry = coarse_ktime() + NEIGH_ENTRY_EXPIRY_INTERVAL;
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+    let mtu = check_mtu(ctx, ifindex);
     let ndentry = NeighborEntry {
         ifindex,
         mac: *mac,
         if_mac,
         expiry,
         vlan_id,
+        mtu,
     };
 
     // BUG: looks like using Result objects confuses the bpf_linker

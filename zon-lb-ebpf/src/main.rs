@@ -20,7 +20,7 @@ use aya_ebpf::{
 use aya_log_ebpf::{error, info, Level};
 use core::mem::{self, offset_of};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u16, csum_update_u32};
-use ipv6::{coarse_ktime, ipv6_lb};
+use ipv6::{check_mtu, coarse_ktime, ipv6_lb};
 use network_types::{
     eth::EthHdr,
     icmp::IcmpHdr,
@@ -359,13 +359,14 @@ fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u16, mac: &[u8; 6], eth:
     // Set the expiry to 2 min but it can be used as last resort
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
     let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + NEIGH_ENTRY_EXPIRY_INTERVAL;
+    let mtu = check_mtu(ctx, ifindex);
     let arpentry = ArpEntry {
         ifindex,
         mac: *mac,
         if_mac,
         expiry,
         vlan_id,
-        mtu: 0,
+        mtu,
     };
     let rc = unsafe { ZLB_ARP.insert(&ip, &arpentry, 0) };
 
