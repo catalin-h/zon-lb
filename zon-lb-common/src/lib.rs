@@ -513,8 +513,9 @@ pub struct ArpEntry {
     /// The expiry timestamp
     pub expiry: u32,
     /// The VLAN ID for the IP address (key) as big-endian value
-    pub vlan_id: u32,
-    // TODO: add if MTU
+    pub vlan_id: u16,
+    /// The interface MTU
+    pub mtu: u16,
 }
 
 #[cfg(feature = "user")]

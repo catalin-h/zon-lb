@@ -245,8 +245,8 @@ pub struct L2Context {
 }
 
 impl L2Context {
-    pub fn vlan_id(&self) -> u32 {
-        (self.vlanhdr >> 16) & 0xFFF0
+    pub fn vlan_id(&self) -> u16 {
+        ((self.vlanhdr >> 16) & 0xFFF0) as u16
     }
 
     pub fn has_vlan(&self) -> bool {
@@ -341,7 +341,7 @@ fn is_unicast_mac(mac: &[u8; 6]) -> bool {
 //    Err(e) => if feat.log_enabled(Level::error) { error!(ctx, "error") },
 // }
 // BUG: the same bpf_linker is thrown when using a  bool param and pass a local bool arg
-fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u32, mac: &[u8; 6], eth: &EthHdr) {
+fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u16, mac: &[u8; 6], eth: &EthHdr) {
     if !is_unicast_mac(mac) {
         return;
     }
@@ -365,6 +365,7 @@ fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u32, mac: &[u8; 6], eth:
         if_mac,
         expiry,
         vlan_id,
+        mtu: 0,
     };
     let rc = unsafe { ZLB_ARP.insert(&ip, &arpentry, 0) };
 

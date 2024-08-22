@@ -317,7 +317,7 @@ struct Icmpv6NdHdr {
 fn update_neighbors_cache(
     ctx: &XdpContext,
     ip: &[u32; 4usize],
-    vlan_id: u32,
+    vlan_id: u16,
     mac: &[u8; 6],
     eth: &EthHdr,
 ) {
