@@ -1062,6 +1062,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_DROP);
         }
         _ => {
+            // When the MTU is lower than 1280 the FIB lookup will return
+            // bindings::BPF_FIB_LKUP_RET_NOT_FWDED.
+            // TODO: search in the ND map for the destination IP
+            // and see if the MTU matches.
             stats_inc(stats::XDP_PASS);
             return Ok(xdp_action::XDP_PASS);
         }
