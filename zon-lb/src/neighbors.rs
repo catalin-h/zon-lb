@@ -130,7 +130,7 @@ impl Neighbors {
 
 pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     let mut ifc = IfCache::new("(na)");
-    let mut tab = InfoTable::new(vec!["ip", "mac", "if", "if_mac", "vlan", "status"]);
+    let mut tab = InfoTable::new(vec!["ip", "mac", "if", "if_mac", "vlan", "mtu", "status"]);
     let options = Options::from_option_args_with_keys(
         filter_opts,
         &vec![
@@ -165,6 +165,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
                 name,
                 mac_to_str(&value.if_mac),
                 format!("{:x}", value.vlan_id.to_be() & 0xFFF),
+                value.mtu.to_string(),
                 pts.status(value.expiry),
             ]);
         }
@@ -194,6 +195,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
                 name,
                 mac_to_str(&value.if_mac),
                 format!("{:x}", value.vlan_id.to_be() & 0xFFF),
+                value.mtu.to_string(),
                 pts.status(value.expiry),
             ]);
         }
@@ -326,7 +328,7 @@ fn fill_neigh_entry(entry: Option<ArpEntry>, opts: &Options) -> Option<ArpEntry>
         }
     }
 
-    if let Ok(vlan) = opts.get_u32(options::VLAN) {
+    if let Ok(vlan) = opts.get_u16(options::VLAN) {
         if vlan != entry.vlan_id {
             log::info!("[nd] update vlan id: {} -> {}", entry.vlan_id, vlan);
             entry.vlan_id = vlan;

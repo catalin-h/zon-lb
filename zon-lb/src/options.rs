@@ -217,6 +217,11 @@ impl Options {
         Ok(num)
     }
 
+    pub fn get_u16<T: AsRef<str>>(&self, key: T) -> Result<u16, anyhow::Error> {
+        let num: u16 = self.get_and_parse(key)?;
+        Ok(num)
+    }
+
     pub fn props_empty(&self) -> bool {
         self.props.is_empty()
     }
