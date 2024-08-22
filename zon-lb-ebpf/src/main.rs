@@ -9,7 +9,9 @@ use aya_ebpf::{
         BPF_FIB_LKUP_RET_PROHIBIT, BPF_FIB_LKUP_RET_SUCCESS, BPF_FIB_LKUP_RET_UNREACHABLE,
         BPF_F_NO_COMMON_LRU,
     },
-    helpers::{bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect, bpf_xdp_adjust_head},
+    helpers::{
+        bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect, bpf_xdp_adjust_head, bpf_xdp_adjust_tail,
+    },
     macros::{map, xdp},
     maps::{Array, DevMap, HashMap, LruHashMap, PerCpuArray},
     programs::XdpContext,
@@ -17,7 +19,7 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::{error, info, Level};
 use core::mem::{self, offset_of};
-use ebpf_rshelpers::{csum_fold_32_to_16, csum_update_u32};
+use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u16, csum_update_u32};
 use ipv6::{coarse_ktime, ipv6_lb};
 use network_types::{
     eth::EthHdr,
@@ -691,6 +693,96 @@ const DTB_SIZE: u32 = mem::size_of::<IcmpDtb>() as u32;
 const DTB_WSIZE: usize = (DTB_SIZE >> 2) as usize;
 
 /// Send Datagram Too Big message or ICMP destination unreachable
+/// with fragment required and don't fragment IP flag on as mentioned
+/// in RFC 1191 for Path MTU discovery:
+///
+/// See:
+/// * https://datatracker.ietf.org/doc/html/rfc4884#section-4.1
+/// * https://datatracker.ietf.org/doc/html/rfc792
+/// * https://datatracker.ietf.org/doc/html/rfc1191
+fn send_dtb(
+    ctx: &XdpContext,
+    ipv4hdr: &mut Ipv4Hdr,
+    l4ctx: &L4Context,
+    size: u16,
+) -> Result<u32, ()> {
+    let feat = Features::new();
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "datagram Too Big, actual:{} max:{}",
+            ipv4hdr.tot_len.to_be(),
+            size
+        );
+    }
+
+    let phdr = ptr_at::<ProtoHdr>(&ctx, l4ctx.offset)?;
+    let phdr = unsafe { *phdr };
+
+    let ptb = ptr_at::<IcmpDtb>(&ctx, l4ctx.offset)?;
+    let ptb = unsafe { &mut *ptb.cast_mut() };
+
+    ptb.type_ = 3; // Destination Ureachable
+    ptb.code = 4; // Fragmentation required
+    ptb.csum = 0; // initialize the checksum with 0
+    ptb._unused = 0;
+    ptb.mtu = size.to_be();
+
+    // Copy the original IPv6 header as data for the Icmpv6 PTB message
+    ptb.ipv4hdr = *ipv4hdr;
+    ptb.protohdr = phdr;
+
+    // Update the Ethernet header
+    let eth = ptr_at::<EthHdr>(&ctx, 0)?.cast_mut();
+    let eth = unsafe { &mut *eth };
+    core::mem::swap(&mut eth.src_addr, &mut eth.dst_addr);
+
+    // Update the Ipv4 header and checksum
+    core::mem::swap(&mut ipv4hdr.src_addr, &mut ipv4hdr.dst_addr);
+
+    let mut csum = !ipv4hdr.check as u32;
+
+    // Update the packet length
+    let tot_len = Ipv4Hdr::LEN as u16 + DTB_SIZE as u16;
+    csum = csum_update_u16(ipv4hdr.tot_len, tot_len.to_be(), csum);
+    ipv4hdr.tot_len = tot_len.to_be();
+
+    // Update the next protocol to ICMP
+    let ttl = (ipv4hdr.ttl as u16) << 8;
+    csum = csum_update_u16(ttl | ipv4hdr.proto as u16, ttl | IpProto::Icmp as u16, csum);
+    ipv4hdr.proto = IpProto::Icmp;
+
+    // Remove id
+    csum = csum_update_u16(ipv4hdr.id, 0, csum);
+    ipv4hdr.id = 0;
+
+    // Add Don't Fragment flag and remove offset
+    csum = csum_update_u16(ipv4hdr.frag_off, 1 << 6, csum);
+    ipv4hdr.frag_off = 1 << 6;
+
+    ipv4hdr.check = !csum_fold_32_to_16(csum);
+
+    let data = ptr_at::<[u32; DTB_WSIZE]>(&ctx, l4ctx.offset)?;
+    let data = unsafe { &*data };
+    let mut cs = 0_u32;
+    for i in 0..DTB_WSIZE {
+        cs = csum_add_u32(data[i], cs);
+    }
+    ptb.csum = !csum_fold_32_to_16(cs);
+
+    let delta = tot_len as i32 - (ptb.ipv4hdr.tot_len.to_be() as i32);
+    let rc = unsafe { bpf_xdp_adjust_tail(ctx.ctx, delta) };
+
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "adjust tail by delta: {}, rc={}", delta, rc,);
+    }
+
+    stats_inc(stats::ICMP_DU_FR);
+
+    Ok(xdp_action::XDP_TX)
+}
+
 // TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
@@ -945,11 +1037,13 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             if fib.mtu as u16 >= ipv4hdr.tot_len.to_be() {
                 /* go ahead an update the packet */
             } else {
-                /* send icmp destination unreachable + fragmentation needed + DF */
+                /* send datagram Too Big message */
+                return send_dtb(ctx, ipv4hdr, &l4ctx, fib.mtu as u16);
             }
         }
         bindings::BPF_FIB_LKUP_RET_FRAG_NEEDED => {
-            /* send icmp destination unreachable + fragmentation needed + DF */
+            /* send datagram Too Big message */
+            return send_dtb(ctx, ipv4hdr, &l4ctx, fib.mtu as u16);
         }
         bindings::BPF_FIB_LKUP_RET_BLACKHOLE
         | bindings::BPF_FIB_LKUP_RET_UNREACHABLE
