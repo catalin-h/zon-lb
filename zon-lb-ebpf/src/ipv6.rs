@@ -1207,12 +1207,16 @@ fn send_ptb(
     l4ctx: &L4Context,
     size: u32,
 ) -> Result<u32, ()> {
-    info!(
-        ctx,
-        "PTB, actual:{} max:{}",
-        ipv6hdr.payload_len.to_be(),
-        size
-    );
+    let feat = Features::new();
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "PTB, actual:{} max:{}",
+            ipv6hdr.payload_len.to_be(),
+            size
+        );
+    }
 
     // NOTE: the bellow pointer getter are unlikely to fail because
     // on IPv6 the minimum MTU is 1280.
