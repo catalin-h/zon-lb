@@ -1125,6 +1125,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // NOTE: looks like it is faster to use get pointers with map.get_ptr() than
     // references with map.get().
+    let flow = (flow as u64) | ((l4ctx.base.src_port as u64) << 32);
     match ZLB_CT_CACHE.get_ptr(&flow) {
         Some(next_check) => {
             if unsafe { *next_check } + 30 > now {
@@ -1211,7 +1212,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 }
 
 #[map]
-static ZLB_CT_CACHE: LruPerCpuHashMap<u32, u32> = LruPerCpuHashMap::with_max_entries(256, 0);
+static ZLB_CT_CACHE: LruPerCpuHashMap<u64, u32> = LruPerCpuHashMap::with_max_entries(256, 0);
 
 #[inline(never)]
 fn send_ptb(
