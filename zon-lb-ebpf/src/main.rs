@@ -126,6 +126,11 @@ impl Features {
     }
 }
 
+pub mod icmpv4 {
+    pub const ECHO_REPLY: u8 = 0_u8;
+    pub const ECHO_REQUEST: u8 = 8_u8;
+}
+
 struct L4Context {
     offset: usize,
     check_off: usize,
@@ -152,6 +157,37 @@ impl L4Context {
                     check_off: offset_of!(UdpHdr, check),
                     src_port: unsafe { (*udphdr).source as u32 },
                     dst_port: unsafe { (*udphdr).dest as u32 },
+                }
+            }
+            IpProto::Icmp => {
+                // Handle ICMP echo request / reply to track only messages that
+                // are handled by LB.
+                //  0                   1                   2                   3
+                //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                // |     Type      |      Code     |          Checksum             |
+                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                // |           Identifier          |        Sequence Number        |
+                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                // See  https://datatracker.ietf.org/doc/html/rfc792
+                let icmphdr = ptr_at::<IcmpHdr>(&ctx, offset)?;
+                let icmphdr = unsafe { &*icmphdr };
+                let (src_port, dst_port) = match icmphdr.type_ {
+                    icmpv4::ECHO_REQUEST => {
+                        // On ICMP request use the echo id as source port
+                        (unsafe { icmphdr.un.echo.id } as u32, 0)
+                    }
+                    icmpv4::ECHO_REPLY => {
+                        // On ICMP reply use the echo id destination port
+                        (0, unsafe { icmphdr.un.echo.id } as u32)
+                    }
+                    _ => (0, 0),
+                };
+                Self {
+                    offset,
+                    check_off: 0,
+                    src_port,
+                    dst_port,
                 }
             }
             _ => Self {
@@ -626,7 +662,7 @@ fn update_inet_csum(
 ) -> Result<(), ()> {
     let cso = update_ipv4hdr(ipv4hdr, src, dst);
 
-    if l4ctx.check_off != 0 && port_combo != 0 {
+    if l4ctx.check_off != 0 && port_combo != 0 && ipv4hdr.proto != IpProto::Icmp {
         // NOTE: Update the csum from TCP/UDP header. This csum
         // is computed from the pseudo header (e.g. addresses
         // from IP header) + header (checksum is 0) + the
@@ -792,12 +828,18 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let src_addr = ipv4hdr.src_addr;
     let dst_addr = ipv4hdr.dst_addr;
     let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
-
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
     let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
     let l4hdr_offset = l4hdr_offset + l2ctx.ethlen;
     let l4ctx = L4Context::new_for_ipv4(ctx, l4hdr_offset, ipv4hdr.proto)?;
     let feat = Features::new();
+
+    if ipv4hdr.proto == IpProto::Icmp {
+        // Pass any non Echo messages
+        if (l4ctx.dst_port | l4ctx.src_port) == 0 {
+            return Ok(xdp_action::XDP_PASS);
+        }
+    }
 
     if feat.log_enabled(Level::Info) {
         let rx_queue = unsafe { (*ctx.ctx).rx_queue_index };
@@ -910,13 +952,10 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // === request ===
 
-    // Don't track echo replies as there can be a response from the actual source.
-    // To avoid messing with the packet routing allow tracking only ICMP requests.
-    if ipv4hdr.proto == IpProto::Icmp {
-        let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
-        if unsafe { (*icmphdr).type_ } == 0 {
-            return Ok(xdp_action::XDP_PASS);
-        }
+    // Don't track ICMP echo replies sent to LB, only requests are tracked.
+    // On request src_port contains the echo id.
+    if ipv4hdr.proto == IpProto::Icmp && l4ctx.src_port == 0 {
+        return Ok(xdp_action::XDP_PASS);
     }
 
     let group = match unsafe {
@@ -1113,6 +1152,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     natkey.port_be_src = be.port;
     // NOTE: the LB will use the source port since there can be multiple
     // connection to the same backend and it needs to track all of them.
+    // NOTE: On ICMP request is set with the echo id.
     natkey.port_lb_dst = l4ctx.src_port as u16;
 
     // Update the nat entry only if the source details changes.
@@ -1159,7 +1199,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     if feat.log_enabled(Level::Info) {
         info!(
             ctx,
-            "[ctrk] [{:i}]:{} vlanhdr: {:x}i, rc={}",
+            "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
             ip_src.to_be(),
             (l4ctx.src_port as u16).to_be(),
             l2ctx.vlanhdr,
