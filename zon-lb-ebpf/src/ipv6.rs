@@ -111,19 +111,19 @@ fn compute_checksum(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize])
 fn update_inet_csum(
     ctx: &XdpContext,
     ipv6hdr: &mut Ipv6Hdr,
-    l4ctx: &L4Context,
+    l4ctx: &Ipv6L4Context,
     src: &[u32; 4usize],
     dst: &[u32; 4usize],
     port_combo: u32,
 ) -> Result<(), ()> {
     // TODO: move this to the place of usage as this function can't be inlined
-    if l4ctx.check_off == 0 {
+    if l4ctx.base.check_off == 0 {
         (*ipv6hdr).src_addr.in6_u.u6_addr32 = *src;
         (*ipv6hdr).dst_addr.in6_u.u6_addr32 = *dst;
         return Ok(());
     }
 
-    let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
+    let check = ptr_at::<u16>(ctx, l4ctx.base.check_pkt_off())?.cast_mut();
     let mut csum = unsafe { !(*check) } as u32;
 
     // NOTE: optimization: cache friendly parallel scan over 8 x 32-bit values.
@@ -148,9 +148,13 @@ fn update_inet_csum(
     // a single u32 combo value as the begining of the L4 header:
     // port_combo = dst_port << 16 | src_port;
     // NOTE: the destination port remains the same.
-    if port_combo != 0 {
-        csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
-        let ptr = ptr_at::<u32>(ctx, l4ctx.offset)?;
+    if port_combo != 0 && l4ctx.next_hdr != IpProto::Ipv6Icmp {
+        csum = csum_update_u32(
+            l4ctx.base.dst_port << 16 | l4ctx.base.src_port,
+            port_combo,
+            csum,
+        );
+        let ptr = ptr_at::<u32>(ctx, l4ctx.base.offset)?;
         unsafe { *(ptr.cast_mut()) = port_combo };
     }
 
@@ -193,7 +197,7 @@ fn update_destination_inet_csum(
     // recalculated every time the hop limit is decreased as it happens
     // when the TTL from IPv4 header is reduced by one.
 
-    if port_combo != 0 {
+    if port_combo != 0 && ipv6hdr.next_hdr != IpProto::Ipv6Icmp {
         csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
         let ptr = ptr_at::<u32>(ctx, l4ctx.offset)?;
         unsafe { *(ptr.cast_mut()) = port_combo };
@@ -887,7 +891,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         update_inet_csum(
             ctx,
             ipv6hdr,
-            &l4ctx.base,
+            &l4ctx,
             unsafe { &nat.lb_ip.addr32 },
             unsafe { &nat.ip_src.addr32 },
             l4ctx.base.dst_port << 16 | nat.port_lb,
@@ -1083,7 +1087,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     update_inet_csum(
         ctx,
         ipv6hdr,
-        &l4ctx.base,
+        &l4ctx,
         lb_addr,
         &be.address,
         (be.port as u32) << 16 | l4ctx.base.src_port,
