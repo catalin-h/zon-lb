@@ -801,6 +801,10 @@ fn send_dtb(
 
     ipv4hdr.check = !csum_fold_32_to_16(csum);
 
+    // NOTE: The ICMPv4 checksum is required for error messages like
+    // Datagram too big.
+    // NOTE: ICMPv4 checksum differs from ICMPv6 one as it doesn't require
+    // an initial csum built from IP pseudo header.
     let data = ptr_at::<[u32; DTB_WSIZE]>(&ctx, l4ctx.offset)?;
     let data = unsafe { &*data };
     let mut cs = 0_u32;
