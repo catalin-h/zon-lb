@@ -732,7 +732,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
     let mut l4ctx = Ipv6L4Context::new(l2ctx.ethlen, ipv6hdr.next_hdr);
-    let mut is_icmp_reply = false;
     let feat = Features::new();
 
     for _ in 0..4 {
@@ -753,16 +752,36 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             }
             IpProto::Ipv6Icmp => {
                 let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.base.offset)?;
+                let icmphdr = unsafe { &*icmphdr };
+                let echo_id = unsafe { icmphdr.un.echo.id } as u32;
                 l4ctx.check_offset(offset_of!(IcmpHdr, checksum));
 
-                match unsafe { (*icmphdr).type_ } {
+                match icmphdr.type_ {
                     icmpv6::ND_ADVERT | icmpv6::ND_SOLICIT => {
                         return neighbor_solicit(ctx, l2ctx, l4ctx.base)
                     }
-                    icmpv6::ECHO_REPLY => {
-                        is_icmp_reply = true;
+
+                    // Handle ICMP echo request / reply to track only messages that
+                    // are handled by LB by using the echo identifier.
+                    //  0                   1                   2                   3
+                    //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+                    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                    // |     Type      |      Code     |          Checksum             |
+                    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                    // |           Identifier          |        Sequence Number        |
+                    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                    // See  https://datatracker.ietf.org/doc/html/rfc792
+
+                    // On ICMP request use the echo id as source port
+                    icmpv6::ECHO_REQUEST => {
+                        l4ctx.base.src_port = echo_id;
                     }
-                    icmpv6::ECHO_REQUEST => { /* handled below */ }
+                    // On ICMP reply use the echo id destination port
+                    icmpv6::ECHO_REPLY => {
+                        l4ctx.base.dst_port = echo_id;
+                    }
+
+                    // Other types are not supported
                     _ => return Ok(xdp_action::XDP_PASS),
                 }
 
@@ -930,9 +949,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // === request ===
 
-    // Don't track echo replies as there can be a response from the actual source.
-    // To avoid messing with the packet routing allow tracking only ICMP requests.
-    if is_icmp_reply {
+    // Don't track ICMP echo replies sent to LB, only requests are tracked.
+    // On request src_port contains the echo id.
+    if ipv6hdr.next_hdr as u8 == icmpv6::ECHO_REPLY && l4ctx.base.src_port == 0 {
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -1204,7 +1223,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     if feat.log_enabled(Level::Info) {
         info!(
             ctx,
-            "[ctrk] [{:i}]:{} vlanhdr: {:x}i, rc={}",
+            "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
             unsafe { ip_src.addr8 },
             (l4ctx.base.src_port as u16).to_be(),
             l2ctx.vlanhdr,

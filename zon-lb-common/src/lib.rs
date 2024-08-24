@@ -395,6 +395,7 @@ pub struct NAT6Key {
     /// The backend will respond with this port
     pub port_be_src: u32,
     /// The backend will respond to this port
+    /// For ICMP it is set with the echo id.
     pub port_lb_dst: u32,
     /// The used IP protocol. The field is 8-bits wide
     /// but we need to be 32-bit for performance reasons
