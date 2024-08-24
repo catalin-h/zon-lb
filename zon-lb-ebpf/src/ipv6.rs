@@ -4,7 +4,7 @@ use crate::{
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
-    helpers::{bpf_check_mtu, bpf_fib_lookup, bpf_ktime_get_coarse_ns},
+    helpers::{bpf_check_mtu, bpf_fib_lookup, bpf_ktime_get_coarse_ns, bpf_xdp_adjust_tail},
     macros::map,
     maps::{HashMap, LruHashMap, LruPerCpuHashMap},
     programs::XdpContext,
@@ -1080,12 +1080,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 /* go ahead an update the packet */
             } else {
                 /* send packet to big */
-                return send_ptb(ctx, ipv6hdr, &l4ctx.base, fib.mtu);
+                return send_ptb(ctx, &l2ctx, ipv6hdr, fib.mtu);
             }
         }
         bindings::BPF_FIB_LKUP_RET_FRAG_NEEDED => {
             /* send  packet to big */
-            return send_ptb(ctx, ipv6hdr, &l4ctx.base, fib.mtu);
+            return send_ptb(ctx, &l2ctx, ipv6hdr, fib.mtu);
         }
         bindings::BPF_FIB_LKUP_RET_BLACKHOLE
         | bindings::BPF_FIB_LKUP_RET_UNREACHABLE
@@ -1237,88 +1237,13 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 #[map]
 static ZLB_CT_CACHE: LruPerCpuHashMap<u64, u32> = LruPerCpuHashMap::with_max_entries(256, 0);
 
-#[inline(never)]
-fn send_ptb(
-    ctx: &XdpContext,
-    ipv6hdr: &mut Ipv6Hdr,
-    l4ctx: &L4Context,
-    size: u32,
-) -> Result<u32, ()> {
-    let feat = Features::new();
-
-    if feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "PTB, actual:{} max:{}",
-            ipv6hdr.payload_len.to_be(),
-            size
-        );
-    }
-
-    // NOTE: the bellow pointer getter are unlikely to fail because
-    // on IPv6 the minimum MTU is 1280.
-
-    let phdr = ptr_at::<ProtoHdr>(&ctx, l4ctx.offset)?;
-    let phdr = unsafe { *phdr };
-
-    let ptb = ptr_at::<Icmpv6Ptb>(&ctx, l4ctx.offset)?;
-    let ptb = unsafe { &mut *ptb.cast_mut() };
-
-    ptb.type_ = 2; // Packet To Big error id
-    ptb.code = 0; // always zero
-    ptb.csum = 0; // initialize the checksum with 0
-    ptb.mtu = size.to_be();
-
-    // Copy the original IPv6 header as data for the Icmpv6 PTB message
-    ptb.ipv6hdr = *ipv6hdr;
-    ptb.protohdr = phdr;
-
-    // Update the Ethernet header
-    let eth = ptr_at::<EthHdr>(&ctx, 0)?.cast_mut();
-    let eth = unsafe { &mut *eth };
-    core::mem::swap(&mut eth.src_addr, &mut eth.dst_addr);
-
-    // Update the Ipv6 header
-    core::mem::swap(&mut ipv6hdr.src_addr, &mut ipv6hdr.dst_addr);
-    ipv6hdr.next_hdr = IpProto::Ipv6Icmp;
-    ipv6hdr.payload_len = (PTB_SIZE as u16).to_be();
-
-    // Build the Icmpv6 checksum
-    // a) Icmpv6 pseudo-header
-    let mut csum = (IpProto::Ipv6Icmp as u32).to_be();
-    csum = csum_add_u32(ipv6hdr.payload_len as u32, csum);
-    let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
-    let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
-    for i in 0..4 {
-        csum = csum_add_u32(src_addr[i], csum);
-        csum = csum_add_u32(dst_addr[i], csum);
-    }
-
-    // b) actual Icmpv6 packet
-    let data = ptr_at::<[u32; PTB_WSIZE]>(&ctx, l4ctx.offset)?;
-    let data = unsafe { &*data };
-    for i in 0..PTB_WSIZE {
-        csum = csum_add_u32(data[i], csum);
-    }
-
-    // NOTE: always negate before coverting to u32
-    ptb.csum = !csum_fold_32_to_16(csum);
-
-    // NOTE: looks like there is no need to adjust the frame size and
-    // setting the IP header payload length field is enough.
-    // However, if it is necessary the adjustment is done as follows:
-    // let delta = PTB_SIZE as i32 - ptb.ipv6hdr.payload_len.to_be() as i32;
-    // let rc = unsafe { bpf_xdp_adjust_tail(ctx.ctx, delta) };
-    // info!(ctx, "adjust tail by delta: {}, rc={}", delta, rc);
-
-    stats_inc(stats::ICMPV6_PTB);
-
-    return Ok(xdp_action::XDP_TX);
-}
-
-/// This type must hold the largest supported protocol header.
-/// For now Tcp has the biggest header.
-type ProtoHdr = [u32; TcpHdr::LEN >> 2];
+/// This buffer must hold any IPv6 per-fragment header extentions plus
+/// the largest supported protocol header.For now Tcp has the biggest header.
+/// TODO: Make these values configurable to be able to handle multiple stacked
+/// IPv6 extension headers.
+const MAX_HDR_EXT: usize = 4 * 8; // Up to 4 per-fragment headers
+const MAX_HDR_PROTO: usize = TcpHdr::LEN; // 40B
+type ProtoHdr = [u32; (MAX_HDR_EXT + MAX_HDR_PROTO) >> 2];
 
 /// The ICMPv6 Packet Too Big message as defined in RFC 4443:
 ///
@@ -1350,6 +1275,108 @@ struct Icmpv6Ptb {
 
 const PTB_SIZE: u32 = mem::size_of::<Icmpv6Ptb>() as u32;
 const PTB_WSIZE: usize = (PTB_SIZE >> 2) as usize;
+
+#[inline(never)]
+fn send_ptb(
+    ctx: &XdpContext,
+    l2ctx: &L2Context,
+    ipv6hdr: &mut Ipv6Hdr,
+    size: u32,
+) -> Result<u32, ()> {
+    let feat = Features::new();
+
+    if feat.log_enabled(Level::Info) {
+        info!(
+            ctx,
+            "PTB, actual:{} max:{}",
+            ipv6hdr.payload_len.to_be(),
+            size
+        );
+    }
+
+    // NOTE: the bellow pointer getter are unlikely to fail because
+    // on IPv6 the minimum MTU is 1280.
+
+    let ptb_offset = l2ctx.ethlen + Ipv6Hdr::LEN;
+    let phdr = ptr_at::<ProtoHdr>(&ctx, ptb_offset)?;
+    let phdr = unsafe { *phdr };
+
+    // NOTE: the new ICMPv6 header can be located at another offset than
+    // the original L4 header.
+    let ptb = ptr_at::<Icmpv6Ptb>(&ctx, ptb_offset)?;
+    let ptb = unsafe { &mut *ptb.cast_mut() };
+
+    // Copy the original IPv6 header as data for the Icmpv6 PTB message
+    ptb.ipv6hdr = *ipv6hdr;
+    ptb.protohdr = phdr;
+
+    ptb.type_ = 2; // Packet To Big error id
+    ptb.code = 0; // always zero
+    ptb.csum = 0; // initialize the checksum with 0
+    ptb.mtu = size.to_be();
+
+    // Update the Ethernet header
+    let eth = ptr_at::<EthHdr>(&ctx, 0)?.cast_mut();
+    let eth = unsafe { &mut *eth };
+    core::mem::swap(&mut eth.src_addr, &mut eth.dst_addr);
+
+    // Update the Ipv6 header
+    core::mem::swap(&mut ipv6hdr.src_addr, &mut ipv6hdr.dst_addr);
+    ipv6hdr.next_hdr = IpProto::Ipv6Icmp;
+    let payload_len = PTB_SIZE as u16;
+    ipv6hdr.payload_len = payload_len.to_be();
+
+    // Build the Icmpv6 checksum
+    // a) Icmpv6 pseudo-header
+
+    // NOTE: ICMPv6 checksum differs from ICMPv4 csum as it requires
+    // a pseudo-IPv6 header initial csum.
+    // NOTE: The fields used to build the initial pseudo header csum
+    // must be added as big-endian values.
+    let mut csum = csum_add_u32((IpProto::Ipv6Icmp as u32).to_be(), 0);
+    csum = csum_add_u32(PTB_SIZE.to_be(), csum);
+    let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
+    let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
+    for i in 0..4 {
+        csum = csum_add_u32(src_addr[i], csum);
+        csum = csum_add_u32(dst_addr[i], csum);
+    }
+
+    // b) actual Icmpv6 packet
+    let data = ptr_at::<[u32; PTB_WSIZE]>(&ctx, ptb_offset)?;
+    let data = unsafe { &*data };
+    for i in 0..PTB_WSIZE {
+        csum = csum_add_u32(data[i], csum);
+    }
+
+    // NOTE: always negate before coverting to u32
+    ptb.csum = !csum_fold_32_to_16(csum);
+
+    // NOTE: looks like there is no need to adjust the frame size and
+    // setting the IP header payload length field is enough.
+    // However, for latency and debug reasons must adjust the buffer to
+    // reflect the actual packet size.
+
+    let pkt_len = ctx.data_end() - ctx.data();
+    let delta = PTB_SIZE as i32 + ptb_offset as i32 - pkt_len as i32;
+    let rc = unsafe { bpf_xdp_adjust_tail(ctx.ctx, delta) };
+
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "adjust tail by delta: {}, rc={}", delta, rc);
+        info!(
+            ctx,
+            "pkt_len:{} PTB_SIZE={}, IPV6HDR_SIZE={} PTB_WSIZE={}",
+            pkt_len,
+            PTB_SIZE,
+            Ipv6Hdr::LEN,
+            PTB_WSIZE
+        );
+    }
+
+    stats_inc(stats::ICMPV6_PTB);
+
+    return Ok(xdp_action::XDP_TX);
+}
 
 #[map]
 static ZLB_FIB_LKP_RES: HashMap<u32, BpfFibLookUp> = HashMap::with_max_entries(256, 0);
