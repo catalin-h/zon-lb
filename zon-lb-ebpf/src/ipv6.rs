@@ -22,8 +22,8 @@ use network_types::{
 };
 use zon_lb_common::{
     stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, Ipv6FragId, Ipv6FragInfo, NAT6Key,
-    NAT6Value, EP6, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_GROUPS,
-    NEIGH_ENTRY_EXPIRY_INTERVAL,
+    NAT6Value, EP6, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_FRAG6_ENTRIES,
+    MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
 /// Same as ZLB_LB4 but for IPv6 packets.
@@ -60,7 +60,7 @@ static mut ZLB_ND: LHMND = LHMND::pinned(MAX_ARP_ENTRIES, 0);
 type FRAG6LHM = LruHashMap<Ipv6FragId, Ipv6FragInfo>;
 
 #[map]
-static mut ZLB_FRAG6: FRAG6LHM = FRAG6LHM::pinned(MAX_ARP_ENTRIES, 0);
+static mut ZLB_FRAG6: FRAG6LHM = FRAG6LHM::pinned(MAX_FRAG6_ENTRIES, 0);
 
 pub fn coarse_ktime() -> u32 {
     (unsafe { bpf_ktime_get_coarse_ns() } / 1_000_000_000) as u32
