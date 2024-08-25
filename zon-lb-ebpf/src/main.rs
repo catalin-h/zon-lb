@@ -139,25 +139,23 @@ struct L4Context {
 }
 
 impl L4Context {
-    fn new_for_ipv4(ctx: &XdpContext, offset: usize, proto: IpProto) -> Result<Self, ()> {
-        Ok(match proto {
+    fn new_for_ipv4(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, offset: usize) -> Result<Self, ()> {
+        let (check_off, src_port, dst_port) = match ipv4hdr.proto {
             IpProto::Tcp => {
                 let tcphdr = ptr_at::<TcpHdr>(&ctx, offset)?;
-                Self {
-                    offset,
-                    check_off: offset_of!(TcpHdr, check),
-                    src_port: unsafe { (*tcphdr).source as u32 },
-                    dst_port: unsafe { (*tcphdr).dest as u32 },
-                }
+                (
+                    offset_of!(TcpHdr, check),
+                    unsafe { (*tcphdr).source as u32 },
+                    unsafe { (*tcphdr).dest as u32 },
+                )
             }
             IpProto::Udp => {
                 let udphdr = ptr_at::<UdpHdr>(&ctx, offset)?;
-                Self {
-                    offset,
-                    check_off: offset_of!(UdpHdr, check),
-                    src_port: unsafe { (*udphdr).source as u32 },
-                    dst_port: unsafe { (*udphdr).dest as u32 },
-                }
+                (
+                    offset_of!(UdpHdr, check),
+                    unsafe { (*udphdr).source as u32 },
+                    unsafe { (*udphdr).dest as u32 },
+                )
             }
             IpProto::Icmp => {
                 // Handle ICMP echo request / reply to track only messages that
@@ -172,30 +170,26 @@ impl L4Context {
                 // See  https://datatracker.ietf.org/doc/html/rfc792
                 let icmphdr = ptr_at::<IcmpHdr>(&ctx, offset)?;
                 let icmphdr = unsafe { &*icmphdr };
-                let (src_port, dst_port) = match icmphdr.type_ {
+                match icmphdr.type_ {
                     icmpv4::ECHO_REQUEST => {
                         // On ICMP request use the echo id as source port
-                        (unsafe { icmphdr.un.echo.id } as u32, 0)
+                        (0, unsafe { icmphdr.un.echo.id } as u32, 0)
                     }
                     icmpv4::ECHO_REPLY => {
                         // On ICMP reply use the echo id destination port
-                        (0, unsafe { icmphdr.un.echo.id } as u32)
+                        (0, 0, unsafe { icmphdr.un.echo.id } as u32)
                     }
-                    _ => (0, 0),
-                };
-                Self {
-                    offset,
-                    check_off: 0,
-                    src_port,
-                    dst_port,
+                    _ => (0, 0, 0),
                 }
             }
-            _ => Self {
-                offset,
-                check_off: 0,
-                src_port: 0,
-                dst_port: 0,
-            },
+            _ => (0, 0, 0),
+        };
+
+        Ok(Self {
+            offset,
+            check_off,
+            src_port,
+            dst_port,
         })
     }
 
@@ -835,7 +829,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
     let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
     let l4hdr_offset = l4hdr_offset + l2ctx.ethlen;
-    let l4ctx = L4Context::new_for_ipv4(ctx, l4hdr_offset, ipv4hdr.proto)?;
+    let l4ctx = L4Context::new_for_ipv4(ctx, &ipv4hdr, l4hdr_offset)?;
     let feat = Features::new();
 
     if ipv4hdr.proto == IpProto::Icmp {
