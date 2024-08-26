@@ -819,6 +819,30 @@ fn send_dtb(
     Ok(xdp_action::XDP_TX)
 }
 
+#[inline(never)]
+fn log_packet(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
+    let rx_queue = unsafe { (*ctx.ctx).rx_queue_index };
+    let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
+    info!(
+        ctx,
+        "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
+        if_index,
+        rx_queue,
+        ipv4hdr.proto as u8,
+        ipv4hdr.src_addr.to_be(),
+        (l4ctx.src_port as u16).to_be(),
+        ipv4hdr.dst_addr.to_be(),
+        (l4ctx.dst_port as u16).to_be(),
+    );
+
+    info!(
+        ctx,
+        "frag, id:0x{:x}, off:0x{:x}",
+        ipv4hdr.id,
+        ipv4hdr.frag_off.to_be() & 0x1fff
+    );
+}
+
 // TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
@@ -840,18 +864,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     if feat.log_enabled(Level::Info) {
-        let rx_queue = unsafe { (*ctx.ctx).rx_queue_index };
-        info!(
-            ctx,
-            "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
-            if_index,
-            rx_queue,
-            ipv4hdr.proto as u8,
-            src_addr.to_be(),
-            (l4ctx.src_port as u16).to_be(),
-            dst_addr.to_be(),
-            (l4ctx.dst_port as u16).to_be()
-        );
+        log_packet(ctx, &ipv4hdr, &l4ctx);
     }
 
     let mut natkey = NAT4Key {
