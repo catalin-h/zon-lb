@@ -11,6 +11,8 @@ pub const MAX_CONNTRACKS: u32 = 10; // tmp dev, actual = 1 << 15;
 pub const MAX_ARP_ENTRIES: u32 = MAX_BACKENDS;
 // It depends on number of cores x 2 (ingres + egress) x parallel flows ?
 pub const MAX_FRAG6_ENTRIES: u32 = 128;
+// It depends on number of cores x 2 (ingres + egress) x parallel flows ?
+pub const MAX_FRAG4_ENTRIES: u32 = 128;
 
 pub const FIB_ENTRY_EXPIRY_INTERVAL: u32 = 120;
 pub const NEIGH_ENTRY_EXPIRY_INTERVAL: u32 = 120;
