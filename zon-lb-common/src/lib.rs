@@ -598,3 +598,31 @@ pub struct Ipv6FragInfo {
     pub dst_port: u16,
     pub reserved: u32,
 }
+
+/// As mentioned in RFC 791 IPv4 the fragments are reassembled as follows:
+///  "The internet identification field (ID) is used together with the
+///   source and destination address, and the protocol fields, to identify
+///   datagram fragments for reassembly." (RFC 791)
+///
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Ipv4FragId {
+    /// The packet identification field from the Ipv4 header
+    pub id: u16,
+    /// The protocol of this fragment
+    pub proto: u16,
+    /// Source address
+    pub src: u32,
+    /// Destination address
+    pub dst: u32,
+}
+
+/// Used to hold session info like sequence ids for IP protocol that
+/// don't split data into segments, like ICMPv4.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Ipv4FragInfo {
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub reserved: u32,
+}
