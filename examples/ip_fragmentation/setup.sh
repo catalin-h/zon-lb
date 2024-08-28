@@ -33,8 +33,21 @@ setup_ns() {
   IP0V6=2001:db8::$NET:1
   IP1V6=2001:db8::$NET:2
 
+  if [ "$2" = "" ]; then
+    MTU=1500
+  else
+    MTU=$2
+  fi
+
+  if [ "$MTU" -lt "1280" ]; then
+    printf "MTU=$MTU is less than IPv6 min MTU=1280\n"
+    printf "Reset to 1280 to allow IPv6 addresses\n"
+    MTU=1280
+  fi
+
   printf "setup ns $IF0 <-> $NS/$IF1\n"
   printf "\t$IP0V4 <-> $IP1V4\n\t$IP0V6 <-> $IP1V6\n"
+  printf "\tMTU=$MTU\n"
 
   if [ ! -f /var/run/netns/$NS ]; then
     ip netns add $NS
@@ -59,6 +72,9 @@ setup_ns() {
 
   ip link set dev $IF0 up
   ip -netns $NS link set dev $IF1 up
+
+  ip link set dev $IF0 mtu $MTU
+  ip -netns $NS link set dev $IF1 mtu $MTU
 
   printf "pinging $IP0V6 from $NS .. "
   set +e
@@ -143,8 +159,8 @@ if [ "$1" != "" ]; then
   exit 1
 fi
 
-setup_ns $NSA
-setup_ns $NSB
+setup_ns $NSA 1500
+setup_ns $NSB 1310
 
 printf "setup done!\n"
 
