@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -
 
 set -e
 
@@ -32,22 +32,10 @@ setup_ns() {
   IP1V4=10.$NET.0.2
   IP0V6=2001:db8::$NET:1
   IP1V6=2001:db8::$NET:2
+  LINK="$IF0 <-> $NS/$IF1"
 
-  if [ "$2" = "" ]; then
-    MTU=1500
-  else
-    MTU=$2
-  fi
-
-  if [ "$MTU" -lt "1280" ]; then
-    printf "MTU=$MTU is less than IPv6 min MTU=1280\n"
-    printf "Reset to 1280 to allow IPv6 addresses\n"
-    MTU=1280
-  fi
-
-  printf "setup ns $IF0 <-> $NS/$IF1\n"
+  printf "setting up link $LINK...\n"
   printf "\t$IP0V4 <-> $IP1V4\n\t$IP0V6 <-> $IP1V6\n"
-  printf "\tMTU=$MTU\n"
 
   if [ ! -f /var/run/netns/$NS ]; then
     ip netns add $NS
@@ -57,25 +45,63 @@ setup_ns() {
     printf "netns $NS already created\n"
   fi
 
-  if [ -d /sys/class/net/$IF0 ]; then
-    printf "$IF0 already created\n"
-    return;
+  if [ ! -d /sys/class/net/$IF0 ]; then
+    printf "creating link $LINK ...\n"
+
+    ip link add name $IF0 type veth peer netns $NS name $IF1
+
+    ip address add $IP0V6/120 dev $IF0
+    ip address add $IP0V4/24  dev $IF0
+
+    ip -netns $NS address add $IP1V6/120 dev $IF1
+    ip -netns $NS address add $IP1V4/24  dev $IF1
+
+    ip link set dev $IF0 up
+    ip -netns $NS link set dev $IF1 up
+
+    # Enable forwarding on veth from default netns so the
+    # fib lookup wouldn't fail.
+    printf "enable forwarding for $NS/$IF1 ...\n"
+    sysctl -w net.ipv6.conf.$IF0.forwarding=1
+    sysctl -w net.ipv4.conf.$IF0.forwarding=1
+
+    # In order for receiving veth interfaces to handle xdp redirects they must
+    # have an xdp program loaded and must return XDP_PASS.
+    printf "attaching xdp program to $NS/$IF1 ...\n"
+    ip -netns $NS link set $IF1 xdp obj xdp_pass.o sec .text
+
+    # Fix veth driver bug that falsely advertises that it support checksum compute
+    # offload and the network stack does skip computing it. As a result the
+    # tcp checksum is not computed and the packet will be dropped. Disabling the
+    # the hw checsum offload on TX for the veth interface fixes the TCP bad
+    # checksum issue.
+    printf "disabling tx-checksumming for $IF0 ...\n"
+    ethtool -K $IF0 tx-checksumming off >> /dev/null
+    ethtool -k $IF0 | grep tx-checksumming
+
+    # ?
+    printf "disabling tx-checksumming for $NS/$IF1 ...\n"
+    ip netns exec $NS ethtool -K $IF1 tx-checksumming off >> /dev/null
+    ip netns exec $NS ethtool -k $IF1 | grep tx-checksumming
+
+    printf "$LINK link created!\n"
   fi
- 
-  ip link add name $IF0 type veth peer netns $NS name $IF1
- 
-  ip address add $IP0V6/120 dev $IF0
-  ip address add $IP0V4/24  dev $IF0
 
-  ip -netns $NS address add $IP1V6/120 dev $IF1
-  ip -netns $NS address add $IP1V4/24  dev $IF1
+  if [ "$2" != "" ]; then
+    MTU=$2
+    if [ "$MTU" -lt "1280" ]; then
+      printf "MTU=$MTU is less than IPv6 min MTU=1280\n"
+      printf "Reset to 1280 to allow IPv6 addresses\n"
+      MTU=1280
+    fi
+    printf "setting $LINK link MTU=$MTU\n"
+    ip link set dev $IF0 mtu $MTU
+    ip -netns $NS link set dev $IF1 mtu $MTU
+  fi
 
-  ip link set dev $IF0 up
-  ip -netns $NS link set dev $IF1 up
+  printf "setup link done!\n"
 
-  ip link set dev $IF0 mtu $MTU
-  ip -netns $NS link set dev $IF1 mtu $MTU
-
+  printf "testing link ... \n"
   printf "pinging $IP0V6 from $NS .. "
   set +e
   # ip netns exec $NS ip neigh get $IP0 dev $IF1
@@ -102,35 +128,7 @@ setup_ns() {
   fi
   set -e
 
-  # here after ping the pair interface should appear as neighbour
-  # ip netns exec $NS ip neigh show
-
-  # Enable forwarding on veth from default netns so the
-  # fib lookup wouldn't fail.
-  printf "enable forwarding for $NS/$IF1 ...\n"
-  sysctl -w net.ipv6.conf.$IF0.forwarding=1
-  sysctl -w net.ipv4.conf.$IF0.forwarding=1
-
-  # In order for receiving veth interfaces to handle xdp redirects they must
-  # have an xdp program loaded and must return XDP_PASS.
-  printf "attaching xdp program to $NS/$IF1 ...\n"
-  ip -netns $NS link set $IF1 xdp obj xdp_pass.o sec .text
-
-  # Fix veth driver bug that falsely advertises that it support checksum compute
-  # offload and the network stack does skip computing it. As a result the
-  # tcp checksum is not computed and the packet will be dropped. Disabling the
-  # the hw checsum offload on TX for the veth interface fixes the TCP bad
-  # checksum issue.
-  printf "disabling tx-checksumming for $IF0 ...\n"
-  ethtool -K $IF0 tx-checksumming off >> /dev/null
-  ethtool -k $IF0 | grep tx-checksumming
-
-  # ?
-  printf "disabling tx-checksumming for $NS/$IF1 ...\n"
-  ip netns exec $NS ethtool -K $IF1 tx-checksumming off >> /dev/null
-  ip netns exec $NS ethtool -k $IF1 | grep tx-checksumming
-
-  printf "done setup $NS\n"
+  printf "testing done!\n"
 }
 
 cleanup_ns() {
@@ -154,13 +152,16 @@ if [ "$1" = "cleanup" ]; then
   exit 0
 fi
 
-if [ "$1" != "" ]; then
+key=${1%=*}
+value=${1#*=}
+
+if [ "${key}" != "mtu" ] && [ "${key}" != "" ] ; then
   printf "unknown '$1' args\n"
   exit 1
 fi
 
-setup_ns $NSA 1500
-setup_ns $NSB 1310
+setup_ns $NSA
+setup_ns $NSB $value
 
 printf "setup done!\n"
 
