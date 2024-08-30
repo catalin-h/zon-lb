@@ -914,11 +914,8 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let l4ctx = L4Context::new_for_ipv4(ctx, &ipv4hdr, l4hdr_offset)?;
     let feat = Features::new();
 
-    if ipv4hdr.proto == IpProto::Icmp {
-        // Pass any non Echo messages
-        if (l4ctx.dst_port | l4ctx.src_port) == 0 {
-            return Ok(xdp_action::XDP_PASS);
-        }
+    if l4ctx.offset == 0 {
+        return Ok(xdp_action::XDP_PASS);
     }
 
     if feat.log_enabled(Level::Info) {
