@@ -1097,6 +1097,9 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     let be_addr = be.address[0];
 
+    // Save fragment before updating the header and before forwading the packet
+    cache_frag_info(ipv4hdr, &l4ctx);
+
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
         // Update both IP and Transport layers checksums along with the source
@@ -1169,9 +1172,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_PASS);
         }
     };
-
-    // Save fragment before updating the header
-    cache_frag_info(ipv4hdr, &l4ctx);
 
     // Update both IP and Transport layers checksums along with the source
     // and destination addresses and ports and others like TTL.
