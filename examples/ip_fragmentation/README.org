@@ -124,9 +124,7 @@ sudo ./setup.sh mtu=1310
 #+end_src
 
 If the script runs without errors we can run the =ping= command next.
-To see PMUTD in action the =ping= command provide the =-M= option with argument
-=do=, meaning, do PMTU discovery, fragment locally when packet size is too
-large.
+To see PMUTD in action the =ping= command provide the =-c<count>= option with
 First let's run the ping for IPv4 with =3= retries:
 #+begin_src sh
 sudo ip netns exec zone0 ping -c3 -s2040 10.0.0.1
@@ -171,7 +169,7 @@ Note, that ICMPv4 uses the term =Datagram Too Big= for the error message type
 =DF= flag set. In the ICMPv6 standard, the =Packet Too Big= refers to error
 type =2= and code =0=.
 
-To test the PMUTD for IPv6 will use the same =-Mdo= option:
+To test the PMUTD for IPv6 will use the same =-c<count>= option:
 #+begin_src sh
 sudo ip netns exec zone0 ping -c3 -s2040 2001:db8::1
 #+end_src
@@ -210,10 +208,9 @@ a payload much bigger than the local MTU. The later will suplimentary test that
 fragments can also trigger =Packet/Datagram Too Big= ICMP error and that LB
 can handle and track multiple ICMP flows (each ICMP request-reply has an unique
 identifier).
-Note, the =ping flood= mode will automatically enable PMUTD so there is no need
-to pass =-Mdo= option. Also, the =-f= (flood) option will send echo request
-indefinitely and to limit the number of requests we will set the total number
-of retries to =10000=.
+Note, the =ping flood= mode will also show the PMUTD in action as the =-f=
+(flood) option will send echo request indefinitely. However, to limit the
+number of requests we will set the total number of retries to =10000=.
 
 The IPv4  =ping flood= command is:
 #+begin_src sh
