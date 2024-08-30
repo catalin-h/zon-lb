@@ -13,9 +13,10 @@
 #+end_src
 
 Some IP protocols like ICMP or UDP don't have the concept of data segment or
-Max Segment Size (MSS) like TCP that prevent IP fragmentation. In case of such
-protocols a load balancer must be able to forward packets that represent IP
-fragments without the L4 port or sequence id and only using the information
+Max Segment Size (MSS) like TCP that prevent IP fragmentation. In such cases,
+the IP protocol stack must split the datagram into fragments that fit the MTU.
+A load balancer must be able to forward packets that represent IP fragments
+without the L4 port or other session id, by only using the fragment information
 available at the IP header.
 
 In order for the IP protocol to split the payload into fragments it needs the
@@ -37,7 +38,7 @@ implements both of the above solutions for handling fragments.
 - FIB lookup
 - Full NAT (src/dst L2/L3 addresses change)
 - IPv6 fragmentation: track fragments by src+dest+flow-id
-- IPv4 fragmentation: track fragments for protocols w/o segmentation, e.g. ICMPv4
+- IPv4 fragmentation: track fragments by src+dest+fragment-id+protocol
 - IPv6 Path MTU Discovery (PMUTD): send ICMPv6 Packet Too Big message
 - IPv4 PMUTD: send ICMPv4 Datagram Too Big message
 
