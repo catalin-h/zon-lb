@@ -24,8 +24,8 @@ Maximum Transmission Unit (MTU) of local interface and the smallest MTU along
 the path to the destination endpoint. The first is easy to obtain but the last
 one depends if the routers and load balancers along the path are configured to
 send Packet Too Big (PTB) IMCP message with the actual MTU. Some applications
-can employ a [[Datagram Packetization Layer Path MTU Discovery]
-[https://datatracker.ietf.org/doc/html/rfc8899]]
+can employ a [[https://datatracker.ietf.org/doc/html/rfc8899]
+[Datagram Packetization Layer Path MTU Discovery]]
 but this is not always available. Instead the PMUTD should be supported by any
 modern OS as it is based on PTB ICMP messages.
 
