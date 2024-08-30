@@ -1,15 +1,15 @@
 #+TITLE: Test zon-lb against IP fragmentation
 
 #+begin_src
-┌───────────────────┐              ┌──────────────────────┐              ┌────────────────────┐
-│zone1 netns        │              │    default netns     │              │         zone0 netns│
-│  server           │              │                      │              │            client  │
-│                 ┌─┴──────────────┴─┐                  ┌─┴──────────────┴─┐                  │
-│            veth3│<--xdp_redirect---│veth2        veth0│<-----------------│veth1             │
-│         mtu:1310│----------------->│mtu:1310  mtu:1500│---xdp_redirect-->│mtu:1500          │
-│         xdp:pass└─┬──────────────┬─┘zon-lb      zon-lb└─┬──────────────┬─┘xdp:pass          │
-│tx-checksumminf:off│              │                      │              │tx-checksumming:off │
-└───────────────────┘              └──────────────────────┘              └────────────────────┘
+┌───────────────────┐      ┌──────────────────────┐      ┌────────────────────┐
+│zone1 netns        │      │    default netns     │      │         zone0 netns│
+│  server           │      │                      │      │            client  │
+│                 ┌─┴──────┴─┐                  ┌─┴──────┴─┐                  │
+│            veth3│<-redirect│veth2        veth0│<---------│veth1             │
+│         mtu:1310│--------->│mtu:1310  mtu:1500│redirect->│mtu:1500          │
+│         xdp:pass└─┬──────┬─┘zon-lb      zon-lb└┬───────┬─┘xdp:pass          │
+│tx-checksumminf:off│      │                     │       │tx-checksumming:off │
+└───────────────────┘      └─────────────────────┘       └────────────────────┘
 #+end_src
 
 Some IP protocols like ICMP or UDP don't have the concept of data segment or
@@ -21,12 +21,13 @@ available at the IP header.
 
 In order for the IP protocol to split the payload into fragments it needs the
 Maximum Transmission Unit (MTU) of local interface and the smallest MTU along
-the path to the destination endpoint. The first is easy to obtain but the last one
-depends if the routers and load balancers along the path are configured to send
-Packet Too Big (PTB) IMCP message with the actual MTU. Some applications can employ
-a [[Datagram Packetization Layer Path MTU Discovery][https://datatracker.ietf.org/doc/html/rfc8899]]
-but this is not always available. Instead the PMUTD should be supported by any modern OS
-as it is based on PTB ICMP messages.
+the path to the destination endpoint. The first is easy to obtain but the last
+one depends if the routers and load balancers along the path are configured to
+send Packet Too Big (PTB) IMCP message with the actual MTU. Some applications
+can employ a [[Datagram Packetization Layer Path MTU Discovery]
+[https://datatracker.ietf.org/doc/html/rfc8899]]
+but this is not always available. Instead the PMUTD should be supported by any
+modern OS as it is based on PTB ICMP messages.
 
 For a better integration in the Linux environment the current load balancer
 implements both of the above solutions for handling fragments.
@@ -50,10 +51,11 @@ Run the [[./setup.sh][setup]] to create the custom namespace =zone0=:
 sudp ./setup.sh [mtu=<MTU>]
 #+end_src
 
-The =setup.sh= script accepts an optional key-value parameter for passing the MTU for
-the link between =veth2= and =veth3=. Note, that since IPv6 is used in this test
-the script will automatically clamp any lower MTU values to the min IPv6 MTU
-value of 1280. The MTU can set multiple times without removing the xdp programs.
+The =setup.sh= script accepts an optional key-value parameter for passing the
+MTU for the link between =veth2= and =veth3=. Note, that since IPv6 is used in
+this test the script will automatically clamp any lower MTU values to the min
+IPv6 MTU value of 1280. The MTU can set multiple times without removing the
+xdp programs.
 
 Load the configuration [[./zonlb.toml][config]]:
 
@@ -63,9 +65,192 @@ sudo ./zon-lb ./zonlb.toml load
 
 *** Choosing the MTU for the redirect interface
 The current test uses a MTU bigger than 1280 which is the minimum MTU
-supported by IPv6 - see [[https://datatracker.ietf.org/doc/html/rfc8200#section-5][Packet Size Issues]].
-In fact, on Linux, when setting an MTU smaller than 1280, the system will automatically
-remove any IPv6 address set on that interface.
+supported by IPv6 - see
+[[https://datatracker.ietf.org/doc/html/rfc8200#section-5][Packet Size Issues]].
+In fact, on Linux, when setting an MTU smaller than 1280, the system will
+automatically remove any IPv6 address set on that interface.
+
+** Test =IP fragmentation= with =ping=
+The easiest way to test that fragments are forwarded by LB is to use the =ping=
+command by passing a payload size bigger than local MTU to =-s=.
+
+For example, to test IPv4 fragmention, run the command:
+
+#+begin_src sh
+sudo ip netns exec zone0 ping -c1 -s2040 10.0.0.1
+#+end_src
+
+The output should be something like:
+
+#+begin_src
+PING 10.0.0.1 (10.0.0.1) 2040(2068) bytes of data.
+2048 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.115 ms
+
+--- 10.0.0.1 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.115/0.115/0.115/0.000 ms
+#+end_src
+
+For IPv6 the command looks similar:
+#+begin_src sh
+sudo ip netns exec zone0 ping -c1 -s2040 2001:db8::1
+#+end_src
+
+If successfull, the output should be like:
+
+#+begin_src
+PING 2001:db8::1(2001:db8::1) 2040 data bytes
+2048 bytes from 2001:db8::1: icmp_seq=1 ttl=64 time=0.099 ms
+
+--- 2001:db8::1 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.099/0.099/0.099/0.000 ms
+#+end_src
+
+** Test =PMTUD= with =ping=
+To test the Path MTU discovery the ping command must send at least two ICMP
+requests as the first one will be erroneous due to receiving the
+=Packet/Datagram Too Big= ICMP message.
+
+To make the LB send this ICMP error must first set the MTU for the link between
+=veth2= and =veth3= to lower value than the default. Note, that since we want
+to test also IPv6 this MTU must at least 1280 - the minimum allowed by IPv6.
+Setting the MTU to a lower value on Linux, it will automatically remove =any=
+IPv6 address on that link. Since we don't want that the =setup.sh= script
+automatically reset the MTU to 1280 if the argument is lower.
+So, first update the MTU for link =veth2= and =veth3=:
+#+begin_src sh
+sudo ./setup.sh mtu=1310
+#+end_src
+
+If the script runs without errors we can run the =ping= command next.
+To see PMUTD in action the =ping= command provide the =-M= option with argument
+=do=, meaning, do PMTU discovery, fragment locally when packet size is too
+large.
+First let's run the ping for IPv4 with =3= retries:
+#+begin_src sh
+sudo ip netns exec zone0 ping -c3 -s2040 10.0.0.1
+#+end_src
+
+The output is interesting as it shows the =remote MTU= after the first ICMP
+request:
+#+begin_src
+PING 10.0.0.1 (10.0.0.1) 2040(2068) bytes of data.
+From 10.0.0.1 icmp_seq=1 Frag needed and DF set (mtu = 1310)
+2048 bytes from 10.0.0.1: icmp_seq=2 ttl=64 time=0.137 ms
+2048 bytes from 10.0.0.1: icmp_seq=3 ttl=64 time=0.115 ms
+
+--- 10.0.0.1 ping statistics ---
+3 packets transmitted, 2 received, +1 errors, 33.3333% packet loss, time 2031ms
+rtt min/avg/max/mdev = 0.115/0.126/0.137/0.011 ms
+#+end_src
+
+Note, that after the first echo request all the subsequent the ICMP requests
+are successfull.
+
+Also note, that running the same ping command again will have =all= the
+requests successful. This happens because the system caches the route details
+for a destination address when it receives the ICMPv4 =Datagram Too Big=
+message. The following command will show all the cached routes and the =MTU=:
+#+begin_src sh
+sudo ip netns exec zone0 ip route show cache
+#+end_src
+
+#+begin_src
+10.0.0.1 dev veth1
+    cache expires 376sec mtu 1310
+#+end_src
+
+To trigger =PMUTD= again for IPv4 must =flush= the route cache:
+#+begin_src sh
+sudo ip netns exec zone0 ip route flush cache
+#+end_src
+
+Note, that ICMPv4 uses the term =Datagram Too Big= for the error message type
+=3= or =Destination Unreachable=, code =Fragmentation required= and IP header
+=DF= flag set. In the ICMPv6 standard, the =Packet Too Big= refers to error
+type =2= and code =0=.
+
+To test the PMUTD for IPv6 will use the same =-Mdo= option:
+#+begin_src sh
+sudo ip netns exec zone0 ping -c3 -s2040 2001:db8::1
+#+end_src
+
+#+begin_src
+PING 2001:db8::1(2001:db8::1) 2040 data bytes
+From 2001:db8::1 icmp_seq=1 Packet too big: mtu=1310
+2048 bytes from 2001:db8::1: icmp_seq=2 ttl=64 time=0.131 ms
+2048 bytes from 2001:db8::1: icmp_seq=3 ttl=64 time=0.146 ms
+
+--- 2001:db8::1 ping statistics ---
+3 packets transmitted, 2 received, +1 errors, 33.3333% packet loss, time 2046ms
+rtt min/avg/max/mdev = 0.131/0.138/0.146/0.007 ms
+#+end_src
+
+Note, that for IPv6, the output is slightly different and instead of
+=Frag needed and DF set= the first message is =Packet too big=. As in case of
+IPv4, all the subsequent requests are successful
+
+To show the routes for IPv6 must specify the protocol version with =-6=:
+#+begin_src sh
+sudo ip netns exec zone0 ip -6 route show cache
+#+end_src
+
+#+begin_src
+2001:db8::1 dev veth1 metric 256 expires 170sec mtu 1310 pref medium
+#+end_src
+
+To trigger the =PMUTD= again for this address flush the =IPv6= route cache:
+#+begin_src sh
+sudo ip netns exec zone0 ip route flush cache
+#+end_src
+
+To stress the LB a little bit more, we will use the =ping flood= mode with
+a payload much bigger than the local MTU. The later will suplimentary test that
+fragments can also trigger =Packet/Datagram Too Big= ICMP error and that LB
+can handle and track multiple ICMP flows (each ICMP request-reply has an unique
+identifier).
+Note, the =ping flood= mode will automatically enable PMUTD so there is no need
+to pass =-Mdo= option. Also, the =-f= (flood) option will send echo request
+indefinitely and to limit the number of requests we will set the total number
+of retries to =10000=.
+
+The IPv4  =ping flood= command is:
+#+begin_src sh
+sudo ip netns exec zone0 ping -f -c10000 -s2040 10.0.0.1
+#+end_src
+
+Note that the output will show a single =E= for the =Datagram Too Big=
+ICMP error:
+#+begin_src
+PING 10.0.0.1 (10.0.0.1) 2040(2068) bytes of data.
+E
+--- 10.0.0.1 ping statistics ---
+10000 packets transmitted, 9999 received,+1 errors,0.01% packet loss,time 589 ms
+rtt min/avg/max/mdev = 0.019/0.034/0.452/0.009 ms,pipe 2,ipg/ewma 0.058/0.037 ms
+#+end_src
+
+Note, that in order to see the error or =E= must first flush the route cache
+as shown above.
+
+For IPv6 the =ping flood= command is:
+#+begin_src sh
+sudo ip netns exec zone0 ping -f -c10000 -s2040 2001:db8::1
+#+end_src
+
+As for IPv4, the output will show a single =E= for =Packet Too Big= ICMP error:
+#+begin_src
+PING 2001:db8::1(2001:db8::1) 2040 data bytes
+E
+--- 2001:db8::1 ping statistics ---
+10000 packets transmitted, 9999 received,+1 errors,0.01% packet loss, time 674ms
+rtt min/avg/max/mdev = 0.022/0.042/0.234/0.010 ms, ipg/ewma 0.067/0.043 ms
+#+end_src
+
+Note, that for both IPv4 and IPv6 =ping flood= the first request is used to
+update the MTU and all the =9999= subsequence IMCP requests finish without
+error. For =ping= this means that the entire payload was transferred ok and
+without ICMP flow interference.
 
 ** References
 
