@@ -101,8 +101,7 @@ type LHMARP = LruHashMap<u32, ArpEntry>;
 #[map]
 static mut ZLB_ARP: LHMARP = LHMARP::pinned(MAX_ARP_ENTRIES, 0);
 
-/// This map is intended to track IPv4 fragments for protocols that
-/// don't split data into segments like ICMP.
+/// This map is intended to track IPv4 fragments for backend connections
 type FRAG4LHM = LruHashMap<Ipv4FragId, Ipv4FragInfo>;
 
 #[map]
@@ -136,124 +135,6 @@ impl Features {
 pub mod icmpv4 {
     pub const ECHO_REPLY: u8 = 0_u8;
     pub const ECHO_REQUEST: u8 = 8_u8;
-}
-
-struct L4Context {
-    offset: usize,
-    check_off: usize,
-    src_port: u32,
-    dst_port: u32,
-}
-
-const MORE_FRAGMENTS: u16 = 1 << 5;
-
-fn fetch_frag_info(ipv4hdr: &Ipv4Hdr) -> (u16, u16) {
-    match unsafe {
-        ZLB_FRAG4.get(&Ipv4FragId {
-            id: ipv4hdr.id,
-            proto: ipv4hdr.proto as u16,
-            src: ipv4hdr.src_addr,
-            dst: ipv4hdr.dst_addr,
-        })
-    } {
-        None => (0, 0),
-        Some(frag) => {
-            stats_inc(stats::IP_FRAGMENTS);
-            (frag.src_port, frag.dst_port)
-        }
-    }
-}
-
-fn cache_frag_info(ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
-    if ipv4hdr.proto != IpProto::Icmp || (ipv4hdr.frag_off & MORE_FRAGMENTS) == 0 {
-        return;
-    }
-
-    match unsafe {
-        ZLB_FRAG4.insert(
-            &Ipv4FragId {
-                id: ipv4hdr.id,
-                proto: ipv4hdr.proto as u16,
-                src: ipv4hdr.src_addr,
-                dst: ipv4hdr.dst_addr,
-            },
-            &Ipv4FragInfo {
-                src_port: l4ctx.src_port as u16,
-                dst_port: l4ctx.dst_port as u16,
-                reserved: 0,
-            },
-            0,
-        )
-    } {
-        Ok(()) => stats_inc(stats::IP_FRAGMENTS),
-        Err(_) => stats_inc(stats::IP_FRAGMENT_ERRORS),
-    }
-}
-
-impl L4Context {
-    fn new_for_ipv4(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, offset: usize) -> Result<Self, ()> {
-        let (check_off, src_port, dst_port) = match ipv4hdr.proto {
-            IpProto::Tcp => {
-                let tcphdr = ptr_at::<TcpHdr>(&ctx, offset)?;
-                (
-                    offset_of!(TcpHdr, check),
-                    unsafe { (*tcphdr).source as u32 },
-                    unsafe { (*tcphdr).dest as u32 },
-                )
-            }
-            IpProto::Udp => {
-                let udphdr = ptr_at::<UdpHdr>(&ctx, offset)?;
-                (
-                    offset_of!(UdpHdr, check),
-                    unsafe { (*udphdr).source as u32 },
-                    unsafe { (*udphdr).dest as u32 },
-                )
-            }
-            IpProto::Icmp => {
-                // Handle ICMP echo request / reply to track only messages that
-                // are handled by LB.
-                //  0                   1                   2                   3
-                //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                // |     Type      |      Code     |          Checksum             |
-                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                // |           Identifier          |        Sequence Number        |
-                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                // See  https://datatracker.ietf.org/doc/html/rfc792
-                let frag_off = ipv4hdr.frag_off.to_be() & 0x1fff;
-                if frag_off != 0 {
-                    let (sport, dport) = fetch_frag_info(ipv4hdr);
-                    (0, sport as u32, dport as u32)
-                } else {
-                    let icmphdr = ptr_at::<IcmpHdr>(&ctx, offset)?;
-                    let icmphdr = unsafe { &*icmphdr };
-                    match icmphdr.type_ {
-                        icmpv4::ECHO_REQUEST => {
-                            // On ICMP request use the echo id as source port
-                            (0, unsafe { icmphdr.un.echo.id } as u32, 0)
-                        }
-                        icmpv4::ECHO_REPLY => {
-                            // On ICMP reply use the echo id destination port
-                            (0, 0, unsafe { icmphdr.un.echo.id } as u32)
-                        }
-                        _ => (0, 0, 0),
-                    }
-                }
-            }
-            _ => (0, 0, 0),
-        };
-
-        Ok(Self {
-            offset,
-            check_off,
-            src_port,
-            dst_port,
-        })
-    }
-
-    fn check_pkt_off(&self) -> usize {
-        self.offset + self.check_off
-    }
 }
 
 #[inline(always)]
@@ -899,6 +780,139 @@ fn log_packet(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
         ipv4hdr.id,
         ipv4hdr.frag_off.to_be() & 0x1fff
     );
+}
+
+/// Matches the IPv4 more fragments (MF) flag in the u16 following
+/// big-endian value combo: 0b[1111_1111][0 DF MF 1_1111]
+const MORE_FRAGMENTS: u32 = 1 << 5;
+
+#[inline(always)]
+fn cache_frag_info(ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
+    // Cache only the first fragment contains the L4 header
+    if (l4ctx.flags & MORE_FRAGMENTS) != 0 {
+        match unsafe {
+            ZLB_FRAG4.insert(
+                &Ipv4FragId {
+                    id: ipv4hdr.id,
+                    proto: ipv4hdr.proto as u16,
+                    src: ipv4hdr.src_addr,
+                    dst: ipv4hdr.dst_addr,
+                },
+                &Ipv4FragInfo {
+                    src_port: l4ctx.src_port as u16,
+                    dst_port: l4ctx.dst_port as u16,
+                    reserved: 0,
+                },
+                0,
+            )
+        } {
+            Ok(()) => stats_inc(stats::IP_FRAGMENTS),
+            Err(_) => stats_inc(stats::IP_FRAGMENT_ERRORS),
+        }
+    }
+}
+
+#[derive(Default)]
+struct L4Context {
+    offset: usize,
+    check_off: usize,
+    src_port: u32,
+    dst_port: u32,
+    flags: u32,
+}
+
+impl L4Context {
+    fn new_for_ipv4(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, mut offset: usize) -> Result<Self, ()> {
+        // All fragments besides the fragment at offset 0 requires the cached L4 info.
+        // The fragment offset field layout is like this:
+        // 0b[1111_1111][0 DF MF 1_1111]
+        if (ipv4hdr.frag_off & 0xFF1F) != 0 {
+            match unsafe {
+                ZLB_FRAG4.get(&Ipv4FragId {
+                    id: ipv4hdr.id,
+                    proto: ipv4hdr.proto as u16,
+                    src: ipv4hdr.src_addr,
+                    dst: ipv4hdr.dst_addr,
+                })
+            } {
+                // Pass any non tracked fragments
+                None => return Ok(Self::default()),
+                Some(frag) => {
+                    stats_inc(stats::IP_FRAGMENTS);
+                    return Ok(Self {
+                        offset,
+                        check_off: 0, // No need to update the checksum
+                        src_port: frag.src_port as u32,
+                        dst_port: frag.dst_port as u32,
+                        flags: 0,
+                    });
+                }
+            }
+        }
+
+        let flags = (ipv4hdr.frag_off as u32) & MORE_FRAGMENTS;
+
+        let (check_off, src_port, dst_port) = match ipv4hdr.proto {
+            IpProto::Tcp => {
+                let tcphdr = ptr_at::<TcpHdr>(&ctx, offset)?;
+                (
+                    offset_of!(TcpHdr, check),
+                    unsafe { (*tcphdr).source as u32 },
+                    unsafe { (*tcphdr).dest as u32 },
+                )
+            }
+            IpProto::Udp => {
+                let udphdr = ptr_at::<UdpHdr>(&ctx, offset)?;
+                (
+                    offset_of!(UdpHdr, check),
+                    unsafe { (*udphdr).source as u32 },
+                    unsafe { (*udphdr).dest as u32 },
+                )
+            }
+            IpProto::Icmp => {
+                // Handle ICMP echo request / reply to track only messages that
+                // are handled by LB.
+                //  0                   1                   2                   3
+                //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                // |     Type      |      Code     |          Checksum             |
+                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                // |           Identifier          |        Sequence Number        |
+                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                // See  https://datatracker.ietf.org/doc/html/rfc792
+                let icmphdr = ptr_at::<IcmpHdr>(&ctx, offset)?;
+                let icmphdr = unsafe { &*icmphdr };
+                match icmphdr.type_ {
+                    icmpv4::ECHO_REQUEST => {
+                        // On ICMP request use the echo id as source port
+                        (0, unsafe { icmphdr.un.echo.id } as u32, 0)
+                    }
+                    icmpv4::ECHO_REPLY => {
+                        // On ICMP reply use the echo id destination port
+                        (0, 0, unsafe { icmphdr.un.echo.id } as u32)
+                    }
+                    _ => {
+                        // Pass any non Echo messages
+                        offset = 0;
+                        (0, 0, 0)
+                    }
+                }
+            }
+            _ => (0, 0, 0),
+        };
+
+        Ok(Self {
+            offset,
+            check_off,
+            src_port,
+            dst_port,
+            flags,
+        })
+    }
+
+    fn check_pkt_off(&self) -> usize {
+        self.offset + self.check_off
+    }
 }
 
 // TODO: check if moving the XdpContext boosts performance

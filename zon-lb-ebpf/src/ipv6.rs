@@ -643,6 +643,7 @@ impl Ipv6L4Context {
                 check_off: 0,
                 src_port: 0,
                 dst_port: 0,
+                flags: 0,
             },
             frag_id: 0,
             next_hdr,
