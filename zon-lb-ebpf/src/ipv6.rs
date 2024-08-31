@@ -366,27 +366,16 @@ fn update_neighbors_cache(
         return;
     }
 
-    match rc {
-        0 => info!(
-            ctx,
-            "[nd] added if: {} [{:i}] => {:mac} ",
-            ifindex,
-            unsafe { Inet6U::from(ip).addr8 },
-            *mac,
-        ),
-        _ => {
-            if feat.log_enabled(Level::Error) {
-                error!(
-                    ctx,
-                    "[nd] not added if:{} [{:i}] => {:mac}, err={}",
-                    ifindex,
-                    unsafe { Inet6U::from(ip).addr8 },
-                    *mac,
-                    rc
-                )
-            }
-        }
-    }
+    info!(
+        ctx,
+        "[nd] update if:{} [{:i}] => {:mac}, vlan:{}, mtu:{}, rc={}",
+        ifindex,
+        unsafe { Inet6U::from(ip).addr8 },
+        *mac,
+        vlan_id,
+        mtu,
+        rc
+    );
 }
 
 fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Result<u32, ()> {
