@@ -322,9 +322,8 @@ pub fn check_mtu(ctx: &XdpContext, ifindex: u32) -> u16 {
 }
 
 /// Update the neighbour entry for source IPv6 address
-/// BUG: the bpf_linker need this inline(always) in order to avoid link errors
+/// BUG: FIXED: the bpf_linker need this inline(always) in order to avoid link errors
 /// or to increase the stack size over 512.
-#[inline(always)]
 fn update_neighbors_cache(
     ctx: &XdpContext,
     ip: &[u32; 4usize],
@@ -435,14 +434,13 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
 
     // If this is a ND advertisement
     if llao.otype == 2 {
-        // TODO: fix bpf_linker error
-        // update_neighbors_cache(
-        //     ctx,
-        //     unsafe { &ndhdr.tgt_addr.addr32 },
-        //     l2ctx.vlan_id(),
-        //     &llao.mac,
-        //     eth,
-        // );
+        update_neighbors_cache(
+            ctx,
+            unsafe { &ndhdr.tgt_addr.addr32 },
+            l2ctx.vlan_id(),
+            &llao.mac,
+            eth,
+        );
 
         update_neighbors_cache(
             ctx,
