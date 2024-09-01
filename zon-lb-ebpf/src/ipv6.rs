@@ -361,8 +361,7 @@ fn update_neighbors_cache(
         Err(e) => e,
     };
 
-    let feat = Features::new();
-    if !feat.log_enabled(Level::Info) {
+    if !Features::new().log_enabled(Level::Info) {
         return;
     }
 
