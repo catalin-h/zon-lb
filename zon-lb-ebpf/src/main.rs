@@ -976,6 +976,10 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_DROP);
         }
 
+        if ipv4hdr.tot_len.to_be() > nat.mtu {
+            return send_dtb(ctx, ipv4hdr, &l4ctx, nat.mtu);
+        }
+
         // Save fragment before updating the header
         cache_frag_info(ipv4hdr, &l4ctx);
 
@@ -987,7 +991,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             &l4ctx,
             nat.lb_ip,
             nat.ip_src,
-            l4ctx.dst_port << 16 | nat.port_lb,
+            l4ctx.dst_port << 16 | (nat.port_lb as u32),
         )?;
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
@@ -1265,7 +1269,8 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             &natkey,
             &NAT4Value {
                 ip_src,
-                port_lb: l4ctx.dst_port,
+                port_lb: l4ctx.dst_port as u16,
+                mtu: check_mtu(ctx, if_index),
                 ifindex: if_index,
                 mac_addresses,
                 vlan_hdr: l2ctx.vlanhdr,
