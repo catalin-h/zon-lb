@@ -315,7 +315,7 @@ struct Icmpv6NdHdr {
 }
 
 pub fn check_mtu(ctx: &XdpContext, ifindex: u32) -> u16 {
-    let mut mtu = 0_u32;
+    let mut mtu = 1280_u32;
     let _ = unsafe { bpf_check_mtu(ctx.as_ptr(), ifindex, &mut mtu, 0, 0) };
 
     return mtu as u16;
