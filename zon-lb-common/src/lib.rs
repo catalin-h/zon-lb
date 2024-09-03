@@ -419,7 +419,9 @@ pub struct NAT6Value {
     pub ip_src: Inet6U,
     /// The saved lb port. Use a 32-bit value in order to
     /// align to 32-bit and avoid bpf verifier error.
-    pub port_lb: u32,
+    pub port_lb: u16,
+    /// The interface MTU used to compare the reply size.
+    pub mtu: u16,
     /// The interface index to redirect the reply packet from
     /// the backend. This is the interface index that the
     /// request packet was received by the LB.

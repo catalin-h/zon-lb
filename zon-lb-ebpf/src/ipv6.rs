@@ -887,6 +887,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_DROP);
         }
 
+        if ipv6hdr.payload_len.to_be() > nat.mtu {
+            return send_ptb(ctx, &l2ctx, ipv6hdr, nat.mtu as u32);
+        }
+
         log_nat6(ctx, &nat, &feat);
 
         // Save fragment before updating addresses
@@ -900,7 +904,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             &l4ctx,
             unsafe { &nat.lb_ip.addr32 },
             unsafe { &nat.ip_src.addr32 },
-            l4ctx.base.dst_port << 16 | nat.port_lb,
+            l4ctx.base.dst_port << 16 | nat.port_lb as u32,
         )?;
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
@@ -1157,6 +1161,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     let ip_src = nat6key.ip_be_src;
     let lb_ip = nat6key.ip_lb_dst;
+    let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
 
     nat6key.ip_lb_dst = Inet6U::from(lb_addr);
     nat6key.ip_be_src = Inet6U::from(&be.address);
@@ -1170,7 +1175,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         // TODO: use a inet 32-bit hash instead of
         // the 3 comparations or 32B/32B total matching bytes ?
         Some(&nat) => {
-            if nat.ifindex != unsafe { (*ctx.ctx).ingress_ifindex }
+            if nat.ifindex != ifindex
                 || !nat.ip_src.eq32(unsafe { &ip_src.addr32 })
                 || nat.mac_addresses != mac_addresses
                 || !nat.vlan_hdr == l2ctx.vlanhdr
@@ -1190,8 +1195,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             // NOTE: optimization: use as temp value at insert point
             &NAT6Value {
                 ip_src,
-                port_lb: l4ctx.base.dst_port,
-                ifindex: (*ctx.ctx).ingress_ifindex,
+                port_lb: l4ctx.base.dst_port as u16,
+                mtu: check_mtu(ctx, ifindex),
+                ifindex,
                 mac_addresses,
                 vlan_hdr: l2ctx.vlanhdr,
                 flags: be.flags,
