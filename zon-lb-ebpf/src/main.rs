@@ -776,7 +776,8 @@ fn log_packet(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
 
     info!(
         ctx,
-        "frag, id:0x{:x}, off:0x{:x}",
+        "tot_len:{}, frag, id:0x{:x}, off:0x{:x}",
+        ipv4hdr.tot_len.to_be(),
         ipv4hdr.id,
         ipv4hdr.frag_off.to_be() & 0x1fff
     );
