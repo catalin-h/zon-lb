@@ -250,6 +250,79 @@ update the MTU and all the =9999= subsequence IMCP requests finish without
 error. For =ping= this means that the entire payload was transferred ok and
 without ICMP flow interference.
 
+** Notes about TCP (=SOCK_STREAM=) and UDP (=SOCK_DGRAM=)
+On Linux, one of the socket options that can be set is =IP_MTU_DISCOVER=.
+The [[https://man7.org/linux/man-pages/man7/ip.7.html][ip]] docs mention:
+
+#+begin_src
+When enabled, Linux will perform Path MTU
+Discovery as defined in RFC 1191 on SOCK_STREAM sockets.
+For non-SOCK_STREAM sockets, IP_PMTUDISC_DO forces the
+don't-fragment flag to be set on all outgoing packets.  It
+is the user's responsibility to packetize the data in MTU-
+ized chunks and to do the retransmits if necessary.
+
+The system-wide default can be toggled between
+IP_PMTUDISC_WANT and IP_PMTUDISC_DONT by writing
+(respectively, zero and nonzero values) to the
+/proc/sys/net/ipv4/ip_no_pmtu_disc file.
+Path MTU discovery value   Meaning
+IP_PMTUDISC_WANT           Use per-route settings.
+IP_PMTUDISC_DONT           Never do Path MTU Discovery.
+IP_PMTUDISC_DO             Always do Path MTU Discovery.
+IP_PMTUDISC_PROBE          Set DF but ignore Path MTU.
+
+When PMTU discovery is enabled, the kernel automatically
+keeps track of the path MTU per destination host.  When it
+is connected to a specific peer with connect(2), the
+currently known path MTU can be retrieved conveniently
+using the IP_MTU socket option (e.g., after an EMSGSIZE
+error occurred).  The path MTU may change over time.  For
+connectionless sockets with many destinations, the new MTU
+for a given destination can also be accessed using the
+error queue (see IP_RECVERR).  A new error will be queued
+for every incoming MTU update.
+
+While MTU discovery is in progress, initial packets from
+datagram sockets may be dropped.  Applications using UDP
+should be aware of this and not take it into account for
+their packet retransmit strategy.
+
+To bootstrap the path MTU discovery process on unconnected
+sockets, it is possible to start with a big datagram size
+(headers up to 64 kilobytes long) and let it shrink by
+updates of the path MTU.
+
+To get an initial estimate of the path MTU, connect a
+datagram socket to the destination address using
+connect(2) and retrieve the MTU by calling getsockopt(2)
+with the IP_MTU option.
+
+It is possible to implement RFC 4821 MTU probing with
+SOCK_DGRAM or SOCK_RAW sockets by setting a value of
+IP_PMTUDISC_PROBE (available since Linux 2.6.22).  This is
+also particularly useful for diagnostic tools such as
+tracepath(8) that wish to deliberately send probe packets
+larger than the observed Path MTU.
+#+end_src
+
+On the other hand, the [[https://man7.org/linux/man-pages/man7/udp.7.html][udp]]
+manual explains that:
+#+begin_src
+By default, Linux UDP does path MTU (Maximum Transmission Unit)
+discovery. This means the kernel will keep track of the MTU to a
+specific target IP address and return EMSGSIZE when a UDP packet
+write exceeds it. When this happens, the application should
+decrease the packet size. Path MTU discovery can be also turned
+off using the IP_MTU_DISCOVER socket option or the
+/proc/sys/net/ipv4/ip_no_pmtu_disc file; see ip(7) for details.
+When turned off, UDP will fragment outgoing UDP packets that
+exceed the interface MTU. However, disabling it is not
+recommended for performance and reliability reasons.
+#+end_src
+
+
+
 ** References
 
 - [[https://labs.ripe.net/author/gih/evaluating-ipv4-and-ipv6-packet-fragmentation/][Evaluating IPv4 and IPv6 Packet Fragmentation]]
@@ -258,5 +331,6 @@ without ICMP flow interference.
 - [[https://lwn.net/Articles/960913/][So you think you understand IP fragmentation?]]
 - [[https://datatracker.ietf.org/doc/html/rfc6436][Rationale for Update to the IPv6 Flow Label Specification]]
 - [[http://linux-ip.net/html/tools-ip-route.html][ip route manual]]
-- [[Datagram Packetization Layer Path MTU Discovery][https://datatracker.ietf.org/doc/html/rfc8899]]
+- [[https://datatracker.ietf.org/doc/html/rfc8899][Datagram Packetization Layer Path MTU Discovery]]
+- [[https://man7.org/linux/man-pages/man7/ip.7.html][ip - IP_MTU_DISCOVER]]
 
