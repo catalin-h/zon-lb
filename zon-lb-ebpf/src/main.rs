@@ -689,11 +689,21 @@ fn send_dtb(
         );
     }
 
+    // Save the 64-bit part of the protocol header here
+    // as the L4 offset will became irrelevant after
+    // building the ICMP header.
     let phdr = ptr_at::<ProtoHdr>(&ctx, l4ctx.offset)?;
     let phdr = unsafe { *phdr };
 
-    let ptb = ptr_at::<IcmpDtb>(&ctx, l4ctx.offset)?;
+    // Update the ICMP header
+    let icmp_offset = EthHdr::LEN + Ipv4Hdr::LEN;
+    let ptb = ptr_at::<IcmpDtb>(&ctx, icmp_offset)?;
     let ptb = unsafe { &mut *ptb.cast_mut() };
+
+    // First, copy the original IPv4 header as data for the
+    // ICMPv4 datagram too big message.
+    ptb.ipv4hdr = *ipv4hdr;
+    ptb.protohdr = phdr;
 
     ptb.type_ = 3; // Destination Ureachable
     ptb.code = 4; // Fragmentation required
@@ -701,9 +711,17 @@ fn send_dtb(
     ptb._unused = 0;
     ptb.mtu = size.to_be();
 
-    // Copy the original IPv6 header as data for the Icmpv6 PTB message
-    ptb.ipv4hdr = *ipv4hdr;
-    ptb.protohdr = phdr;
+    // NOTE: The ICMPv4 checksum is required for error messages like
+    // Datagram too big.
+    // NOTE: ICMPv4 checksum differs from ICMPv6 one as it doesn't require
+    // an initial csum built from IP pseudo header.
+    let data = ptr_at::<[u32; DTB_WSIZE]>(&ctx, icmp_offset)?;
+    let data = unsafe { &*data };
+    let mut cs = 0_u32;
+    for i in 0..DTB_WSIZE {
+        cs = csum_add_u32(data[i], cs);
+    }
+    ptb.csum = !csum_fold_32_to_16(cs);
 
     // Update the Ethernet header
     let eth = ptr_at::<EthHdr>(&ctx, 0)?.cast_mut();
@@ -728,28 +746,15 @@ fn send_dtb(
 
     // The inet checksum is computed with the header csum = 0
     ipv4hdr.check = 0;
-
     let mut cs = 0;
     let data = ptr_at::<[u32; IPV4HDR_WSIZE]>(&ctx, EthHdr::LEN)?;
     let data = unsafe { &*data };
     for i in 0..IPV4HDR_WSIZE {
         cs = csum_add_u32(data[i], cs);
     }
-
     ipv4hdr.check = !csum_fold_32_to_16(cs);
 
-    // NOTE: The ICMPv4 checksum is required for error messages like
-    // Datagram too big.
-    // NOTE: ICMPv4 checksum differs from ICMPv6 one as it doesn't require
-    // an initial csum built from IP pseudo header.
-    let data = ptr_at::<[u32; DTB_WSIZE]>(&ctx, l4ctx.offset)?;
-    let data = unsafe { &*data };
-    let mut cs = 0_u32;
-    for i in 0..DTB_WSIZE {
-        cs = csum_add_u32(data[i], cs);
-    }
-    ptb.csum = !csum_fold_32_to_16(cs);
-
+    // Lastly, adjust the frame to actual ICMP PTB packet bounds
     let delta = tot_len as i32 - (ptb.ipv4hdr.tot_len.to_be() as i32);
     let rc = unsafe { bpf_xdp_adjust_tail(ctx.ctx, delta) };
 
