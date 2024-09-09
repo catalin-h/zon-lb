@@ -19,7 +19,7 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::{error, info, Level};
 use core::mem::{self, offset_of};
-use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u16, csum_update_u32};
+use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u32};
 use ipv6::{check_mtu, coarse_ktime, ipv6_lb};
 use network_types::{
     eth::EthHdr,
@@ -662,6 +662,7 @@ struct IcmpDtb {
 
 const DTB_SIZE: u32 = mem::size_of::<IcmpDtb>() as u32;
 const DTB_WSIZE: usize = (DTB_SIZE >> 2) as usize;
+const IPV4HDR_WSIZE: usize = Ipv4Hdr::LEN >> 2;
 
 /// Send Datagram Too Big message or ICMP destination unreachable
 /// with fragment required and don't fragment IP flag on as mentioned
@@ -712,27 +713,30 @@ fn send_dtb(
     // Update the Ipv4 header and checksum
     core::mem::swap(&mut ipv4hdr.src_addr, &mut ipv4hdr.dst_addr);
 
-    let mut csum = !ipv4hdr.check as u32;
-
     // Update the packet length
     let tot_len = Ipv4Hdr::LEN as u16 + DTB_SIZE as u16;
-    csum = csum_update_u16(ipv4hdr.tot_len, tot_len.to_be(), csum);
     ipv4hdr.tot_len = tot_len.to_be();
 
     // Update the next protocol to ICMP
-    let ttl = (ipv4hdr.ttl as u16) << 8;
-    csum = csum_update_u16(ttl | ipv4hdr.proto as u16, ttl | IpProto::Icmp as u16, csum);
     ipv4hdr.proto = IpProto::Icmp;
 
     // Remove id
-    csum = csum_update_u16(ipv4hdr.id, 0, csum);
     ipv4hdr.id = 0;
 
     // Add Don't Fragment flag and remove offset
-    csum = csum_update_u16(ipv4hdr.frag_off, 1 << 6, csum);
     ipv4hdr.frag_off = 1 << 6;
 
-    ipv4hdr.check = !csum_fold_32_to_16(csum);
+    // The inet checksum is computed with the header csum = 0
+    ipv4hdr.check = 0;
+
+    let mut cs = 0;
+    let data = ptr_at::<[u32; IPV4HDR_WSIZE]>(&ctx, EthHdr::LEN)?;
+    let data = unsafe { &*data };
+    for i in 0..IPV4HDR_WSIZE {
+        cs = csum_add_u32(data[i], cs);
+    }
+
+    ipv4hdr.check = !csum_fold_32_to_16(cs);
 
     // NOTE: The ICMPv4 checksum is required for error messages like
     // Datagram too big.
