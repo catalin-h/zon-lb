@@ -321,7 +321,145 @@ exceed the interface MTU. However, disabling it is not
 recommended for performance and reliability reasons.
 #+end_src
 
+*** Undestanding when =ip route show cache= shows the route =mtu=
 
+As noted in the [[http://linux-ip.net/html/routing-cache.html][iproute:Routing Cache]]
+the MTU size is kept as a per route attribute and is stored in the routing cache.
+However, as of kernel version 3.6 the routing cache was removed
+([[https://lwn.net/Articles/507651/][LWN article]])
+and replaced with a Forwarding Informational Base (FIB) trie.
+
+With this change the =ip route show cache= doesn't always show the MTU for
+a cached entry. This happens because the route MTU property is stored in
+the kernel FIB NextHop Exceptions data structure and only updated after ICMP
+messages like Redirect or Datagram Too Big as noted in
+[[https://nscpolteksby.ac.id/ebook/files/Ebook/Computer%20Engineering/Linux%20Kernel%20Networking%20-%20Implementation%20(2014)/chapter%205%20The%20IPv4%20Routing%20Subsystem.pdf][Linux Kernel Networking - Implementation (2014): The IPv4 Routing Subsystem: FIB Nexthop Exceptions]]:
+#+begin_src
+Caching of Path MTU and ICMPv4 redirects is done with FIB exceptions
+#+end_src
+#+begin_src
+FIB nexthop exceptions were added in kernel 3.6 to handle cases when a routing entry is changed not as a result of a
+userspace action, but as a result of an ICMPv4 Redirect message or as a result of Path MTU discovery.
+#+end_src
+#+begin_src
+Caching of Path MTU and ICMPv4 redirects is done with FIB exceptions
+The second case of generating FIB nexthop exceptions is when the Path MTU has changed, in the __ip_rt_
+update_pmtu() method. In such a case, the fnhe_pmtu field of the fib_nh_exception object is set to be the new MTU
+when creating the FIB nexthop exception object (in the update_or_create_fnhe() method). PMTU value is expired if
+it was not updated in the last 10 minutes (ip_rt_mtu_expires). This period is checked on every dst_mtu() call via the
+ipv4_mtu() method, which is a dst->ops->mtu handler. The ip_rt_mtu_expires, which is by default 600 seconds, can
+be configured via the procfs entry /proc/sys/net/ipv4/route/mtu_expires
+#+end_src
+
+The above statements can be easily tested if we open a UDP connection with
+=netcat= and try to send a message bigger than the remote =MTU=:
+#+begin_src sh
+sudo ip netns exec zone1 nc -unlv -p 223 -s 10.2.0.2
+#+end_src
+#+begin_src sh
+sudo ip netns exec zone0 nc -u 10.0.0.1 23
+#+end_src
+
+When checking the cached routes in the netns =zone0= we should see the new route
+and the =mtu= property changed to remote MTU:
+#+begin_src sh
+ip -s -d route show cache
+#+end_src
+#+begin_src
+unicast 10.0.0.1 dev veth1
+    cache expires 594sec users 1 age 5sec mtu 1340
+#+end_src
+Note that by passing =-s= the commands shows other interesting info like
+the number of users (sockets) and the expiration time.
+
+*** Trigger the =Path MTU= discovery using =UDP=
+
+To verify the UDP Packet/Datagram Too Big we can use tools like =traceroute=
+or =tracepath=.
+
+To use =traceroute= for IPv4 path MTU checking run:
+#+begin_src sh
+sudo ip netns exec zone0 traceroute --mtu -F -N1 -f1 -m1 -U -p 23 10.0.0.1
+#+end_src
+
+For current setup the result should be something like:
+#+begin_src sh
+traceroute to 10.0.0.1 (10.0.0.1), 1 hops max, 65000 byte packets
+ 1  * F=1320 * *
+#+end_src
+
+To run =traceroute= for IPv6 path MTU discovery:
+#+begin_src sh
+sudo ip netns exec zone0 traceroute --mtu -F -N1 -f1 -m1 -U -p 23 2001:db8::1
+#+end_src
+
+The output should look like:
+#+begin_src sh
+traceroute to 2001:db8::1 (2001:db8::1), 1 hops max, 65000 byte packets
+ 1  * F=1320 * *
+#+end_src
+
+For =traceroute= make sure to pass the =-U= parameter in order to send UDP
+probesc and =-F= to set the =don't fragment= flag. Also, the tool supports
+sending ICMP probes by passing the =-I= option.
+
+The =tracepath= tool is more simple and sends only UDP probes.
+
+An usage example for IPv4 is:
+#+begin_src sh
+sudo ip netns exec zone0 tracepath -n -p 23 10.0.0.1
+#+end_src
+
+For current setup the output looks like:
+#+begin_src sh
+ 1?: [LOCALHOST]                      pmtu 1500
+ 1:  10.0.0.1                                              0.088ms pmtu 1320
+ 1:  10.0.0.1                                              0.051ms reached
+     Resume: pmtu 1320 hops 1 back 1
+#+end_src
+
+Checking the path MTU IPv6 is done with:
+#+begin_src sh
+sudo ip netns exec zone0 tracepath -6 -n -p 23 2001:db8::1
+#+end_src
+
+The output for IPv6 looks like:
+#+begin_src sh
+ 1?: [LOCALHOST]                        0.037ms pmtu 1500
+ 1:  2001:db8::1                                           0.162ms pmtu 1320
+ 1:  2001:db8::1                                           0.087ms reached
+     Resume: pmtu 1320 hops 1 back 1
+#+end_src
+
+Note, that both tool will not send any probes if there a cached route with
+the MTU already updated. To make sure probes are sent make sure the routing
+cache is flushed - see the commands above.
+
+*** How =Path MTU= discovery works for =TCP=
+
+The =good= part about using UDP for path discovery is that
+there is no need to launch a server as the first UDP packet that is bigger than
+the next hop MTU gets the packet too big error.
+
+For TCP, the MTU is usually computed during the 3-way handshake using the TCP
+options. The endpoint that initiates the connection sends a TCP option with
+the supported MSS (MTU=MSS+IP header size) and the receiving endpoint replies
+with the supported MSS. The bellow 3-way handshake packet capture is self
+explanatory:
+#+begin_src
+sudo ip netns exec zone0 tshark -c3 tcp
+Running as user "root" and group "root". This could be dangerous.
+Capturing on 'veth1'
+ ** (tshark:597378) 21:56:59.946852 [Main MESSAGE] -- Capture started.
+ ** (tshark:597378) 21:56:59.947576 [Main MESSAGE] -- File: "/tmp/wireshark_veth18GQAT2.pcapng"
+    1 0.000000000     10.0.0.2 → 10.0.0.1     TCP 74 53340 → 23 [SYN] Seq=0 Win=64240 Len=0 MSS=1460 SACK_PERM TSval=1943992280 TSecr=0 WS=128
+    2 0.000097168     10.0.0.1 → 10.0.0.2     TCP 74 23 → 53340 [SYN, ACK] Seq=0 Ack=1 Win=64400 Len=0 MSS=1300 SACK_PERM TSval=242237054 TSecr=1943992280 WS=128
+    3 0.000118192     10.0.0.2 → 10.0.0.1     TCP 66 53340 → 23 [ACK] Seq=1 Ack=1 Win=64256 Len=0 TSval=1943992280 TSecr=242237054
+#+end_src
+
+With the current setup is not possible to trigger a packet too big error and
+see the Path MTU discovery mechanism in action for TCP. With the current setup
+only the LB can trigger a PTB if the backend can be configured with a custom MTU.
 
 ** References
 
@@ -333,4 +471,5 @@ recommended for performance and reliability reasons.
 - [[http://linux-ip.net/html/tools-ip-route.html][ip route manual]]
 - [[https://datatracker.ietf.org/doc/html/rfc8899][Datagram Packetization Layer Path MTU Discovery]]
 - [[https://man7.org/linux/man-pages/man7/ip.7.html][ip - IP_MTU_DISCOVER]]
+- [[https://lartc.org/lartc.html][Linux Advanced Routing & Traffic Control HOWTO]]
 
