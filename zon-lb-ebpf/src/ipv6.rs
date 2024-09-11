@@ -1355,14 +1355,9 @@ fn send_ptb(
     let rc = unsafe { bpf_xdp_adjust_tail(ctx.ctx, delta) };
 
     if feat.log_enabled(Level::Info) {
-        info!(ctx, "adjust tail by delta: {}, rc={}", delta, rc);
         info!(
             ctx,
-            "pkt_len:{} PTB_SIZE={}, IPV6HDR_SIZE={} PTB_WSIZE={}",
-            pkt_len,
-            PTB_SIZE,
-            Ipv6Hdr::LEN,
-            PTB_WSIZE
+            "adjust tail by delta:{}, pkt_len:{}, rc={}", delta, pkt_len, rc
         );
     }
 
