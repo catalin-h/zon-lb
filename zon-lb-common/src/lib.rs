@@ -93,6 +93,12 @@ pub struct EPFlags: u32 {
     const XDP_TX = 8;
     /// Redirect the packet to another interface.
     const XDP_REDIRECT = 1 << 4;
+    /// Set for a backend which was configured for Layer 2 Direct Server Return.
+    /// In this mode only the MAC addresses are changed. As in case of redirect
+    /// FIB is also performed but only to obtain the source and destination
+    /// MAC addresses. In DSR mode the loopback interface in the backend network
+    /// namespace must be configured with the same address as the backend group IP.
+    const DSR_L2 = 1 << 5;
     /// Disable connection tracking and NAT for the backend connection.
     const NO_CONNTRACK = 1 << 8;
     /// TODO: Enable logging on this object and dimiss the runvar that controls
