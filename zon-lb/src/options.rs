@@ -6,6 +6,7 @@ use zon_lb_common::EPFlags;
 pub const DISABLE: &str = "disable";
 pub const REDIRECT: &str = "redirect";
 pub const TX: &str = "tx";
+pub const DSR_L2: &str = "dsr_l2";
 pub const NO_NAT: &str = "no_nat";
 pub const SRC_IP: &str = "src_ip";
 pub const IP_ADDR: &str = "ip";
@@ -53,6 +54,7 @@ impl Options {
             let name = match flag {
                 EPFlags::DISABLE => DISABLE,
                 EPFlags::XDP_TX => TX,
+                EPFlags::DSR_L2 => DSR_L2,
                 EPFlags::XDP_REDIRECT => REDIRECT,
                 EPFlags::NO_CONNTRACK => NO_NAT,
                 EPFlags::IPV4 => FLAG_IPV4,
@@ -106,6 +108,7 @@ impl Options {
                     match f.as_str() {
                         DISABLE => flags.insert(EPFlags::DISABLE),
                         TX => flags.insert(EPFlags::XDP_TX),
+                        DSR_L2 => flags.insert(EPFlags::DSR_L2),
                         NO_NAT | "no_conntrack" | "no_ct" => flags.insert(EPFlags::NO_CONNTRACK),
                         REDIRECT => flags.insert(EPFlags::XDP_REDIRECT),
                         FLAG_IPV4 => flags.insert(EPFlags::IPV4),
