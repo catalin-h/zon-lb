@@ -245,6 +245,14 @@ impl EndPoint {
             gid: gid as u16,
         }
     }
+
+    pub fn to_string_noproto(&self) -> String {
+        if self.port == 0 {
+            self.ipaddr.to_string()
+        } else {
+            format!("[{}]:{}", self.ipaddr, self.port)
+        }
+    }
 }
 
 pub struct Group {
@@ -631,14 +639,7 @@ impl Backend {
     }
 
     fn list_all() -> Result<(), anyhow::Error> {
-        let mut table = InfoTable::new(vec![
-            "gid:id",
-            "if / lb_endpoint",
-            "src_ip",
-            "",
-            "backend",
-            "options",
-        ]);
+        let mut table = InfoTable::new(vec!["gid:id", "if / lb", "", "backend", "options"]);
         let backends = Self::backends()?;
         let mut cache: StdHashMap<u16, String> = StdHashMap::new();
 
@@ -655,9 +656,8 @@ impl Backend {
             table.push_row(vec![
                 format!("{}:{}", key.gid, key.index),
                 ep_str.to_string(),
-                Self::be_src_ip_string(&be),
                 "<->".to_string(),
-                bep.to_string(),
+                bep.to_string_noproto(),
                 bep.options.to_string(),
             ]);
         }
