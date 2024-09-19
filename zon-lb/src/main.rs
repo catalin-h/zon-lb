@@ -327,13 +327,15 @@ enum NeighAction {
     /// List neighbor entries
     List {
         /// Filter options:
-        /// all    By default only neighbors with existing
-        ///        interfaces are displayed.
-        ///        To list all entries must pass this argument.
-        ///        This filter applies last.
-        /// ipv4   List only IPv4 or ARP entries
-        /// ipv6   List only IPv6 neighbor entries
-        /// ipmask List all IPs with this mask (not the same as netmask)
+        /// all      By default only neighbors with existing
+        ///          interfaces are displayed.
+        ///          To list all entries must pass this argument.
+        ///          This filter applies last.
+        /// ipv4     List only IPv4 or ARP entries
+        /// ipv6     List only IPv6 neighbor entries
+        /// ipmask=M List all IPs like this mask M (not the same as netmask)
+        ///          Usage: ipmask=10.0.0.0 - show all IPs like 10.2.0.1 that
+        ///          share the same bits as the 10.0.0.0
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
@@ -345,7 +347,9 @@ enum NeighAction {
         ///           To remove all pass this flag.
         /// ip=<addr> Removes only the entry with this ip address.
         ///           Can't be used with other filters.
-        /// ipmask    Removes all IPs with this mask (not the same as netmask)
+        /// ipmask=M  Removes all IPs like this mask (not the same as netmask)
+        ///           Usage: ipmask=10.0.0.0 - remove all IPs like 10.2.0.1 that
+        ///           share the same bits as the 10.0.0.0
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
@@ -381,18 +385,18 @@ enum FibAction {
     /// List FIB entries
     List {
         /// Filter options:
-        /// * `all`  : By default only FIB with existing interfaces are displayed.
-        ///            To list all entries must pass this argument. This filter applies last.
-        /// * `ipv4` : List only IPv4 FIB entries
-        /// * `ipv6` : List only IPv6 FIB entries
+        /// all   By default only FIB with existing interfaces are displayed.
+        ///       To list all entries must pass this argument. This filter applies last.
+        /// ipv4  List only IPv4 FIB entries
+        /// ipv6  List only IPv6 FIB entries
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
     /// Remove FIB entries
     Remove {
         /// Filter options:
-        /// * `all`  : By default only FIB with non-existing interfaces are removed.
-        ///            To remove all pass this flag.
+        /// all  By default only FIB with non-existing interfaces are removed.
+        ///      To remove all pass this flag.
         #[clap(verbatim_doc_comment)]
         filter_options: Vec<String>,
     },
