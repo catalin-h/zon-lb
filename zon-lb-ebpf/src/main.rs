@@ -995,14 +995,16 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL.
-        update_inet_csum(
-            ctx,
-            ipv4hdr,
-            &l4ctx,
-            nat.lb_ip,
-            nat.ip_src,
-            l4ctx.dst_port << 16 | (nat.port_lb as u32),
-        )?;
+        if !nat.flags.contains(EPFlags::DSR_L2) {
+            update_inet_csum(
+                ctx,
+                ipv4hdr,
+                &l4ctx,
+                nat.lb_ip,
+                nat.ip_src,
+                l4ctx.dst_port << 16 | (nat.port_lb as u32),
+            )?;
+        }
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             // TODO: Try use:
@@ -1200,14 +1202,16 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Update both IP and Transport layers checksums along with the source
     // and destination addresses and ports and others like TTL.
-    update_inet_csum(
-        ctx,
-        ipv4hdr,
-        &l4ctx,
-        lb_addr,
-        be.address[0],
-        (be.port as u32) << 16 | l4ctx.src_port,
-    )?;
+    if !be.flags.contains(EPFlags::DSR_L2) {
+        update_inet_csum(
+            ctx,
+            ipv4hdr,
+            &l4ctx,
+            lb_addr,
+            be.address[0],
+            (be.port as u32) << 16 | l4ctx.src_port,
+        )?;
+    }
 
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
     let macs = unsafe { &mut *macs };
@@ -1244,16 +1248,41 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // - ip6tnl
     // - fou
 
+    // NOTE: for DSR the key does not change.
+    //
+    // Normal NAT mappings
+    //             Request         Reply
+    // ----------------------------------
+    // ip_be_src   Backend         Source
+    // ip_lb_dst   Dest | src_ip   Dest
+    // port_be_src Backend         Source
+    // port_lb_dst Source          Dest
+    //
+    // DSR NAT mappings: swap source with dest
+    //             Request         Reply
+    // ----------------------------------
+    // ip_be_src   Dest            Source
+    // ip_lb_dst   Source          Dest
+    // port_be_src Dest            Source
+    // port_lb_dst Source          Dest
     let ip_src = natkey.ip_be_src;
     let lb_ip = natkey.ip_lb_dst;
-
-    natkey.ip_be_src = be_addr;
-    natkey.ip_lb_dst = lb_addr;
-    natkey.port_be_src = be.port;
-    // NOTE: the LB will use the source port since there can be multiple
-    // connection to the same backend and it needs to track all of them.
-    // NOTE: On ICMP request is set with the echo id.
-    natkey.port_lb_dst = l4ctx.src_port as u16;
+    if be.flags.contains(EPFlags::DSR_L2) {
+        // NOTE: for DSR L2 the reply flow will search for source as current destination
+        // and destination as current source.
+        natkey.ip_be_src = lb_ip;
+        natkey.ip_lb_dst = ip_src;
+        natkey.port_be_src = l4ctx.dst_port as u16;
+        natkey.port_lb_dst = l4ctx.src_port as u16;
+    } else {
+        natkey.ip_be_src = be_addr;
+        natkey.ip_lb_dst = lb_addr;
+        natkey.port_be_src = be.port;
+        // NOTE: the LB will use the source port since there can be multiple
+        // connection to the same backend and it needs to track all of them.
+        // NOTE: On ICMP request is set with the echo id.
+        natkey.port_lb_dst = l4ctx.src_port as u16;
+    }
 
     // Update the nat entry only if the source details changes.
     // This will boost performance and less error prone on tests like iperf.
