@@ -898,14 +898,16 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // TBD: for crc32 use crc32_off
 
-        update_inet_csum(
-            ctx,
-            ipv6hdr,
-            &l4ctx,
-            unsafe { &nat.lb_ip.addr32 },
-            unsafe { &nat.ip_src.addr32 },
-            l4ctx.base.dst_port << 16 | nat.port_lb as u32,
-        )?;
+        if !nat.flags.contains(EPFlags::DSR_L2) {
+            update_inet_csum(
+                ctx,
+                ipv6hdr,
+                &l4ctx,
+                unsafe { &nat.lb_ip.addr32 },
+                unsafe { &nat.ip_src.addr32 },
+                l4ctx.base.dst_port << 16 | nat.port_lb as u32,
+            )?;
+        }
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
@@ -1094,14 +1096,16 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     };
 
-    update_inet_csum(
-        ctx,
-        ipv6hdr,
-        &l4ctx,
-        lb_addr,
-        &be.address,
-        (be.port as u32) << 16 | l4ctx.base.src_port,
-    )?;
+    if !be.flags.contains(EPFlags::DSR_L2) {
+        update_inet_csum(
+            ctx,
+            ipv6hdr,
+            &l4ctx,
+            lb_addr,
+            &be.address,
+            (be.port as u32) << 16 | l4ctx.base.src_port,
+        )?;
+    }
 
     let flow = unsafe { *(ipv6hdr as *const Ipv6Hdr as *const u32) };
 
@@ -1159,14 +1163,39 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // connection to the same backend and it needs to track all of them.
     // On reply the source port is used to identify the connection track entry.
 
+    // NOTE: for DSR the key does not change.
+    //
+    // Normal NAT mappings
+    //             Request         Reply
+    // ----------------------------------
+    // ip_be_src   Backend         Source
+    // ip_lb_dst   Dest | src_ip   Dest
+    // port_be_src Backend         Source
+    // port_lb_dst Source          Dest
+    //
+    // DSR NAT mappings: swap source with dest
+    //             Request         Reply
+    // ----------------------------------
+    // ip_be_src   Dest            Source
+    // ip_lb_dst   Source          Dest
+    // port_be_src Dest            Source
+    // port_lb_dst Source          Dest
     let ip_src = nat6key.ip_be_src;
     let lb_ip = nat6key.ip_lb_dst;
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
-
-    nat6key.ip_lb_dst = Inet6U::from(lb_addr);
-    nat6key.ip_be_src = Inet6U::from(&be.address);
-    nat6key.port_be_src = be.port as u32;
-    nat6key.port_lb_dst = l4ctx.base.src_port;
+    if be.flags.contains(EPFlags::DSR_L2) {
+        // NOTE: for DSR L2 the reply flow will search for source as current destination
+        // and destination as current source.
+        nat6key.ip_be_src = lb_ip;
+        nat6key.ip_lb_dst = ip_src;
+        nat6key.port_be_src = l4ctx.base.dst_port;
+        nat6key.port_lb_dst = l4ctx.base.src_port;
+    } else {
+        nat6key.ip_lb_dst = Inet6U::from(lb_addr);
+        nat6key.ip_be_src = Inet6U::from(&be.address);
+        nat6key.port_be_src = be.port as u32;
+        nat6key.port_lb_dst = l4ctx.base.src_port;
+    }
 
     // Update the nat entry only if the source details changes.
     // This will boost performance and less error prone on tests like iperf.
