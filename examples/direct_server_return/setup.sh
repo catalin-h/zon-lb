@@ -60,7 +60,7 @@ setup_ns() {
     ip link set dev $IF0 up
     ip -netns $NS link set dev $IF1 up
 
-    if [ "$2" = "1" ]; then
+    if [ ! -z "$3" ]; then
       printf "Setting VIPs to lo:\n\t$VIP\n\t$VIP6\n"
       # Set VIP address for lo inside backend netns
       # Note: the VIP must be a single IP or set 32 as CIDR block
@@ -96,18 +96,18 @@ setup_ns() {
     # the hw checsum offload on TX for the veth interface fixes the TCP bad
     # checksum issue.
     printf "disabling tx-checksumming for $IF0 ...\n"
-    ethtool -K $IF0 tx-checksumming off >> /dev/null
-    ethtool -k $IF0 | grep tx-checksumming
+    #ethtool -K $IF0 tx-checksumming off >> /dev/null
+    #ethtool -k $IF0 | grep tx-checksumming
 
     # ?
     printf "disabling tx-checksumming for $NS/$IF1 ...\n"
-    ip netns exec $NS ethtool -K $IF1 tx-checksumming off >> /dev/null
-    ip netns exec $NS ethtool -k $IF1 | grep tx-checksumming
+    #ip netns exec $NS ethtool -K $IF1 tx-checksumming off >> /dev/null
+    #ip netns exec $NS ethtool -k $IF1 | grep tx-checksumming
 
     printf "$LINK link created!\n"
   fi
 
-  if [ "$2" != "" ]; then
+  if [ ! -z "$2" ]; then
     MTU=$2
     if [ "$MTU" -lt "1280" ]; then
       printf "MTU=$MTU is less than IPv6 min MTU=1280\n"
@@ -181,7 +181,7 @@ if [ "${key}" != "mtu" ] && [ "${key}" != "" ] ; then
 fi
 
 setup_ns $NSA
-setup_ns $NSB $value 1
+setup_ns $NSB "$value" 1
 
 printf "setup done!\n"
 
