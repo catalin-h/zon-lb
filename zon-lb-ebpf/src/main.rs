@@ -833,7 +833,10 @@ struct L4Context {
 
 impl L4Context {
     fn new_for_ipv4(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, mut offset: usize) -> Result<Self, ()> {
-        // All fragments besides the fragment at offset 0 requires the cached L4 info.
+        // For fragments, the L4 data (ports, sequences, etc.) must be obtained
+        // from L4 info cache. The exception is the first fragment in the sequence
+        // at offset 0 which contains the L4 info and it is used to update the L4 cache
+        // for the next fragments.
         // The fragment offset field layout is like this:
         // 0b[1111_1111][0 DF MF 1_1111]
         if (ipv4hdr.frag_off & 0xFF1F) != 0 {
