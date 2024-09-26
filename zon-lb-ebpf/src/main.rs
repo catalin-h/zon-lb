@@ -593,9 +593,10 @@ fn update_inet_csum(
     dst: u32,
     port_combo: u32,
 ) -> Result<(), ()> {
+    // TODO: just set the addresses if l4ctx.check_off == 0
     let cso = update_ipv4hdr(ipv4hdr, src, dst);
 
-    if l4ctx.check_off != 0 && port_combo != 0 && ipv4hdr.proto != IpProto::Icmp {
+    if l4ctx.check_off != 0 {
         // NOTE: Update the csum from TCP/UDP header. This csum
         // is computed from the pseudo header (e.g. addresses
         // from IP header) + header (checksum is 0) + the
