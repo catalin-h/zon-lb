@@ -1178,7 +1178,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     let (fib, fib_rc) = fetch_fib4(ctx, ipv4hdr, lb_addr, be_addr, now)?;
-    let fib = unsafe { &*fib };
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
             if fib.mtu as u16 >= ipv4hdr.tot_len.to_be() {
@@ -1393,10 +1392,10 @@ fn fetch_fib4(
     src: u32,
     dst: u32,
     now: u32,
-) -> Result<(*const FibEntry, u32), ()> {
-    match unsafe { ZLB_FIB4.get_ptr(&dst) } {
+) -> Result<(&'static FibEntry, u32), ()> {
+    match unsafe { ZLB_FIB4.get(&dst) } {
         Some(entry) => {
-            if now <= unsafe { (*entry).expiry } {
+            if now <= (*entry).expiry {
                 return Ok((entry, bindings::BPF_FIB_LKUP_RET_SUCCESS as u32));
             }
         }
@@ -1465,7 +1464,7 @@ fn fetch_fib4(
         }
     }
 
-    match unsafe { ZLB_FIB4.get_ptr(&dst) } {
+    match unsafe { ZLB_FIB4.get(&dst) } {
         Some(entry) => Ok((entry, rc as u32)),
         None => Err(()),
     }
