@@ -797,7 +797,6 @@ fn log_packet(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
 /// big-endian value combo: 0b[1111_1111][0 DF MF 1_1111]
 const MORE_FRAGMENTS: u32 = 1 << 5;
 
-#[inline(always)]
 fn cache_frag_info(ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
     // Cache only the first fragment contains the L4 header
     if (l4ctx.flags & MORE_FRAGMENTS) != 0 {
