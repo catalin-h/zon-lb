@@ -963,9 +963,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // for e.g. the request.
     // Also we can ignore all non-connection protocols like icmp.
     if let Some(&nat) = unsafe { ZLB_CONNTRACK4.get(&natkey) } {
-        // Update the total processed packets when they are from a tracked connection
-        stats_inc(stats::PACKETS);
-
         if feat.log_enabled(Level::Info) {
             info!(
                 ctx,
@@ -975,23 +972,12 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             );
         }
 
-        // Unlikely
-        if nat.ip_src == src_addr && l4ctx.src_port == l4ctx.dst_port {
-            if feat.log_enabled(Level::Error) {
-                error!(
-                    ctx,
-                    "[out] drop same src {:i}:{}",
-                    nat.ip_src.to_be(),
-                    (l4ctx.src_port as u16).to_be()
-                );
-            }
-            stats_inc(stats::XDP_DROP);
-            return Ok(xdp_action::XDP_DROP);
-        }
-
         if ipv4hdr.tot_len.to_be() > nat.mtu {
             return send_dtb(ctx, ipv4hdr, &l4ctx, nat.mtu);
         }
+
+        // Update the total processed packets when they are from a tracked connection
+        stats_inc(stats::PACKETS);
 
         // Save fragment before updating the header
         cache_frag_info(ipv4hdr, &l4ctx);
@@ -1060,18 +1046,48 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    let group = match unsafe {
+    let be = match unsafe {
         ZLB_LB4.get(&EP4 {
             address: dst_addr,
             port: (l4ctx.dst_port as u16),
             proto: ipv4hdr.proto as u16,
         })
     } {
-        Some(group) => *group,
-        None => {
+        Some(group) => {
             if feat.log_enabled(Level::Info) {
-                info!(ctx, "No LB4 entry");
+                info!(ctx, "[in] gid: {} match", group.gid);
             }
+
+            if group.becount == 0 {
+                if feat.log_enabled(Level::Info) {
+                    info!(ctx, "[in] gid: {}, no backends", group.gid);
+                }
+
+                stats_inc(stats::XDP_PASS);
+                stats_inc(stats::LB_ERROR_NO_BE);
+                return Ok(xdp_action::XDP_PASS);
+            }
+
+            let index = (((src_addr >> 16) ^ src_addr) ^ l4ctx.src_port) as u16 % group.becount;
+            match unsafe {
+                ZLB_BACKENDS.get(&BEKey {
+                    gid: group.gid,
+                    index,
+                })
+            } {
+                Some(be) => be,
+                None => {
+                    if feat.log_enabled(Level::Info) {
+                        info!(ctx, "[in] gid: {}, no BE at: {}", group.gid, index);
+                    }
+
+                    stats_inc(stats::XDP_PASS);
+                    stats_inc(stats::LB_ERROR_BAD_BE);
+                    return Ok(xdp_action::XDP_PASS);
+                }
+            }
+        }
+        None => {
             // *** This is the exit point for non-LB packets ***
             // These packets are not counted as they are not destined
             // to any backend group. By counting them would mean that
@@ -1083,38 +1099,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Update the total processed packets when they are destined to a known backend group
     stats_inc(stats::PACKETS);
-
-    if feat.log_enabled(Level::Info) {
-        info!(ctx, "[in] gid: {} match", group.gid);
-    }
-
-    if group.becount == 0 {
-        if feat.log_enabled(Level::Info) {
-            info!(ctx, "[in] gid: {}, no backends", group.gid);
-        }
-
-        stats_inc(stats::XDP_PASS);
-        stats_inc(stats::LB_ERROR_NO_BE);
-        return Ok(xdp_action::XDP_PASS);
-    }
-
-    let key = BEKey {
-        gid: group.gid,
-        index: (((src_addr >> 16) ^ src_addr) ^ l4ctx.src_port) as u16 % group.becount,
-    };
-
-    let be = match unsafe { ZLB_BACKENDS.get(&key) } {
-        Some(be) => be,
-        None => {
-            if feat.log_enabled(Level::Info) {
-                info!(ctx, "[in] gid: {}, no BE at: {}", group.gid, key.index);
-            }
-
-            stats_inc(stats::XDP_PASS);
-            stats_inc(stats::LB_ERROR_BAD_BE);
-            return Ok(xdp_action::XDP_PASS);
-        }
-    };
 
     if feat.log_enabled(Level::Info) {
         info!(
@@ -1210,7 +1194,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             ipv4hdr,
             &l4ctx,
             lb_addr,
-            be.address[0],
+            be_addr,
             (be.port as u32) << 16 | l4ctx.src_port,
         )?;
     }
