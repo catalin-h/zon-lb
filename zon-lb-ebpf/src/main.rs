@@ -7,7 +7,7 @@ use aya_ebpf::{
     bindings::{
         self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_FIB_LKUP_RET_BLACKHOLE,
         BPF_FIB_LKUP_RET_PROHIBIT, BPF_FIB_LKUP_RET_SUCCESS, BPF_FIB_LKUP_RET_UNREACHABLE,
-        BPF_F_NO_COMMON_LRU,
+        BPF_F_MMAPABLE, BPF_F_NO_COMMON_LRU,
     },
     helpers::{
         bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect, bpf_xdp_adjust_head, bpf_xdp_adjust_tail,
@@ -51,6 +51,8 @@ static FEATURES: u64 = 1;
 static ZLB_RUNVAR: Array<u64> = Array::with_max_entries(runvars::MAX_RUNTIME_VARS, BPF_F_MMAPABLE);
 
 /// Stores the program statistics.
+/// NOTE: can't use BPF_F_MMAPABLE on BPF_MAP_TYPE_PERCPU_ARRAY. This flag is
+/// available only for BPF_MAP_TYPE_ARRAY.
 #[map]
 static ZLB_STATS: PerCpuArray<u64> = PerCpuArray::with_max_entries(stats::MAX, 0);
 
@@ -84,6 +86,8 @@ type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 /// upon returning the backend reply.
 /// NOTE: BPF_F_NO_COMMON_LRU will increase the performance but in the user space
 /// the conntrack listing will be affected as there are different LRU lists per CPU.
+/// NOTE: This map needs to be global for all CPUs and any programs as we don't
+/// know on which interface the packet can arrive.
 #[map]
 static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
