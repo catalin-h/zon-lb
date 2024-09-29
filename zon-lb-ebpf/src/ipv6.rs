@@ -1257,7 +1257,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 }
 
 #[map]
-static ZLB_CT_CACHE: LruPerCpuHashMap<u64, u32> = LruPerCpuHashMap::with_max_entries(256, 0);
+static ZLB_CT_CACHE: LruPerCpuHashMap<u64, u32> =
+    LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
 
 /// This buffer must hold any IPv6 per-fragment header extentions plus
 /// the largest supported protocol header.For now Tcp has the biggest header.
