@@ -48,7 +48,7 @@ static FEATURES: u64 = 1;
 
 /// Stores the program instance runtime (unfused) variables.
 #[map]
-static ZLB_RUNVAR: Array<u64> = Array::with_max_entries(runvars::MAX_RUNTIME_VARS, 0);
+static ZLB_RUNVAR: Array<u64> = Array::with_max_entries(runvars::MAX_RUNTIME_VARS, BPF_F_MMAPABLE);
 
 /// Stores the program statistics.
 #[map]
