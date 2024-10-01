@@ -13,7 +13,7 @@ use aya_ebpf::{
         bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect, bpf_xdp_adjust_head, bpf_xdp_adjust_tail,
     },
     macros::{map, xdp},
-    maps::{Array, DevMap, HashMap, LruHashMap, PerCpuArray},
+    maps::{Array, DevMap, HashMap, LruHashMap, LruPerCpuHashMap, PerCpuArray},
     programs::XdpContext,
     EbpfContext,
 };
@@ -91,6 +91,7 @@ type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 #[map]
 static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
+// Per CPU ?
 type HMFIB4 = HashMap<u32, FibEntry>;
 /// Fib used to cache the dest ipv4 to smac/dmac and derived source ip mapping.
 /// The derived source ip is the address used as source when redirecting the
@@ -932,6 +933,10 @@ impl L4Context {
     }
 }
 
+#[map]
+static ZLB_CT4_CACHE: LruPerCpuHashMap<NAT4Key, NAT4Value> =
+    LruPerCpuHashMap::with_max_entries(16, 0);
+
 // TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
@@ -962,7 +967,23 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     };
 
     // TBD: monitor RST flag to remove the conntrack entry
-    match unsafe { ZLB_CONNTRACK4.get(&natkey) } {
+    // NOTE: the ref returned by map.get() can be accessed only
+    // within the pattern match scope.
+
+    let (natopt, not_cached) = unsafe {
+        match ZLB_CT4_CACHE.get(&natkey) {
+            Some(nat) => {
+                if nat.lb_ip == 0 {
+                    (ZLB_CONNTRACK4.get(&natkey), true)
+                } else {
+                    (Some(nat), false)
+                }
+            }
+            None => (ZLB_CONNTRACK4.get(&natkey), true),
+        }
+    };
+
+    match natopt {
         Some(nat) => {
             if feat.log_enabled(Level::Info) {
                 info!(
@@ -982,6 +1003,11 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
             // Save fragment before updating the header
             cache_frag_info(ipv4hdr, &l4ctx);
+
+            if not_cached {
+                let _ = ZLB_CT4_CACHE.insert(&natkey, nat, 0);
+                error!(ctx, "cache nat {:i}", nat.lb_ip);
+            }
 
             // Update both IP and Transport layers checksums along with the source
             // and destination addresses and ports and others like TTL.
@@ -1044,7 +1070,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
             return Ok(action);
         }
-        None => {}
+        None => { /* Check request */ }
     };
 
     // === request ===
