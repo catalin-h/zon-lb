@@ -13,7 +13,7 @@ use aya_ebpf::{
         bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect, bpf_xdp_adjust_head, bpf_xdp_adjust_tail,
     },
     macros::{map, xdp},
-    maps::{Array, DevMap, HashMap, LruHashMap, LruPerCpuHashMap, PerCpuArray},
+    maps::{Array, DevMap, HashMap, LruHashMap, PerCpuArray},
     programs::XdpContext,
     EbpfContext,
 };
@@ -933,10 +933,6 @@ impl L4Context {
     }
 }
 
-#[map]
-static ZLB_CT4_CACHE: LruPerCpuHashMap<NAT4Key, NAT4Value> =
-    LruPerCpuHashMap::with_max_entries(16, 0);
-
 // TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
@@ -958,7 +954,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         log_packet(ctx, &ipv4hdr, &l4ctx);
     }
 
-    let mut natkey = NAT4Key {
+    let natkey = NAT4Key {
         ip_be_src: src_addr,
         ip_lb_dst: dst_addr,
         port_be_src: l4ctx.src_port as u16,
@@ -969,20 +965,9 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // TBD: monitor RST flag to remove the conntrack entry
     // NOTE: the ref returned by map.get() can be accessed only
     // within the pattern match scope.
-    let (natopt, not_cached) = unsafe {
-        match ZLB_CT4_CACHE.get(&natkey) {
-            Some(nat) => {
-                if nat.lb_ip == 0 {
-                    (ZLB_CONNTRACK4.get(&natkey), true)
-                } else {
-                    (Some(nat), false)
-                }
-            }
-            None => (ZLB_CONNTRACK4.get(&natkey), true),
-        }
-    };
-
-    if let Some(nat) = natopt {
+    // NOTE: using a cache map for the contrack map doesn't have
+    // any impact on the total performance.
+    if let Some(nat) = unsafe { ZLB_CONNTRACK4.get(&natkey) } {
         if feat.log_enabled(Level::Info) {
             info!(
                 ctx,
@@ -1059,11 +1044,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         if feat.log_enabled(Level::Info) {
             info!(ctx, "[out] action: {}", action);
-        }
-
-        if not_cached {
-            let _ = ZLB_CT4_CACHE.insert(&natkey, nat, 0);
-            error!(ctx, "cache nat {:i}", nat.lb_ip);
         }
 
         return Ok(action);
@@ -1284,6 +1264,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // port_lb_dst Source          Dest
     let ip_src = natkey.ip_be_src;
     let lb_ip = natkey.ip_lb_dst;
+    let mut natkey = natkey;
     if be.flags.contains(EPFlags::DSR_L2) {
         // NOTE: for DSR L2 the reply flow will search for source as current destination
         // and destination as current source.
