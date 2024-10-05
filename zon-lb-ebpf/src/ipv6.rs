@@ -869,7 +869,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // BUG: can't use match expr. here or map.get_ptr() as aya generates code that
     // throws the `relocating function` error
-    if let Some(&nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
+    if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
@@ -910,8 +910,14 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
+            // NOTE: BUG: don't use the implicit array copy (*a = mac;)
+            // as aya will generate code that will throw the `relocation function` error
+            // during the program load.
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
-            unsafe { *macs = nat.mac_addresses };
+            let macs = unsafe { &mut *macs };
+            macs[2] = nat.mac_addresses[2];
+            macs[1] = nat.mac_addresses[1];
+            macs[0] = nat.mac_addresses[0];
 
             // NOTE: After this call all references derived from ctx must be recreated
             // since this method can change the packet limits.
