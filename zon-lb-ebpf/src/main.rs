@@ -13,7 +13,7 @@ use aya_ebpf::{
         bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect, bpf_xdp_adjust_head, bpf_xdp_adjust_tail,
     },
     macros::{map, xdp},
-    maps::{Array, DevMap, HashMap, LruHashMap, PerCpuArray},
+    maps::{Array, DevMap, HashMap, LruHashMap, LruPerCpuHashMap, PerCpuArray},
     programs::XdpContext,
     EbpfContext,
 };
@@ -932,6 +932,22 @@ impl L4Context {
         self.offset + self.check_off
     }
 }
+
+struct CTCache {
+    time: u32,
+    /// Backend flags merged with conntrack ones
+    flags: EPFlags,
+    mtu: u16,
+    be_port: u16,
+    be_addr: u32,
+    ip_src: u32,
+    ifindex: u32,
+    macs: [u32; 3],
+}
+
+#[map]
+static ZLB_CT4_CACHE: LruPerCpuHashMap<NAT4Key, CTCache> =
+    LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
 
 // TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
