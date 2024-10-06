@@ -91,7 +91,6 @@ type LHM4 = LruHashMap<NAT4Key, NAT4Value>;
 #[map]
 static mut ZLB_CONNTRACK4: LHM4 = LHM4::pinned(MAX_CONNTRACKS, BPF_F_NO_COMMON_LRU);
 
-// Per CPU ?
 type HMFIB4 = HashMap<u32, FibEntry>;
 /// Fib used to cache the dest ipv4 to smac/dmac and derived source ip mapping.
 /// The derived source ip is the address used as source when redirecting the
@@ -949,6 +948,84 @@ struct CTCache {
 static ZLB_CT4_CACHE: LruPerCpuHashMap<NAT4Key, CTCache> =
     LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
 
+// BUG: bpf_linker error if not explicitly use attribute inline(always)
+#[inline(always)]
+fn ct4_handler(
+    ctx: &XdpContext,
+    l2ctx: &L2Context,
+    l4ctx: &L4Context,
+    ipv4hdr: &mut Ipv4Hdr,
+    ctnat: &CTCache,
+    feat: &Features,
+) -> Result<u32, ()> {
+    if ipv4hdr.tot_len.to_be() > ctnat.mtu {
+        return send_dtb(ctx, ipv4hdr, &l4ctx, ctnat.mtu);
+    }
+
+    stats_inc(stats::PACKETS);
+
+    // NOTE: No need to save fragment because this handler is called
+    // after the main flows (request & response) caches this conntrack
+    // cache handler.
+
+    if !ctnat.flags.contains(EPFlags::DSR_L2) {
+        // Update both IP and Transport layers checksums along with the source
+        // and destination addresses and ports and others like TTL
+        update_inet_csum(
+            ctx,
+            ipv4hdr,
+            &l4ctx,
+            ctnat.ip_src,
+            ctnat.be_addr,
+            (ctnat.be_port as u32) << 16 | l4ctx.src_port,
+        )?;
+    }
+
+    if !ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
+        // Send back the packet to the same interface
+        if ctnat.flags.contains(EPFlags::XDP_TX) {
+            if feat.log_enabled(Level::Info) {
+                info!(ctx, "in => xdp_tx");
+            }
+
+            // TODO: swap mac addresses
+
+            stats_inc(stats::XDP_TX);
+
+            return Ok(xdp_action::XDP_TX);
+        }
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "in => xdp_pass");
+        }
+
+        stats_inc(stats::XDP_PASS);
+
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    // === redirect path ===
+
+    let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+    let macs = unsafe { &mut *macs };
+    macs[2] = ctnat.macs[2];
+    macs[1] = ctnat.macs[1];
+    macs[0] = ctnat.macs[0];
+
+    // NOTE: This call can shrink or enlarge the packet so all pointers
+    // to headers are invalidated.
+    l2ctx.vlan_update(ctx, 0, &feat)?;
+
+    // In case of redirect failure just try to query the FIB again
+    let action = redirect_txport(ctx, &feat, ctnat.ifindex);
+
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "[c-redirect] oif:{}, action={}", ctnat.ifindex, action);
+    }
+
+    return Ok(action);
+}
+
 // TODO: check if moving the XdpContext boosts performance
 fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
@@ -977,6 +1054,14 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         port_lb_dst: l4ctx.dst_port as u16,
         proto: ipv4hdr.proto as u32,
     };
+
+    let now = coarse_ktime();
+
+    if let Some(ctnat) = unsafe { ZLB_CT4_CACHE.get(&natkey) } {
+        if ctnat.time > now {
+            return ct4_handler(ctx, &l2ctx, &l4ctx, ipv4hdr, ctnat, &feat);
+        }
+    }
 
     // TBD: monitor RST flag to remove the conntrack entry
     // NOTE: the ref returned by map.get() can be accessed only
@@ -1184,8 +1269,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         dst_addr
     };
 
-    let now = coarse_ktime();
-
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     let (fib, fib_rc) = fetch_fib4(ctx, ipv4hdr, lb_addr, be_addr, now)?;
     match fib_rc {
@@ -1252,6 +1335,26 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     /* === connection tracking === */
+
+    // Add conntrack cache entry to skip searching for the group,
+    // the backend and the fib entry that provides the neighbor
+    // mac address.
+    // NOTE: Since the cache is a per CPU map the insert with flags=0
+    // will update only the value for the current CPU.
+    let _ = ZLB_CT4_CACHE.insert(
+        &natkey,
+        &CTCache {
+            time: now + 30,
+            flags: be.flags,
+            mtu: fib.mtu as u16,
+            be_port: be.port,
+            be_addr,
+            ip_src: lb_addr,
+            ifindex: fib.ifindex,
+            macs: fib.macs,
+        },
+        0,
+    );
 
     // TBD: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
@@ -1333,7 +1436,11 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             0,
         )
     } {
-        Ok(()) => 0,
+        Ok(()) => {
+            // TODO: add counter for how many times the conntrack cache is updated
+            // stats_inc(stats::CT_ERROR_UPDATE);
+            0
+        }
         Err(ret) => {
             stats_inc(stats::CT_ERROR_UPDATE);
             ret
