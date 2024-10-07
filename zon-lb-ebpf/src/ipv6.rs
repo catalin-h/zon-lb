@@ -898,15 +898,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // TBD: for crc32 use crc32_off
 
+        let port_combo = l4ctx.base.dst_port << 16 | nat.port_lb as u32;
+        let src_addr = unsafe { &nat.lb_ip.addr32 };
+        let dst_addr = unsafe { &nat.ip_src.addr32 };
         if !nat.flags.contains(EPFlags::DSR_L2) {
-            update_inet_csum(
-                ctx,
-                ipv6hdr,
-                &l4ctx,
-                unsafe { &nat.lb_ip.addr32 },
-                unsafe { &nat.ip_src.addr32 },
-                l4ctx.base.dst_port << 16 | nat.port_lb as u32,
-            )?;
+            update_inet_csum(ctx, ipv6hdr, &l4ctx, src_addr, dst_addr, port_combo)?;
         }
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
@@ -1027,15 +1023,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         );
     }
 
+    let port_combo = (be.port as u32) << 16 | l4ctx.base.src_port;
+
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
-        update_destination_inet_csum(
-            ctx,
-            ipv6hdr,
-            &l4ctx.base,
-            &be.address,
-            (be.port as u32) << 16 | l4ctx.base.src_port,
-        )?;
+        update_destination_inet_csum(ctx, ipv6hdr, &l4ctx.base, &be.address, port_combo)?;
 
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
@@ -1103,14 +1095,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     };
 
     if !be.flags.contains(EPFlags::DSR_L2) {
-        update_inet_csum(
-            ctx,
-            ipv6hdr,
-            &l4ctx,
-            lb_addr,
-            &be.address,
-            (be.port as u32) << 16 | l4ctx.base.src_port,
-        )?;
+        update_inet_csum(ctx, ipv6hdr, &l4ctx, lb_addr, &be.address, port_combo)?;
     }
 
     let flow = unsafe { *(ipv6hdr as *const Ipv6Hdr as *const u32) };
