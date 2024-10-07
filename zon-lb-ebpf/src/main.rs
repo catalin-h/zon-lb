@@ -936,10 +936,10 @@ struct CTCache {
     time: u32,
     /// Backend flags merged with conntrack ones
     flags: EPFlags,
-    mtu: u16,
-    be_port: u16,
-    be_addr: u32,
-    ip_src: u32,
+    mtu: u32,
+    src_addr: u32,
+    dst_addr: u32,
+    port_combo: u32,
     ifindex: u32,
     macs: [u32; 3],
 }
@@ -958,8 +958,8 @@ fn ct4_handler(
     ctnat: &CTCache,
     feat: &Features,
 ) -> Result<u32, ()> {
-    if ipv4hdr.tot_len.to_be() > ctnat.mtu {
-        return send_dtb(ctx, ipv4hdr, &l4ctx, ctnat.mtu);
+    if ipv4hdr.tot_len.to_be() > ctnat.mtu as u16 {
+        return send_dtb(ctx, ipv4hdr, &l4ctx, ctnat.mtu as u16);
     }
 
     stats_inc(stats::PACKETS);
@@ -975,9 +975,9 @@ fn ct4_handler(
             ctx,
             ipv4hdr,
             &l4ctx,
-            ctnat.ip_src,
-            ctnat.be_addr,
-            (ctnat.be_port as u32) << 16 | l4ctx.src_port,
+            ctnat.src_addr,
+            ctnat.dst_addr,
+            ctnat.port_combo,
         )?;
     }
 
@@ -1090,16 +1090,25 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL.
+        let port_combo = l4ctx.dst_port << 16 | (nat.port_lb as u32);
         if !nat.flags.contains(EPFlags::DSR_L2) {
-            update_inet_csum(
-                ctx,
-                ipv4hdr,
-                &l4ctx,
-                nat.lb_ip,
-                nat.ip_src,
-                l4ctx.dst_port << 16 | (nat.port_lb as u32),
-            )?;
+            update_inet_csum(ctx, ipv4hdr, &l4ctx, nat.lb_ip, nat.ip_src, port_combo)?;
         }
+
+        let _ = ZLB_CT4_CACHE.insert(
+            &natkey,
+            &CTCache {
+                time: now + 30,
+                flags: nat.flags,
+                mtu: nat.mtu as u32,
+                src_addr: nat.lb_ip,
+                dst_addr: nat.ip_src,
+                port_combo,
+                ifindex: nat.ifindex,
+                macs: nat.mac_addresses,
+            },
+            /* update or insert */ 0,
+        );
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             // TODO: Try use:
@@ -1222,6 +1231,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     let be_addr = be.address[0];
+    let port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
     // Save fragment before updating the header and before forwading the packet
     cache_frag_info(ipv4hdr, &l4ctx);
@@ -1230,14 +1240,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
-        update_inet_csum(
-            ctx,
-            ipv4hdr,
-            &l4ctx,
-            dst_addr,
-            be_addr,
-            (be.port as u32) << 16 | l4ctx.src_port,
-        )?;
+        update_inet_csum(ctx, ipv4hdr, &l4ctx, dst_addr, be_addr, port_combo)?;
 
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
@@ -1299,14 +1302,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // Update both IP and Transport layers checksums along with the source
     // and destination addresses and ports and others like TTL.
     if !be.flags.contains(EPFlags::DSR_L2) {
-        update_inet_csum(
-            ctx,
-            ipv4hdr,
-            &l4ctx,
-            lb_addr,
-            be_addr,
-            (be.port as u32) << 16 | l4ctx.src_port,
-        )?;
+        update_inet_csum(ctx, ipv4hdr, &l4ctx, lb_addr, be_addr, port_combo)?;
     }
 
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
@@ -1346,14 +1342,14 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         &CTCache {
             time: now + 30,
             flags: be.flags,
-            mtu: fib.mtu as u16,
-            be_port: be.port,
-            be_addr,
-            ip_src: lb_addr,
+            mtu: fib.mtu,
+            src_addr: lb_addr,
+            dst_addr: be_addr,
+            port_combo,
             ifindex: fib.ifindex,
             macs: fib.macs,
         },
-        0,
+        /* update or insert */ 0,
     );
 
     // TBD: Don't insert entry if no connection tracking is enabled for this backend.
