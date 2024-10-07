@@ -95,14 +95,15 @@ setup_ns() {
     # tcp checksum is not computed and the packet will be dropped. Disabling the
     # the hw checsum offload on TX for the veth interface fixes the TCP bad
     # checksum issue.
-    #printf "disabling tx-checksumming for $IF0 ...\n"
-    #ethtool -K $IF0 tx-checksumming off >> /dev/null
-    #ethtool -k $IF0 | grep tx-checksumming
+    # Even for L2 DSR this is required because the IP checksum must be computed
+    # in order for the pair TCP/UDP endpoint to ack the connection.
+    printf "disabling tx-checksumming for $IF0 ...\n"
+    ethtool -K $IF0 tx-checksumming off >> /dev/null
+    ethtool -k $IF0 | grep tx-checksumming
 
-    # ?
-    #printf "disabling tx-checksumming for $NS/$IF1 ...\n"
-    #ip netns exec $NS ethtool -K $IF1 tx-checksumming off >> /dev/null
-    #ip netns exec $NS ethtool -k $IF1 | grep tx-checksumming
+    printf "disabling tx-checksumming for $NS/$IF1 ...\n"
+    ip netns exec $NS ethtool -K $IF1 tx-checksumming off >> /dev/null
+    ip netns exec $NS ethtool -k $IF1 | grep tx-checksumming
 
     printf "$LINK link created!\n"
   fi
