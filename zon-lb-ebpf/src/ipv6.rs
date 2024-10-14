@@ -936,49 +936,43 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    let group = match unsafe {
-        ZLB_LB6.get(&EP6 {
-            address: Inet6U::from(dst_addr),
-            port: l4ctx.base.dst_port as u16,
-            proto: l4ctx.next_hdr as u16,
-        })
-    } {
-        Some(group) => group,
-        None => {
-            if feat.log_enabled(Level::Info) {
-                info!(ctx, "No LB6 entry");
+    let be = {
+        let group = match unsafe {
+            ZLB_LB6.get(&EP6 {
+                address: Inet6U::from(dst_addr),
+                port: l4ctx.base.dst_port as u16,
+                proto: l4ctx.next_hdr as u16,
+            })
+        } {
+            Some(group) => group,
+            None => {
+                if feat.log_enabled(Level::Info) {
+                    info!(ctx, "No LB6 entry");
+                }
+                // *** This is the exit point for non-LB packets ***
+                // These packets are not counted as they are not destined
+                // to any backend group. By counting them would mean that
+                // XDP_PASS would by far the outlier and would prevent
+                // knowing which packets were actually modified.
+                return Ok(xdp_action::XDP_PASS);
             }
-            // *** This is the exit point for non-LB packets ***
-            // These packets are not counted as they are not destined
-            // to any backend group. By counting them would mean that
-            // XDP_PASS would by far the outlier and would prevent
-            // knowing which packets were actually modified.
+        };
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "[in] gid: {} match", group.gid);
+        }
+
+        if group.becount == 0 {
+            if feat.log_enabled(Level::Info) {
+                info!(ctx, "[in] gid: {}, no backends", group.gid);
+            }
+
+            stats_inc(stats::XDP_PASS);
+            stats_inc(stats::LB_ERROR_NO_BE);
+
             return Ok(xdp_action::XDP_PASS);
         }
-    };
 
-    // Update the total processed packets when they are destined
-    // to a known backend group.
-    stats_inc(stats::PACKETS);
-
-    if feat.log_enabled(Level::Info) {
-        info!(ctx, "[in] gid: {} match", group.gid);
-    }
-
-    if group.becount == 0 {
-        if feat.log_enabled(Level::Info) {
-            info!(ctx, "[in] gid: {}, no backends", group.gid);
-        }
-
-        stats_inc(stats::XDP_PASS);
-        stats_inc(stats::LB_ERROR_NO_BE);
-
-        return Ok(xdp_action::XDP_PASS);
-    }
-
-    cache_frag_info(ipv6hdr, &l4ctx);
-
-    let be = {
         let index = (inet6_hash16(&src_addr) ^ l4ctx.base.src_port as u16) % group.becount;
         match unsafe {
             ZLB_BACKENDS.get(&BEKey {
@@ -1000,6 +994,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     };
 
+    // Update the total processed packets when they are destined
+    // to a known backend group.
+    stats_inc(stats::PACKETS);
+
     if feat.log_enabled(Level::Info) {
         info!(
             ctx,
@@ -1008,6 +1006,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             be.port.to_be()
         );
     }
+
+    cache_frag_info(ipv6hdr, &l4ctx);
 
     let port_combo = (be.port as u32) << 16 | l4ctx.base.src_port;
 
