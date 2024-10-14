@@ -870,26 +870,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // BUG: can't use match expr. here or map.get_ptr() as aya generates code that
     // throws the `relocating function` error
     if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
-        // Update the total processed packets when they are from a tracked connection
-        stats_inc(stats::PACKETS);
-
-        // Unlikely
-        if nat.ip_src.eq32(src_addr) && l4ctx.base.src_port == l4ctx.base.dst_port {
-            if feat.log_enabled(Level::Error) {
-                error!(
-                    ctx,
-                    "[out] drop same src {:i}:{}",
-                    unsafe { nat.ip_src.addr8 },
-                    (l4ctx.base.src_port as u16).to_be()
-                );
-            }
-            stats_inc(stats::XDP_DROP);
-            return Ok(xdp_action::XDP_DROP);
-        }
-
         if ipv6hdr.payload_len.to_be() > nat.mtu {
             return send_ptb(ctx, &l2ctx, ipv6hdr, nat.mtu as u32);
         }
+
+        // Update the total processed packets when they are from a tracked connection
+        stats_inc(stats::PACKETS);
 
         log_nat6(ctx, &nat, &feat);
 
