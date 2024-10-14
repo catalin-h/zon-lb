@@ -6,7 +6,7 @@ use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
     helpers::{bpf_check_mtu, bpf_fib_lookup, bpf_ktime_get_coarse_ns, bpf_xdp_adjust_tail},
     macros::map,
-    maps::{HashMap, LruHashMap, LruPerCpuHashMap},
+    maps::{HashMap, LruHashMap, LruPerCpuHashMap, PerCpuArray},
     programs::XdpContext,
     EbpfContext,
 };
@@ -680,6 +680,20 @@ fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &Ipv6L4Context) {
     // info!(ctx, "fino");
 }
 
+// In order to avoid exhausting the 512B ebpf program stack by allocating
+// diferent large objects (especially for IPv6 path) one common workaround
+// is to use a per cpu (avoids concurrency) struct that contains all the
+// objects that can be created on any program execution path.
+
+#[repr(C)]
+struct Context6 {
+    nat6key: NAT6Key,
+    nat6val: NAT6Value,
+}
+
+#[map]
+static mut ZLB_CONTEXT6: PerCpuArray<Context6> = PerCpuArray::with_max_entries(1, 0);
+
 fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
     for i in 0..N {
         to[i] = from[i];
@@ -724,6 +738,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
     let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
+    let ctx6 = unsafe {
+        let ptr = ZLB_CONTEXT6.get_ptr_mut(0).ok_or(())?;
+        &mut *ptr
+    };
     let mut l4ctx = Ipv6L4Context::new(l2ctx.ethlen, ipv6hdr.next_hdr);
     let feat = Features::new();
 
@@ -864,14 +882,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // * use variables inside scopes { .. } so the vars are releases from stack
     // * use per cpu array maps
     // * try remove some log prints
+    // * don't create object like NAT6Key as read-only and redefine them as mutable.
 
-    let mut nat6key = NAT6Key {
-        ip_lb_dst: Inet6U::from(dst_addr),
-        ip_be_src: Inet6U::from(src_addr),
-        port_be_src: l4ctx.base.src_port,
-        port_lb_dst: l4ctx.base.dst_port,
-        next_hdr: l4ctx.next_hdr as u32,
-    };
+    let nat6key = &mut ctx6.nat6key;
+    nat6key.ip_be_src = Inet6U::from(src_addr);
+    nat6key.ip_lb_dst = Inet6U::from(dst_addr);
+    nat6key.port_be_src = l4ctx.base.src_port;
+    nat6key.port_lb_dst = l4ctx.base.dst_port;
+    nat6key.next_hdr = l4ctx.next_hdr as u32;
+
 
     // BUG: can't use match expr. here or map.get_ptr() as aya generates code that
     // throws the `relocating function` error
@@ -1099,7 +1118,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
     let macs = unsafe { &mut *macs };
-    let mac_addresses = [
+    ctx6.nat6val.mac_addresses = [
         macs[2] << 16 | macs[1] >> 16,
         macs[0] << 16 | macs[2] >> 16,
         macs[1] << 16 | macs[0] >> 16,
@@ -1145,7 +1164,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // NOTE: The LB will use the source port since there can be multiple
     // connection to the same backend and it needs to track all of them.
     // On reply the source port is used to identify the connection track entry.
-
     // NOTE: for DSR the key does not change.
     //
     // Normal NAT mappings
@@ -1180,44 +1198,19 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         nat6key.port_lb_dst = l4ctx.base.src_port;
     }
 
-    // Update the nat entry only if the source details changes.
-    // This will boost performance and less error prone on tests like iperf.
-    // TODO: check every x sec for each src address + src_port + proto if NAT was set
-    match unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
-        // TODO: use a inet 32-bit hash instead of
-        // the 3 comparations or 32B/32B total matching bytes ?
-        Some(&nat) => {
-            if nat.ifindex != ifindex
-                || !nat.ip_src.eq32(unsafe { &ip_src.addr32 })
-                || nat.mac_addresses != mac_addresses
-                || !nat.vlan_hdr == l2ctx.vlanhdr
-            { /* do insert */
-            } else {
-                return Ok(action);
-            }
-        }
-        None => { /* do insert */ }
-    }
+    ctx6.nat6val.ip_src = ip_src;
+    ctx6.nat6val.lb_ip = lb_ip;
+    ctx6.nat6val.port_lb = l4ctx.base.dst_port as u16;
+    ctx6.nat6val.ifindex = ifindex;
+    ctx6.nat6val.mtu = check_mtu(ctx, ifindex);
+    ctx6.nat6val.vlan_hdr = l2ctx.vlanhdr;
+    ctx6.nat6val.flags = be.flags;
+    // NOTE: the original MAC addresses are cached right before redirect
 
     // TBD: use lock or atomic update ?
     // TBD: use BPF_F_LOCK ?
-    let rc = match unsafe {
-        ZLB_CONNTRACK6.insert(
-            &nat6key,
-            // NOTE: optimization: use as temp value at insert point
-            &NAT6Value {
-                ip_src,
-                port_lb: l4ctx.base.dst_port as u16,
-                mtu: check_mtu(ctx, ifindex),
-                ifindex,
-                mac_addresses,
-                vlan_hdr: l2ctx.vlanhdr,
-                flags: be.flags,
-                lb_ip,
-            },
-            0,
-        )
-    } {
+
+    let rc = match unsafe { ZLB_CONNTRACK6.insert(&nat6key, &ctx6.nat6val, 0) } {
         Ok(()) => 0, // add stats for insert
         Err(ret) => {
             stats_inc(stats::CT_ERROR_UPDATE);
