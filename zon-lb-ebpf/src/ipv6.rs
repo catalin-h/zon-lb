@@ -1,5 +1,5 @@
 use crate::{
-    is_unicast_mac, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, Features, L2Context,
+    is_unicast_mac, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, CTCache, Features, L2Context,
     L4Context, ZLB_BACKENDS,
 };
 use aya_ebpf::{
@@ -680,6 +680,85 @@ fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &Ipv6L4Context) {
     // info!(ctx, "fino");
 }
 
+#[map]
+static ZLB_CT6_CACHE: LruPerCpuHashMap<NAT6Key, CTCache> =
+    LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
+
+fn ct6_handler(
+    ctx: &XdpContext,
+    l2ctx: &L2Context,
+    l4ctx: &Ipv6L4Context,
+    ipv6hdr: &mut Ipv6Hdr,
+    ctnat: &CTCache,
+) -> Result<u32, ()> {
+    if ipv6hdr.payload_len.to_be() > ctnat.mtu as u16 {
+        return send_ptb(ctx, &l2ctx, ipv6hdr, ctnat.mtu);
+    }
+
+    stats_inc(stats::PACKETS);
+
+    let feat = Features::new();
+
+    // NOTE: No need to save fragment because this handler is called
+    // after the main flows (request & response) caches this conntrack
+    // cache handler.
+
+    if !ctnat.flags.contains(EPFlags::DSR_L2) {
+        // Update both IP and Transport layers checksums along with the source
+        // and destination addresses and ports and others like TTL
+        update_inet_csum(
+            ctx,
+            ipv6hdr,
+            l4ctx,
+            &ctnat.src_addr,
+            &ctnat.dst_addr,
+            ctnat.port_combo,
+        )?;
+    }
+
+    if ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
+        let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+        let macs = unsafe { &mut *macs };
+        macs[2] = ctnat.macs[2];
+        macs[1] = ctnat.macs[1];
+        macs[0] = ctnat.macs[0];
+
+        // NOTE: This call can shrink or enlarge the packet so all pointers
+        // to headers are invalidated.
+        l2ctx.vlan_update(ctx, 0, &feat)?;
+
+        // In case of redirect failure just try to query the FIB again
+        let action = redirect_txport(ctx, &feat, ctnat.ifindex);
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "[c-redirect] oif:{}, action={}", ctnat.ifindex, action);
+        }
+
+        return Ok(action);
+    }
+
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "in => xdp_tx");
+    }
+
+    // Send back the packet to the same interface
+    if ctnat.flags.contains(EPFlags::XDP_TX) {
+        // TODO: swap mac addresses
+
+        stats_inc(stats::XDP_TX);
+
+        return Ok(xdp_action::XDP_TX);
+    }
+
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "in => xdp_pass");
+    }
+
+    stats_inc(stats::XDP_PASS);
+
+    return Ok(xdp_action::XDP_PASS);
+}
+
 // In order to avoid exhausting the 512B ebpf program stack by allocating
 // diferent large objects (especially for IPv6 path) one common workaround
 // is to use a per cpu (avoids concurrency) struct that contains all the
@@ -689,6 +768,7 @@ fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &Ipv6L4Context) {
 struct Context6 {
     nat6key: NAT6Key,
     nat6val: NAT6Value,
+    ctnat: CTCache,
 }
 
 #[map]
@@ -891,6 +971,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     nat6key.port_lb_dst = l4ctx.base.dst_port;
     nat6key.next_hdr = l4ctx.next_hdr as u32;
 
+    let now = coarse_ktime();
+    if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&nat6key) } {
+        if ctnat.time > now {
+            return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat);
+        }
+    }
 
     // BUG: can't use match expr. here or map.get_ptr() as aya generates code that
     // throws the `relocating function` error
@@ -915,6 +1001,18 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         if !nat.flags.contains(EPFlags::DSR_L2) {
             update_inet_csum(ctx, ipv6hdr, &l4ctx, src_addr, dst_addr, port_combo)?;
         }
+
+        let ctnat = &mut ctx6.ctnat;
+        ctnat.time = now + 30;
+        ctnat.flags = nat.flags;
+        ctnat.mtu = nat.mtu as u32;
+        array_copy(&mut ctnat.src_addr, src_addr);
+        array_copy(&mut ctnat.dst_addr, dst_addr);
+        ctnat.port_combo = port_combo;
+        ctnat.ifindex = nat.ifindex;
+        array_copy(&mut ctx6.ctnat.macs, &nat.mac_addresses);
+
+        let _ = ZLB_CT6_CACHE.insert(&nat6key, &ctx6.ctnat, /* update or insert */ 0);
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             // NOTE: BUG: don't use the implicit array copy (*a = mac;)
@@ -1071,8 +1169,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         unsafe { &nat6key.ip_lb_dst.addr32 }
     };
 
-    let now = coarse_ktime();
-
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, lb_addr, &be.address, now)?;
     let fib = unsafe { &*fib };
@@ -1109,8 +1205,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         update_inet_csum(ctx, ipv6hdr, &l4ctx, lb_addr, &be.address, port_combo)?;
     }
 
-    let flow = unsafe { *(ipv6hdr as *const Ipv6Hdr as *const u32) };
-
     // NOTE: look like aya can't convert the '*eth = entry.macs' into
     // a 3 load instructions block that doesn't panic the bpf verifier
     // with 'invalid access to packet'. The same statement when modifying
@@ -1143,20 +1237,22 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     /* === connection tracking === */
 
-    // NOTE: looks like it is faster to use get pointers with map.get_ptr() than
-    // references with map.get().
-    let flow = (flow as u64) | ((l4ctx.base.src_port as u64) << 32);
-    match ZLB_CT_CACHE.get_ptr(&flow) {
-        Some(next_check) => {
-            if unsafe { *next_check } + 30 > now {
-                return Ok(action);
-            } else {
-                /* do check conntrack */
-            }
-        }
-        None => { /* do check conntrack */ }
-    }
-    let _ = ZLB_CT_CACHE.insert(&flow, &now, 0);
+    // Add conntrack cache entry to skip searching for the group,
+    // the backend and the fib entry that provides the neighbor
+    // mac address.
+    // NOTE: Since the cache is a per CPU map the insert with flags=0
+    // will update only the value for the current CPU.
+
+    ctx6.ctnat.time = now + 30;
+    ctx6.ctnat.flags = be.flags;
+    ctx6.ctnat.mtu = fib.mtu;
+    array_copy(&mut ctx6.ctnat.src_addr, lb_addr);
+    array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
+    ctx6.ctnat.port_combo = port_combo;
+    ctx6.ctnat.ifindex = fib.ifindex;
+    array_copy(&mut ctx6.ctnat.macs, &fib.macs);
+
+    let _ = ZLB_CT6_CACHE.insert(&nat6key, &ctx6.ctnat, /* update or insert */ 0);
 
     // TODO: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
@@ -1231,10 +1327,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     Ok(action)
 }
-
-#[map]
-static ZLB_CT_CACHE: LruPerCpuHashMap<u64, u32> =
-    LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
 
 /// This buffer must hold any IPv6 per-fragment header extentions plus
 /// the largest supported protocol header.For now Tcp has the biggest header.
