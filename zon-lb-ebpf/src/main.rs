@@ -932,13 +932,15 @@ impl L4Context {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone)]
 struct CTCache {
     time: u32,
     /// Backend flags merged with conntrack ones
     flags: EPFlags,
     mtu: u32,
-    src_addr: u32,
-    dst_addr: u32,
+    src_addr: [u32; 4],
+    dst_addr: [u32; 4],
     port_combo: u32,
     ifindex: u32,
     macs: [u32; 3],
@@ -975,8 +977,8 @@ fn ct4_handler(
             ctx,
             ipv4hdr,
             &l4ctx,
-            ctnat.src_addr,
-            ctnat.dst_addr,
+            ctnat.src_addr[0],
+            ctnat.dst_addr[0],
             ctnat.port_combo,
         )?;
     }
@@ -1101,8 +1103,8 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 time: now + 30,
                 flags: nat.flags,
                 mtu: nat.mtu as u32,
-                src_addr: nat.lb_ip,
-                dst_addr: nat.ip_src,
+                src_addr: [nat.lb_ip, 0, 0, 0],
+                dst_addr: [nat.ip_src, 0, 0, 0],
                 port_combo,
                 ifindex: nat.ifindex,
                 macs: nat.mac_addresses,
@@ -1343,8 +1345,8 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             time: now + 30,
             flags: be.flags,
             mtu: fib.mtu,
-            src_addr: lb_addr,
-            dst_addr: be_addr,
+            src_addr: [lb_addr, 0, 0, 0],
+            dst_addr: [be_addr, 0, 0, 0],
             port_combo,
             ifindex: fib.ifindex,
             macs: fib.macs,
