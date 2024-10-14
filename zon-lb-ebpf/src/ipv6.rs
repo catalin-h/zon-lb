@@ -680,6 +680,12 @@ fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &Ipv6L4Context) {
     // info!(ctx, "fino");
 }
 
+fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
+    for i in 0..N {
+        to[i] = from[i];
+    }
+}
+
 // NOTE: IPv6 header isn't fixed and the L4 header offset can
 // be computed iterating over the extension headers until we
 // reach a non-extension next_hdr value. For now we assume
