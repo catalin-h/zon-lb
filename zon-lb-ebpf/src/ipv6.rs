@@ -744,6 +744,7 @@ fn ct6_handler(
 
 #[repr(C)]
 struct Context6 {
+    feat: Features,
     nat6key: NAT6Key,
     nat6val: NAT6Value,
     ctnat: CTCache,
@@ -800,6 +801,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         let ptr = ZLB_CONTEXT6.get_ptr_mut(0).ok_or(())?;
         &mut *ptr
     };
+    ctx6.feat.fetch();
     let mut l4ctx = L4Context::new_for_ipv6(&l2ctx, ipv6hdr.next_hdr);
     let feat = Features::new();
 

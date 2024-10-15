@@ -130,6 +130,17 @@ impl Features {
         Self { log_level }
     }
 
+    fn fetch(&mut self) {
+        self.log_level = if FEATURES == 0 {
+            0
+        } else {
+            match ZLB_RUNVAR.get(runvars::LOG_FILTER) {
+                None => 0,
+                Some(rvlevel) => *rvlevel,
+            }
+        };
+    }
+
     #[inline(always)]
     fn log_enabled(&self, level: Level) -> bool {
         self.log_level >= level as u64
