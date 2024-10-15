@@ -998,9 +998,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             // during the program load.
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             let macs = unsafe { &mut *macs };
-            macs[2] = nat.mac_addresses[2];
-            macs[1] = nat.mac_addresses[1];
-            macs[0] = nat.mac_addresses[0];
+            array_copy(macs, &nat.mac_addresses);
 
             // NOTE: After this call all references derived from ctx must be recreated
             // since this method can change the packet limits.
@@ -1195,10 +1193,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         macs[0] << 16 | macs[2] >> 16,
         macs[1] << 16 | macs[0] >> 16,
     ];
-
-    macs[2] = fib.macs[2];
-    macs[1] = fib.macs[1];
-    macs[0] = fib.macs[0];
+    array_copy(macs, &fib.macs);
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
     // Till then assume we redirect to backends outside of any VLAN.
