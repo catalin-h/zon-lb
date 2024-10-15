@@ -826,13 +826,15 @@ fn cache_frag_info(ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
     }
 }
 
-#[derive(Default)]
+#[repr(C)]
 struct L4Context {
     offset: usize,
     check_off: usize,
     src_port: u32,
     dst_port: u32,
     flags: u32,
+    frag_id: u32,
+    next_hdr: IpProto,
 }
 
 impl L4Context {
@@ -853,7 +855,17 @@ impl L4Context {
                 })
             } {
                 // Pass any non tracked fragments
-                None => return Ok(Self::default()),
+                None => {
+                    return Ok(L4Context {
+                        offset: 0,
+                        check_off: 0,
+                        src_port: 0,
+                        dst_port: 0,
+                        flags: 0,
+                        frag_id: 0,
+                        next_hdr: IpProto::HopOpt,
+                    })
+                }
                 Some(frag) => {
                     stats_inc(stats::IP_FRAGMENTS);
                     return Ok(Self {
@@ -862,6 +874,8 @@ impl L4Context {
                         src_port: frag.src_port as u32,
                         dst_port: frag.dst_port as u32,
                         flags: 0,
+                        frag_id: 0,
+                        next_hdr: IpProto::HopOpt,
                     });
                 }
             }
@@ -924,11 +938,25 @@ impl L4Context {
             src_port,
             dst_port,
             flags,
+            frag_id: 0,
+            next_hdr: IpProto::HopOpt,
         })
     }
 
     fn check_pkt_off(&self) -> usize {
         self.offset + self.check_off
+    }
+
+    fn check_offset(&mut self, off: usize) {
+        self.check_off = off;
+    }
+
+    fn sport(&mut self, port: u16) {
+        self.src_port = port as u32;
+    }
+
+    fn dport(&mut self, port: u16) {
+        self.dst_port = port as u32;
     }
 }
 

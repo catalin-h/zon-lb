@@ -111,19 +111,19 @@ fn compute_checksum(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize])
 fn update_inet_csum(
     ctx: &XdpContext,
     ipv6hdr: &mut Ipv6Hdr,
-    l4ctx: &Ipv6L4Context,
+    l4ctx: &L4Context,
     src: &[u32; 4usize],
     dst: &[u32; 4usize],
     port_combo: u32,
 ) -> Result<(), ()> {
     // TODO: move this to the place of usage as this function can't be inlined
-    if l4ctx.base.check_off == 0 {
+    if l4ctx.check_off == 0 {
         (*ipv6hdr).src_addr.in6_u.u6_addr32 = *src;
         (*ipv6hdr).dst_addr.in6_u.u6_addr32 = *dst;
         return Ok(());
     }
 
-    let check = ptr_at::<u16>(ctx, l4ctx.base.check_pkt_off())?.cast_mut();
+    let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
     let mut csum = unsafe { !(*check) } as u32;
 
     // NOTE: optimization: cache friendly parallel scan over 8 x 32-bit values.
@@ -149,12 +149,8 @@ fn update_inet_csum(
     // port_combo = dst_port << 16 | src_port;
     // NOTE: the destination port remains the same.
     if port_combo != 0 && l4ctx.next_hdr != IpProto::Ipv6Icmp {
-        csum = csum_update_u32(
-            l4ctx.base.dst_port << 16 | l4ctx.base.src_port,
-            port_combo,
-            csum,
-        );
-        let ptr = ptr_at::<u32>(ctx, l4ctx.base.offset)?;
+        csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
+        let ptr = ptr_at::<u32>(ctx, l4ctx.offset)?;
         unsafe { *(ptr.cast_mut()) = port_combo };
     }
 
@@ -246,19 +242,21 @@ fn log_fragexthdr(ctx: &XdpContext, exthdr: &Ipv6FragExtHdr, feat: &Features) {
 // inside the function. For eg. passing the Ipv6Hdr as pointer
 // will prevent the function from containing aya allocations.
 #[inline(never)]
-fn log_ipv6_packet(ctx: &XdpContext, ipv6hdr: &Ipv6Hdr) {
+fn log_ipv6_packet(ctx: &XdpContext, ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
     // NOTE: Looks like the log macro occupies a lot of stack
     // TBD: maybe remove this log ?
     info!(
         ctx,
-        "[i:{}, rx:{}] [p:{}] {:i} -> {:i}, flow: {:x}",
+        "[i:{}, rx:{}] [p:{}] [{:i}]:{} -> [{:i}]:{}, flow: {:x}",
         unsafe { (*ctx.ctx).ingress_ifindex },
         unsafe { (*ctx.ctx).rx_queue_index },
         ipv6hdr.next_hdr as u32,
         unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
+        (l4ctx.src_port as u16).to_be(),
         // BUG: depending on current stack usage changing to dst_addr.addr8
         // will generate code that overflows the bpf program 512B stack
         unsafe { ipv6hdr.dst_addr.in6_u.u6_addr8 },
+        (l4ctx.dst_port as u16).to_be(),
         {
             let flow = ipv6hdr.flow_label;
             u32::from_be_bytes([0, flow[0], flow[1], flow[2]])
@@ -615,41 +613,7 @@ impl Ipv6FragExtHdr {
     }
 }
 
-struct Ipv6L4Context {
-    base: L4Context,
-    frag_id: u32,
-    next_hdr: IpProto,
-}
-
-impl Ipv6L4Context {
-    fn new(ethlen: usize, next_hdr: IpProto) -> Self {
-        Self {
-            base: L4Context {
-                offset: ethlen + Ipv6Hdr::LEN,
-                check_off: 0,
-                src_port: 0,
-                dst_port: 0,
-                flags: 0,
-            },
-            frag_id: 0,
-            next_hdr,
-        }
-    }
-
-    fn check_offset(&mut self, off: usize) {
-        self.base.check_off = off;
-    }
-
-    fn sport(&mut self, port: u16) {
-        self.base.src_port = port as u32;
-    }
-
-    fn dport(&mut self, port: u16) {
-        self.base.dst_port = port as u32;
-    }
-}
-
-fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &Ipv6L4Context) {
+fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
     if l4ctx.frag_id == 0 {
         return;
     }
@@ -662,8 +626,8 @@ fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &Ipv6L4Context) {
                 dst: Inet6U::from(&ipv6hdr.dst_addr.in6_u.u6_addr32),
             },
             &Ipv6FragInfo {
-                src_port: l4ctx.base.src_port as u16,
-                dst_port: l4ctx.base.dst_port as u16,
+                src_port: l4ctx.src_port as u16,
+                dst_port: l4ctx.dst_port as u16,
                 reserved: 0,
             },
             0,
@@ -680,6 +644,20 @@ fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &Ipv6L4Context) {
     // info!(ctx, "fino");
 }
 
+impl L4Context {
+    fn new_for_ipv6(l2ctx: &L2Context, next_hdr: IpProto) -> Self {
+        Self {
+            offset: l2ctx.ethlen + Ipv6Hdr::LEN,
+            check_off: 0,
+            src_port: 0,
+            dst_port: 0,
+            flags: 0,
+            frag_id: 0,
+            next_hdr,
+        }
+    }
+}
+
 #[map]
 static ZLB_CT6_CACHE: LruPerCpuHashMap<NAT6Key, CTCache> =
     LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
@@ -687,7 +665,7 @@ static ZLB_CT6_CACHE: LruPerCpuHashMap<NAT6Key, CTCache> =
 fn ct6_handler(
     ctx: &XdpContext,
     l2ctx: &L2Context,
-    l4ctx: &Ipv6L4Context,
+    l4ctx: &L4Context,
     ipv6hdr: &mut Ipv6Hdr,
     ctnat: &CTCache,
 ) -> Result<u32, ()> {
@@ -822,34 +800,34 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         let ptr = ZLB_CONTEXT6.get_ptr_mut(0).ok_or(())?;
         &mut *ptr
     };
-    let mut l4ctx = Ipv6L4Context::new(l2ctx.ethlen, ipv6hdr.next_hdr);
+    let mut l4ctx = L4Context::new_for_ipv6(&l2ctx, ipv6hdr.next_hdr);
     let feat = Features::new();
 
     for _ in 0..4 {
         match l4ctx.next_hdr {
             IpProto::Tcp => {
-                let tcphdr = ptr_at::<TcpHdr>(&ctx, l4ctx.base.offset)?;
+                let tcphdr = ptr_at::<TcpHdr>(&ctx, l4ctx.offset)?;
                 l4ctx.check_offset(offset_of!(TcpHdr, check));
                 l4ctx.sport(unsafe { (*tcphdr).source });
                 l4ctx.dport(unsafe { (*tcphdr).dest });
                 break;
             }
             IpProto::Udp => {
-                let udphdr = ptr_at::<UdpHdr>(&ctx, l4ctx.base.offset)?;
+                let udphdr = ptr_at::<UdpHdr>(&ctx, l4ctx.offset)?;
                 l4ctx.check_offset(offset_of!(UdpHdr, check));
                 l4ctx.sport(unsafe { (*udphdr).source });
                 l4ctx.dport(unsafe { (*udphdr).dest });
                 break;
             }
             IpProto::Ipv6Icmp => {
-                let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.base.offset)?;
+                let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
                 let icmphdr = unsafe { &*icmphdr };
                 let echo_id = unsafe { icmphdr.un.echo.id } as u32;
                 l4ctx.check_offset(offset_of!(IcmpHdr, checksum));
 
                 match icmphdr.type_ {
                     icmpv6::ND_ADVERT | icmpv6::ND_SOLICIT => {
-                        return neighbor_solicit(ctx, l2ctx, l4ctx.base)
+                        return neighbor_solicit(ctx, l2ctx, l4ctx)
                     }
 
                     // Handle ICMP echo request / reply to track only messages that
@@ -865,11 +843,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
                     // On ICMP request use the echo id as source port
                     icmpv6::ECHO_REQUEST => {
-                        l4ctx.base.src_port = echo_id;
+                        l4ctx.src_port = echo_id;
                     }
                     // On ICMP reply use the echo id destination port
                     icmpv6::ECHO_REPLY => {
-                        l4ctx.base.dst_port = echo_id;
+                        l4ctx.dst_port = echo_id;
                     }
 
                     // Other types are not supported
@@ -879,9 +857,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 break;
             }
             IpProto::HopOpt | IpProto::Ipv6Route | IpProto::Ipv6Opts => {
-                let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, l4ctx.base.offset)?;
+                let exthdr = ptr_at::<Ipv6ExtBase>(&ctx, l4ctx.offset)?;
                 let len = unsafe { (*exthdr).len_8b } as usize;
-                l4ctx.base.offset += len << 3;
+                l4ctx.offset += len << 3;
                 l4ctx.next_hdr = unsafe { (*exthdr).next_header };
                 continue;
             }
@@ -903,9 +881,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 // NOTE: For Fragment ext header this field is reserved and
                 // initialized to zero for transmission; ignored on
                 // reception as the len is implicitly 1 (8 bytes).
-                let exthdr = ptr_at::<Ipv6FragExtHdr>(&ctx, l4ctx.base.offset)?;
+                let exthdr = ptr_at::<Ipv6FragExtHdr>(&ctx, l4ctx.offset)?;
                 let exthdr = unsafe { &*exthdr };
-                l4ctx.base.offset += 8;
+                l4ctx.offset += 8;
                 l4ctx.next_hdr = exthdr.base.next_header;
 
                 // BUG: move the logging inside function to avoid bpf_linker error
@@ -950,7 +928,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     if feat.log_enabled(Level::Info) {
-        log_ipv6_packet(ctx, ipv6hdr);
+        log_ipv6_packet(ctx, ipv6hdr, &l4ctx);
     }
 
     // === reply ===
@@ -967,8 +945,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let nat6key = &mut ctx6.nat6key;
     nat6key.ip_be_src = Inet6U::from(src_addr);
     nat6key.ip_lb_dst = Inet6U::from(dst_addr);
-    nat6key.port_be_src = l4ctx.base.src_port;
-    nat6key.port_lb_dst = l4ctx.base.dst_port;
+    nat6key.port_be_src = l4ctx.src_port;
+    nat6key.port_lb_dst = l4ctx.dst_port;
     nat6key.next_hdr = l4ctx.next_hdr as u32;
 
     let now = coarse_ktime();
@@ -995,7 +973,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // TBD: for crc32 use crc32_off
 
-        let port_combo = l4ctx.base.dst_port << 16 | nat.port_lb as u32;
+        let port_combo = l4ctx.dst_port << 16 | nat.port_lb as u32;
         let src_addr = unsafe { &nat.lb_ip.addr32 };
         let dst_addr = unsafe { &nat.ip_src.addr32 };
         if !nat.flags.contains(EPFlags::DSR_L2) {
@@ -1055,7 +1033,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Don't track ICMP echo replies sent to LB, only requests are tracked.
     // On request src_port contains the echo id.
-    if ipv6hdr.next_hdr as u8 == icmpv6::ECHO_REPLY && l4ctx.base.src_port == 0 {
+    if ipv6hdr.next_hdr as u8 == icmpv6::ECHO_REPLY && l4ctx.src_port == 0 {
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -1063,7 +1041,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         let group = match unsafe {
             ZLB_LB6.get(&EP6 {
                 address: Inet6U::from(dst_addr),
-                port: l4ctx.base.dst_port as u16,
+                port: l4ctx.dst_port as u16,
                 proto: l4ctx.next_hdr as u16,
             })
         } {
@@ -1096,7 +1074,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_PASS);
         }
 
-        let index = (inet6_hash16(&src_addr) ^ l4ctx.base.src_port as u16) % group.becount;
+        let index = (inet6_hash16(&src_addr) ^ l4ctx.src_port as u16) % group.becount;
         match unsafe {
             ZLB_BACKENDS.get(&BEKey {
                 gid: group.gid,
@@ -1132,11 +1110,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     cache_frag_info(ipv6hdr, &l4ctx);
 
-    let port_combo = (be.port as u32) << 16 | l4ctx.base.src_port;
+    let port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
-        update_destination_inet_csum(ctx, ipv6hdr, &l4ctx.base, &be.address, port_combo)?;
+        update_destination_inet_csum(ctx, ipv6hdr, &l4ctx, &be.address, port_combo)?;
 
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
@@ -1285,18 +1263,18 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         // and destination as current source.
         nat6key.ip_be_src = lb_ip;
         nat6key.ip_lb_dst = ip_src;
-        nat6key.port_be_src = l4ctx.base.dst_port;
-        nat6key.port_lb_dst = l4ctx.base.src_port;
+        nat6key.port_be_src = l4ctx.dst_port;
+        nat6key.port_lb_dst = l4ctx.src_port;
     } else {
         nat6key.ip_lb_dst = Inet6U::from(lb_addr);
         nat6key.ip_be_src = Inet6U::from(&be.address);
         nat6key.port_be_src = be.port as u32;
-        nat6key.port_lb_dst = l4ctx.base.src_port;
+        nat6key.port_lb_dst = l4ctx.src_port;
     }
 
     ctx6.nat6val.ip_src = ip_src;
     ctx6.nat6val.lb_ip = lb_ip;
-    ctx6.nat6val.port_lb = l4ctx.base.dst_port as u16;
+    ctx6.nat6val.port_lb = l4ctx.dst_port as u16;
     ctx6.nat6val.ifindex = ifindex;
     ctx6.nat6val.mtu = check_mtu(ctx, ifindex);
     ctx6.nat6val.vlan_hdr = l2ctx.vlanhdr;
@@ -1319,7 +1297,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             ctx,
             "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
             unsafe { ip_src.addr8 },
-            (l4ctx.base.src_port as u16).to_be(),
+            (l4ctx.src_port as u16).to_be(),
             l2ctx.vlanhdr,
             rc
         )
