@@ -945,6 +945,19 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // * don't create object like NAT6Key as read-only and redefine them as mutable.
 
     let nat6key = &mut ctx6.nat6key;
+
+    // NOTE: Copying the address using the utility will only use a single
+    // register and the same number of instructions:
+    //
+    // simple copy                      | w/ array_copy
+    // 5473: (61) r1 = *(u32 *)(r8 +8)  | 5473: (61) r1 = *(u32 *)(r8 +8)
+    // 5474: (61) r2 = *(u32 *)(r8 +12) | 5474: (63) *(u32 *)(r9 +24) = r1
+    // 5475: (61) r3 = *(u32 *)(r8 +16) | 5475: (61) r1 = *(u32 *)(r8 +12)
+    // 5476: (61) r5 = *(u32 *)(r8 +20) | 5476: (63) *(u32 *)(r9 +28) = r1
+    // 5477: (63) *(u32 *)(r9 +36) = r5 | 5477: (61) r1 = *(u32 *)(r8 +16)
+    // 5478: (63) *(u32 *)(r9 +32) = r3 | 5478: (63) *(u32 *)(r9 +32) = r1
+    // 5479: (63) *(u32 *)(r9 +28) = r2 | 5479: (61) r1 = *(u32 *)(r8 +20)
+    // 5480: (63) *(u32 *)(r9 +24) = r1 | 5480: (63) *(u32 *)(r9 +36) = r1
     nat6key.ip_be_src = Inet6U::from(src_addr);
     nat6key.ip_lb_dst = Inet6U::from(dst_addr);
     nat6key.port_be_src = l4ctx.src_port;
