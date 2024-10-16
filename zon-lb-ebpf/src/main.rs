@@ -1852,17 +1852,6 @@ impl BpfFibLookUp {
         fib
     }
 
-    fn new_inet6(paylod_len: u16, ifindex: u32, tc: u32, src: &[u32; 4], dst: &[u32; 4]) -> Self {
-        let mut fib: BpfFibLookUp = unsafe { core::mem::zeroed() };
-        fib.family = AF_INET6;
-        fib.tot_len = paylod_len;
-        fib.ifindex = ifindex;
-        fib.tos = tc;
-        fib.src = *src;
-        fib.dst = *dst;
-        fib
-    }
-
     unsafe fn _fill_ethdr_macs(&self, ethdr: *mut EthHdr) {
         let mac = ethdr as *mut [u32; 3];
         (*mac)[0] = self.macs[2] << 16 | self.macs[1] >> 16;
@@ -1876,6 +1865,12 @@ impl BpfFibLookUp {
             self.macs[0] << 16 | self.macs[2] >> 16,
             self.macs[1] << 16 | self.macs[0] >> 16,
         ]
+    }
+
+    fn copy_swapped_macs(&self, macs: &mut [u32; 3]) {
+        macs[2] = self.macs[1] << 16 | self.macs[0] >> 16;
+        macs[1] = self.macs[0] << 16 | self.macs[2] >> 16;
+        macs[0] = self.macs[2] << 16 | self.macs[1] >> 16;
     }
 
     fn dest_mac(&self) -> [u8; ETH_ALEN] {

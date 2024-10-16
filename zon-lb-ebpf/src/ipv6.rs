@@ -1,6 +1,6 @@
 use crate::{
     is_unicast_mac, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, CTCache, Features, L2Context,
-    L4Context, ZLB_BACKENDS,
+    L4Context, AF_INET6, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -748,6 +748,8 @@ struct Context6 {
     nat6key: NAT6Key,
     nat6val: NAT6Value,
     ctnat: CTCache,
+    fiblookup: BpfFibLookUp,
+    fibentry: FibEntry,
 }
 
 #[map]
@@ -958,6 +960,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // 5478: (63) *(u32 *)(r9 +32) = r3 | 5478: (63) *(u32 *)(r9 +32) = r1
     // 5479: (63) *(u32 *)(r9 +28) = r2 | 5479: (61) r1 = *(u32 *)(r8 +20)
     // 5480: (63) *(u32 *)(r9 +24) = r1 | 5480: (63) *(u32 *)(r9 +36) = r1
+
     nat6key.ip_be_src = Inet6U::from(src_addr);
     nat6key.ip_lb_dst = Inet6U::from(dst_addr);
     nat6key.port_be_src = l4ctx.src_port;
@@ -1452,6 +1455,37 @@ fn send_ptb(
     return Ok(xdp_action::XDP_TX);
 }
 
+impl BpfFibLookUp {
+    fn init_inet6(
+        &mut self,
+        paylod_len: u16,
+        ifindex: u32,
+        tc: u32,
+        src: &[u32; 4],
+        dst: &[u32; 4],
+    ) {
+        self.family = AF_INET6;
+        self.l4_protocol = 0;
+        self.sport = 0;
+        self.dport = 0;
+        self.tot_len = paylod_len;
+        self.ifindex = ifindex;
+        self.tos = tc;
+        array_copy(&mut self.src, src);
+        array_copy(&mut self.dst, dst);
+    }
+}
+
+impl Context6 {
+    fn init_fibentry(&mut self, expiry: u32) {
+        self.fibentry.ifindex = self.fiblookup.ifindex;
+        self.fiblookup.copy_swapped_macs(&mut self.fibentry.macs);
+        array_copy(&mut self.fibentry.ip_src, &mut self.fiblookup.src); // not used for now
+        self.fibentry.mtu = self.fiblookup.tot_len as u32;
+        self.fibentry.expiry = expiry;
+    }
+}
+
 fn fetch_fib6(
     ctx: &XdpContext,
     ipv6hdr: &Ipv6Hdr,
@@ -1468,14 +1502,20 @@ fn fetch_fib6(
         None => {}
     }
 
-    let fib_param = BpfFibLookUp::new_inet6(
+    let ctx6 = unsafe {
+        let ptr = ZLB_CONTEXT6.get_ptr_mut(0).ok_or(())?;
+        &mut *ptr
+    };
+
+    ctx6.fiblookup.init_inet6(
         ipv6hdr.payload_len.to_be(),
         unsafe { (*ctx.ctx).ingress_ifindex },
         ipv6hdr.priority() as u32,
         src,
         dst,
     );
-    let p_fib_param = &fib_param as *const BpfFibLookUp;
+
+    let p_fib_param = &ctx6.fiblookup as *const BpfFibLookUp;
     let rc = unsafe {
         bpf_fib_lookup(
             ctx.as_ptr(),
@@ -1495,34 +1535,25 @@ fn fetch_fib6(
         now + FIB_ENTRY_EXPIRY_INTERVAL
     };
 
-    let feat = Features::new();
-
-    if feat.log_enabled(Level::Info) {
+    if ctx6.feat.log_enabled(Level::Info) {
         info!(
             ctx,
             "[fib] lkp_ret: {}, fw if: {}, src: {:i}, \
             gw: {:i}, dmac: {:mac}, smac: {:mac}, mtu: {}",
             rc,
-            fib_param.ifindex,
-            unsafe { Inet6U::from(&fib_param.src).addr8 },
-            unsafe { Inet6U::from(&fib_param.dst).addr8 },
-            fib_param.dest_mac(),
-            fib_param.src_mac(),
-            fib_param.tot_len
+            ctx6.fiblookup.ifindex,
+            unsafe { Inet6U::from(&ctx6.fiblookup.src).addr8 },
+            unsafe { Inet6U::from(&ctx6.fiblookup.dst).addr8 },
+            ctx6.fiblookup.dest_mac(),
+            ctx6.fiblookup.src_mac(),
+            ctx6.fiblookup.tot_len
         );
     }
-
-    let entry = FibEntry {
-        ifindex: fib_param.ifindex,
-        macs: fib_param.ethdr_macs(),
-        ip_src: fib_param.src, // not used for now
-        expiry,
-        mtu: fib_param.tot_len as u32,
-    };
+    ctx6.init_fibentry(expiry);
 
     // NOTE: after updating the value or key struct size must remove the pinned map
     // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
-    match unsafe { ZLB_FIB6.insert(&dst, &entry, 0) } {
+    match unsafe { ZLB_FIB6.insert(&dst, &ctx6.fibentry, 0) } {
         Ok(()) => {}
         Err(_) => {
             stats_inc(stats::FIB_ERROR_UPDATE);
