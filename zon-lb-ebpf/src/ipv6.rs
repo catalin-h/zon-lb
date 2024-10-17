@@ -363,11 +363,12 @@ fn update_neighbors_cache(
         return;
     }
 
+    let pinet6u = ip as *const _ as *const Inet6U;
     info!(
         ctx,
         "[nd] update if:{} [{:i}] => {:mac}, vlan:{}, mtu:{}, rc={}",
         ifindex,
-        unsafe { Inet6U::from(ip).addr8 },
+        unsafe { (*pinet6u).addr8 },
         *mac,
         vlan_id,
         mtu,
