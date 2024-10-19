@@ -193,7 +193,7 @@ fn update_destination_inet_csum(
     // recalculated every time the hop limit is decreased as it happens
     // when the TTL from IPv4 header is reduced by one.
 
-    if port_combo != 0 && ipv6hdr.next_hdr != IpProto::Ipv6Icmp {
+    if port_combo != 0 && l4ctx.next_hdr != IpProto::Ipv6Icmp {
         csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
         let ptr = ptr_at::<u32>(ctx, l4ctx.offset)?;
         unsafe { *(ptr.cast_mut()) = port_combo };
