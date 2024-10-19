@@ -844,7 +844,6 @@ struct L4Context {
     src_port: u32,
     dst_port: u32,
     flags: u32,
-    frag_id: u32,
     next_hdr: IpProto,
 }
 
@@ -873,7 +872,6 @@ impl L4Context {
                         src_port: 0,
                         dst_port: 0,
                         flags: 0,
-                        frag_id: 0,
                         next_hdr: IpProto::HopOpt,
                     })
                 }
@@ -885,7 +883,6 @@ impl L4Context {
                         src_port: frag.src_port as u32,
                         dst_port: frag.dst_port as u32,
                         flags: 0,
-                        frag_id: 0,
                         next_hdr: IpProto::HopOpt,
                     });
                 }
@@ -949,7 +946,6 @@ impl L4Context {
             src_port,
             dst_port,
             flags,
-            frag_id: 0,
             next_hdr: IpProto::HopOpt,
         })
     }

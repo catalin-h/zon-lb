@@ -614,18 +614,10 @@ impl Ipv6FragExtHdr {
     }
 }
 
-fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
-    if l4ctx.frag_id == 0 {
-        return;
-    }
-
+fn cache_frag_info(fragid: &Ipv6FragId, l4ctx: &L4Context) {
     match unsafe {
         ZLB_FRAG6.insert(
-            &Ipv6FragId {
-                id: l4ctx.frag_id,
-                src: Inet6U::from(&ipv6hdr.src_addr.in6_u.u6_addr32),
-                dst: Inet6U::from(&ipv6hdr.dst_addr.in6_u.u6_addr32),
-            },
+            &fragid,
             &Ipv6FragInfo {
                 src_port: l4ctx.src_port as u16,
                 dst_port: l4ctx.dst_port as u16,
@@ -635,7 +627,9 @@ fn cache_frag_info(ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
         )
     } {
         Ok(()) => {}
-        Err(_) => {}
+        Err(_) => {
+            stats_inc(stats::IPV6_FRAGMENT_ERRORS);
+        }
     };
 
     // BUG: aya compiler generates code that exeeds the stack size:
@@ -653,7 +647,6 @@ impl L4Context {
             src_port: 0,
             dst_port: 0,
             flags: 0,
-            frag_id: 0,
             next_hdr,
         }
     }
@@ -751,6 +744,7 @@ struct Context6 {
     ctnat: CTCache,
     fiblookup: BpfFibLookUp,
     fibentry: FibEntry,
+    fragid: Ipv6FragId,
 }
 
 #[map]
@@ -807,6 +801,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     ctx6.feat.fetch();
     let mut l4ctx = L4Context::new_for_ipv6(&l2ctx, ipv6hdr.next_hdr);
     let feat = Features::new();
+    let mut cache_fragment = false;
 
     for _ in 0..4 {
         match l4ctx.next_hdr {
@@ -897,21 +892,17 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
                 stats_inc(stats::IPV6_FRAGMENTS);
 
+                array_copy(&mut unsafe { ctx6.fragid.src.addr32 }, src_addr);
+                array_copy(&mut unsafe { ctx6.fragid.dst.addr32 }, dst_addr);
+                ctx6.fragid.id = exthdr.id;
+
                 if exthdr.offset() == 0 {
-                    // The id will be needed to cache the L4 info entry after
-                    // checking if this packet belongs to a LB flow.
-                    l4ctx.frag_id = exthdr.id;
+                    cache_fragment = true;
                 } else {
                     // Retrieve cached l4 info and don't set the checksum offset
                     // as there no need to compute the checksum for fragments.
                     // Fragments that are not recognized are passed along.
-                    match unsafe {
-                        ZLB_FRAG6.get(&Ipv6FragId {
-                            id: exthdr.id,
-                            src: Inet6U::from(src_addr),
-                            dst: Inet6U::from(dst_addr),
-                        })
-                    } {
+                    match unsafe { ZLB_FRAG6.get(&ctx6.fragid) } {
                         // Missing first fragment
                         None => {
                             stats_inc(stats::IPV6_FRAGMENT_ERRORS);
@@ -988,7 +979,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         log_nat6(ctx, &nat, &feat);
 
         // Save fragment before updating addresses
-        cache_frag_info(ipv6hdr, &l4ctx);
+        if cache_fragment {
+            cache_frag_info(&ctx6.fragid, &l4ctx);
+        }
 
         // TBD: for crc32 use crc32_off
 
@@ -1125,7 +1118,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         );
     }
 
-    cache_frag_info(ipv6hdr, &l4ctx);
+    if cache_fragment {
+        cache_frag_info(&ctx6.fragid, &l4ctx);
+    }
 
     let port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
