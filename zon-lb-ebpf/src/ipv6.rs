@@ -966,8 +966,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     }
 
-    // BUG: can't use match expr. here or map.get_ptr() as aya generates code that
-    // throws the `relocating function` error
     if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
         if ipv6hdr.payload_len.to_be() > nat.mtu {
             return send_ptb(ctx, &l2ctx, ipv6hdr, nat.mtu as u32);
