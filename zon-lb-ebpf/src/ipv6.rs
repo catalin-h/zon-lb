@@ -743,6 +743,7 @@ struct Context6 {
     fiblookup: BpfFibLookUp,
     fibentry: FibEntry,
     fragid: Ipv6FragId,
+    ptbprotohdr: ProtoHdr,
 }
 
 #[map]
@@ -1350,7 +1351,6 @@ struct Icmpv6Ptb {
 const PTB_SIZE: u32 = mem::size_of::<Icmpv6Ptb>() as u32;
 const PTB_WSIZE: usize = (PTB_SIZE >> 2) as usize;
 
-#[inline(never)]
 fn send_ptb(
     ctx: &XdpContext,
     l2ctx: &L2Context,
@@ -1368,12 +1368,17 @@ fn send_ptb(
         );
     }
 
+    let ctx6 = unsafe {
+        let ptr = ZLB_CONTEXT6.get_ptr_mut(0).ok_or(())?;
+        &mut *ptr
+    };
+
     // NOTE: the bellow pointer getter are unlikely to fail because
     // on IPv6 the minimum MTU is 1280.
 
     let ptb_offset = l2ctx.ethlen + Ipv6Hdr::LEN;
     let phdr = ptr_at::<ProtoHdr>(&ctx, ptb_offset)?;
-    let phdr = unsafe { *phdr };
+    array_copy(&mut ctx6.ptbprotohdr, unsafe { &*phdr });
 
     // NOTE: the new ICMPv6 header can be located at another offset than
     // the original L4 header.
@@ -1382,7 +1387,7 @@ fn send_ptb(
 
     // Copy the original IPv6 header as data for the Icmpv6 PTB message
     ptb.ipv6hdr = *ipv6hdr;
-    ptb.protohdr = phdr;
+    array_copy(&mut ptb.protohdr, &ctx6.ptbprotohdr);
 
     ptb.type_ = 2; // Packet To Big error id
     ptb.code = 0; // always zero
