@@ -733,7 +733,6 @@ fn ct6_handler(
 // diferent large objects (especially for IPv6 path) one common workaround
 // is to use a per cpu (avoids concurrency) struct that contains all the
 // objects that can be created on any program execution path.
-
 #[repr(C)]
 struct Context6 {
     feat: Features,
@@ -798,6 +797,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         &mut *ptr
     };
     ctx6.feat.fetch();
+    // NOTE: looks like the compiler generates more code when using the
+    // reference to Features object from Content.
     let mut l4ctx = L4Context::new_for_ipv6(&l2ctx, ipv6hdr.next_hdr);
     let feat = Features::new();
     let mut cache_fragment = false;
@@ -860,7 +861,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 let len = unsafe { (*exthdr).len_8b } as usize;
                 l4ctx.offset += len << 3;
                 l4ctx.next_hdr = unsafe { (*exthdr).next_header };
-                continue;
             }
             IpProto::Ipv6Frag => {
                 // NOTE: Unlike with IPv4, routers never fragment a packet.
