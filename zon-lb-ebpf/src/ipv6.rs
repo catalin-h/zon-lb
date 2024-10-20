@@ -691,9 +691,7 @@ fn ct6_handler(
     if ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
         let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
         let macs = unsafe { &mut *macs };
-        macs[2] = ctnat.macs[2];
-        macs[1] = ctnat.macs[1];
-        macs[0] = ctnat.macs[0];
+        array_copy(macs, &ctnat.macs);
 
         // NOTE: This call can shrink or enlarge the packet so all pointers
         // to headers are invalidated.
