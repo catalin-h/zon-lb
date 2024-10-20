@@ -707,13 +707,13 @@ fn ct6_handler(
         return Ok(action);
     }
 
-    if feat.log_enabled(Level::Info) {
-        info!(ctx, "in => xdp_tx");
-    }
-
     // Send back the packet to the same interface
     if ctnat.flags.contains(EPFlags::XDP_TX) {
         // TODO: swap mac addresses
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "in => xdp_tx");
+        }
 
         stats_inc(stats::XDP_TX);
 
