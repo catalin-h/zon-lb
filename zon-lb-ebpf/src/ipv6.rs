@@ -797,10 +797,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         &mut *ptr
     };
     ctx6.feat.fetch();
-    // NOTE: looks like the compiler generates more code when using the
-    // reference to Features object from Content.
     let mut l4ctx = L4Context::new_for_ipv6(&l2ctx, ipv6hdr.next_hdr);
-    let feat = Features::new();
+    let feat = &ctx6.feat;
     let mut cache_fragment = false;
 
     for _ in 0..4 {
