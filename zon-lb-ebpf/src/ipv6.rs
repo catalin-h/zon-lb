@@ -662,14 +662,13 @@ fn ct6_handler(
     l4ctx: &L4Context,
     ipv6hdr: &mut Ipv6Hdr,
     ctnat: &CTCache,
+    feat: &Features,
 ) -> Result<u32, ()> {
     if ipv6hdr.payload_len.to_be() > ctnat.mtu as u16 {
         return send_ptb(ctx, &l2ctx, ipv6hdr, ctnat.mtu);
     }
 
     stats_inc(stats::PACKETS);
-
-    let feat = Features::new();
 
     // NOTE: No need to save fragment because this handler is called
     // after the main flows (request & response) caches this conntrack
@@ -959,7 +958,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let now = coarse_ktime();
     if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&nat6key) } {
         if ctnat.time > now {
-            return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat);
+            return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat, feat);
         }
     }
 
