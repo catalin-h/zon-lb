@@ -933,6 +933,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // * use per cpu array maps
     // * try remove some log prints
     // * don't create object like NAT6Key as read-only and redefine them as mutable.
+    // * move large object to Context object
+    // * the stack exhaustion is also the cause of the bpf_linker error
+    // * the aya_logger macros consumes a lot of stack so maybe create custom logger
+    // that does not consume the stack.
 
     let nat6key = &mut ctx6.nat6key;
 
@@ -949,6 +953,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // 5479: (63) *(u32 *)(r9 +28) = r2 | 5479: (61) r1 = *(u32 *)(r8 +20)
     // 5480: (63) *(u32 *)(r9 +24) = r1 | 5480: (63) *(u32 *)(r9 +36) = r1
 
+    // NOTE: Using the NAT6Key kept in Context and used for both conntrack
+    // local and global cache searches the top speed for IPv6 DSR_L2
+    // is 3.38Gbits/sec at this commit:
+    // 304f4a8 bpf6: use the Context Feature object inside the ct6 handler
+    //
     nat6key.ip_be_src = Inet6U::from(src_addr);
     nat6key.ip_lb_dst = Inet6U::from(dst_addr);
     nat6key.port_be_src = l4ctx.src_port;
