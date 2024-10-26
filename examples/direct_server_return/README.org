@@ -1,0 +1,150 @@
+#+TITLE: Test zon-lb L2 direct server return (DSR) mode
+
+#+begin_src
+┌────────────────┐    ┌──────────────────────────┐   ┌────────────────────┐
+|  Client(s)     │    │       Gateway            |   |   Backend(s) Node  |
+|                │    |                          |   |                    |
+│ zone0 netns    │    │    default netns         │   │     zone1 netns    │
+|                │    │                          |   |                    |
+|                │    │                 10.2.0.1 |   | 10.2.0.2           |
+|                │    |            2001:db8::2:1 |   | 2001:db8::2:2      |
+│        veth1 ┌─┴────┴─┐veth0/xdp   veth2/xdp┌──┴───┴─┐ veth3 ◄----► lo  │
+│     10.0.0.2 │◄------►├┐ 10.0.0.1(VIP)     ┌┤◄------►│    (VIP)10.0.0.1 │
+│  2001:db8::2 └─┬────┬─┘│ 2001:db8::1(VIP)  |└─┬────┬─┘ (VIP)2001:db8::1 │
+|                │    │  |                   |  |    |                    |
+|                │    │  └───┤l2+redirect├───┘  |    |                    |
+└────────────────┘    └─────────────────────────┘    └────────────────────┘
+
+#+end_src
+
+** Zon-lb features:
+
+- L2 direct server return (DSR)* mode with MAC address change
+- XDP redirect
+- Connection tracking but without NAT
+- No L3 IP address or L4 headers update
+- FIB lookup
+
+(*) The key idea on how to implement L2 DSR is to use the same IP address (aka VIP)
+for both =zon-lb= group and on the =loopback= interface inside the backend
+netns. See also the Notes below about L2 DSR implementation.
+
+** Setup
+
+Run the [[./setup.sh][setup]] to create the custom namespace =zone0=:
+
+#+begin_src sh
+sudp ./setup.sh
+#+end_src
+
+Load the configuration [[./zonlb.toml][config]]:
+
+#+begin_src sh
+sudo ./zon-lb ./zonlb.toml load
+#+end_src
+
+Note that there no need to preload or postload the =zon-lb= program
+on any of the interfaces mentioned in the config file. The user app
+will automatically load or replace the existing program binded to
+the interface. This is done in order to patch the redirect map that
+might not be consistent with current device indexes.
+
+*** Both veth pair sides must have attached an xdp program
+
+Event though the load balancer is in L2 DSR mode the pass-through =XDP_PASS=
+program must be attched to the other end of the veth tunnel since =zon_lb=
+uses XDP packet =redirect=.
+
+*** Must disable tx offload checksumming on both veth interfaces from netns
+
+In L2 DSR mode the load balancer doesn't change the L3/L4 headers and only
+changes the MAC address pair to match the veth connection. However, on Linux
+when connecting to the pair veth the IP checksum is disabled by default.
+Since the =zon-lb= computes the inet checksum only on the changed header data,
+the packet will be dropped by the IP stack from =zone1=.
+
+** Run =iperf= benchmark
+
+To start the IPv6 =iperf= server in the =zone1= netns run the following command
+from the default netns:
+#+begin_src sh
+sudo ip netns exec zone1 iperf -s -p 23 -B [2001:db8::1]:23 -V
+#+end_src
+
+To launch the client in =zone0= netns run the next command also
+from default netns:
+#+begin_src sh
+sudo ip netns exec zone0 iperf -e -p 23 -c 2001:db8::1 -w64K
+#+end_src
+
+The results look like:
+#+begin_src
+Client connecting to 2001:db8::1, TCP port 23 with pid 26737 (1 flows)
+Write buffer size: 131072 Byte
+TOS set to 0x0 (Nagle on)
+TCP window size:  128 KByte (WARNING: requested 64.0 KByte)
+------------------------------------------------------------
+[  1] local 2001:db8::%veth1 port 43920 connected with 2001:db8::1 port 23 (sock=3) (icwnd/mss/irtt=13/1428/84) (ct=0.14 ms) on 2024-10-21 21:41:15 (EEST)
+[ ID] Interval            Transfer     Bandwidth       Write/Err  Rtry   Cwnd/RTT(var)     NetPwr
+[  1] 0.0000-10.0004 sec  3.94 GBytes  3.38 Gbits/sec  32238/0    0      158K/161(153) us  2624419
+#+end_src
+
+Notes:
+* The iperf server IP is bound to the same IP and port as the =backend group=.
+The IP is known as Virtual-IP in DSR modes and must be assigned
+to the =lo= interface to enable the direct response.
+* The tests were done using the TCP window size or socket buffer size of 64KB.
+Using a bigger buffer can result in better performance but for the test machine
+this seems to be the sweet spot. Also, letting iperf decide the window can
+result in lower performance. It is important to stick with a known windows size
+in order to know if performance was degradated or not.
+* In preliminary tests the L2 DSR mode always beats the traditional NAT method
+but not by much. This happens because in both methods use connection tracking
+and the L3/L4 headers are updated only in NAT mode.
+* The =iperf= performance depends on many factors and one is the available CPUs
+and their load. Running other tasks that use the network can limit the test
+throughput.
+* The tests show that there is a significant performance gap between IPv6 and
+IPv4 (~0.25 Gbits/sec). This likely because of different implementations but
+also because of more reads and writes due to longer IP addresses. Also, for
+IPv6 the connection tracking keys to search the BPF maps are 3x bigger than
+the IPv4 equivalent.
+
+** Notes
+* The usual methods to implement direct server return by a load balancer are
+by changing only the destination MAC address (L2 DSR) and by using a L3 tunnel
+protocol like GRE or IPv6tnl to (L3 DSR). For a brief introduction of the
+two methods check the Wmware AVI LB, Envoy proxy and BlueCat LB documention below.
+* Since the =zon-lb= is a ebpf program the L2 DSR implementation differs
+from the traditional way by still tracking the connection in order to know to
+which interface to redirect the reply. This was done in order to avoid some
+configuration on the backend server like disabling ARP responses and allowing
+the node to be on another network and not on the same L2 segment as traditinal
+L2 DSR requires.
+* The connection tracking is optional as the node can have custom route back
+to the client and it was implemented since in the common scenarios the backend
+server reply will always reach the load balancer node/netns and the =zon-lb=
+can quickly search the route back to the client in its connection track cache.
+* The L2 DSR is faster than normal NAT method and in most real world scenarios
+it can be used instead of the latter.
+* It could made sense to attach the zon-lb to one of the veth inside
+a network namespace or container but in practice it is an overkill
+since there is no process to run. The main idea of a container is to
+isolate a process from the main enviroment. However, the zon-lb
+doesn't require a process to run as it is an ebpf program and in
+the kernel (current 6.1) there is no way to isolate epbf programs
+in namespaces. Also, the bpffs must be remounted to a different
+location than /sys/fs since tools like =ip netns exec= will unmount
+the =/sys= and any created mounts on command exit. Note that by
+default, in network namespaces created by =ip netns= the bpffs is
+not mounted.
+
+** References
+
+- [[https://lwn.net/Articles/580893/][Namespaces in operation, part 7: Network namespaces]]
+- [[https://patchwork.kernel.org/project/netdevbpf/cover/20231009182753.851551-1-toke@redhat.com/#25547094][RFC,iproute2-next,0/5 - Persisting of mount namespaces along with network namespaces]]
+- [[https://fedepaol.github.io/blog/2023/09/06/ebpf-journey-by-examples-l4-load-balancing-with-xdp-and-katran/][ebpf journey by examples: l4 load balancing with xdp and katran]]
+- [[https://docs.vmware.com/en/VMware-Avi-Load-Balancer/30.2/Configuration-Guide/GUID-FE309741-DEFF-42C1-9AE1-69F36806E93D.html][Wmware: Direct Server Return on Avi Load Balancer]]
+- [[https://docs.bluecatnetworks.com/r/BlueCat-Edge-Deployment-Guide/DSR-load-balancing/Service-Point-v3.x.x][BlueCat: DSR load balancing]]
+- [[https://blog.envoyproxy.io/introduction-to-modern-network-load-balancing-and-proxying-a57f6ff80236][Envoy:Introduction to modern network load balancing and proxying]]
+
