@@ -90,54 +90,18 @@ TCP window size:  128 KByte (WARNING: requested 64.0 KByte)
 #+end_src
 
 Notes:
-* The iperf server IP is bound to the same IP and port as the =backend group=.
-The IP is known as Virtual-IP in DSR modes and must be assigned
-to the =lo= interface to enable the direct response.
-* The tests were done using the TCP window size or socket buffer size of 64KB.
-Using a bigger buffer can result in better performance but for the test machine
-this seems to be the sweet spot. Also, letting iperf decide the window can
-result in lower performance. It is important to stick with a known windows size
-in order to know if performance was degradated or not.
-* In preliminary tests the L2 DSR mode always beats the traditional NAT method
-but not by much. This happens because in both methods use connection tracking
-and the L3/L4 headers are updated only in NAT mode.
-* The =iperf= performance depends on many factors and one is the available CPUs
-and their load. Running other tasks that use the network can limit the test
-throughput.
-* The tests show that there is a significant performance gap between IPv6 and
-IPv4 (~0.25 Gbits/sec). This likely because of different implementations but
-also because of more reads and writes due to longer IP addresses. Also, for
-IPv6 the connection tracking keys to search the BPF maps are 3x bigger than
-the IPv4 equivalent.
+- The iperf server IP is bound to the same IP and port as the =backend group=. The IP is known as Virtual-IP in DSR modes and must be assigned to the =lo= interface to enable the direct response.
+- The tests were done using the TCP window size or socket buffer size of 64KB.Using a bigger buffer can result in better performance but for the test machine this seems to be the sweet spot. Also, letting iperf decide the window can result in lower performance. It is important to stick with a known windows size in order to know if performance was degradated or not.
+- In preliminary tests the L2 DSR mode always beats the traditional NAT method but not by much. This happens because in both methods use connection tracking and the L3/L4 headers are updated only in NAT mode.
+- The =iperf= performance depends on many factors and one is the available CPUs and their load. Running other tasks that use the network can limit the test throughput.
+- The tests show that there is a significant performance gap between IPv6 and IPv4 (~0.25 Gbits/sec). This likely because of different implementations but also because of more reads and writes due to longer IP addresses. Also, for IPv6 the connection tracking keys to search the BPF maps are 3x bigger than the IPv4 equivalent.
 
 ** Notes
-* The usual methods to implement direct server return by a load balancer are
-by changing only the destination MAC address (L2 DSR) and by using a L3 tunnel
-protocol like GRE or IPv6tnl to (L3 DSR). For a brief introduction of the
-two methods check the Wmware AVI LB, Envoy proxy and BlueCat LB documention below.
-* Since the =zon-lb= is a ebpf program the L2 DSR implementation differs
-from the traditional way by still tracking the connection in order to know to
-which interface to redirect the reply. This was done in order to avoid some
-configuration on the backend server like disabling ARP responses and allowing
-the node to be on another network and not on the same L2 segment as traditinal
-L2 DSR requires.
-* The connection tracking is optional as the node can have custom route back
-to the client and it was implemented since in the common scenarios the backend
-server reply will always reach the load balancer node/netns and the =zon-lb=
-can quickly search the route back to the client in its connection track cache.
-* The L2 DSR is faster than normal NAT method and in most real world scenarios
-it can be used instead of the latter.
-* It could made sense to attach the zon-lb to one of the veth inside
-a network namespace or container but in practice it is an overkill
-since there is no process to run. The main idea of a container is to
-isolate a process from the main enviroment. However, the zon-lb
-doesn't require a process to run as it is an ebpf program and in
-the kernel (current 6.1) there is no way to isolate epbf programs
-in namespaces. Also, the bpffs must be remounted to a different
-location than /sys/fs since tools like =ip netns exec= will unmount
-the =/sys= and any created mounts on command exit. Note that by
-default, in network namespaces created by =ip netns= the bpffs is
-not mounted.
+- The usual methods to implement direct server return by a load balancer are by changing only the destination MAC address (L2 DSR) and by using a L3 tunnel protocol like GRE or IPv6tnl to (L3 DSR). For a brief introduction of the two methods check the Wmware AVI LB, Envoy proxy and BlueCat LB documention below.
+- Since the =zon-lb= is a ebpf program the L2 DSR implementation differs from the traditional way by still tracking the connection in order to know to which interface to redirect the reply. This was done in order to avoid some configuration on the backend server like disabling ARP responses and allowing the node to be on another network and not on the same L2 segment as traditinal L2 DSR requires.
+- The connection tracking is optional as the node can have custom route back to the client and it was implemented since in the common scenarios the backend server reply will always reach the load balancer node/netns and the =zon-lb= can quickly search the route back to the client in its connection track cache.
+- The L2 DSR is faster than normal NAT method and in most real world scenarios it can be used instead of the latter.
+- It could made sense to attach the zon-lb to one of the veth inside a network namespace or container but in practice it is an overkill since there is no process to run. The main idea of a container is to isolate a process from the main enviroment. However, the zon-lb doesn't require a process to run as it is an ebpf program and in the kernel (current 6.1) there is no way to isolate epbf programs in namespaces. Also, the bpffs must be remounted to a different location than /sys/fs since tools like =ip netns exec= will unmount the =/sys= and any created mounts on command exit. Note that by default, in network namespaces created by =ip netns= the bpffs is not mounted.
 
 ** References
 
