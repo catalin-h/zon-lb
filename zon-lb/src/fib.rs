@@ -24,7 +24,9 @@ impl ToMapName for Fib6Key {
 
 pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
     let mut ifc = IfCache::new("(na)");
-    let mut tab = InfoTable::new(vec!["dst", "src", "mac dst", "", "mac src", "if", "expiry"]);
+    let mut tab = InfoTable::new(vec![
+        "dst", "src", "mac dst", "", "mac src", "if", "mtu", "expiry",
+    ]);
     let options = Options::from_option_args_with_keys(
         filter_opts,
         &vec![options::FLAG_ALL, options::FLAG_IPV4, options::FLAG_IPV6],
@@ -48,6 +50,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
                 String::from("<"),
                 cwa.second_string(),
                 name,
+                value.mtu.to_string(),
                 pts.status(value.expiry),
             ]);
         }
@@ -71,6 +74,7 @@ pub fn list(filter_opts: &Vec<String>) -> Result<(), anyhow::Error> {
                 String::from("<"),
                 cwa.second_string(),
                 name,
+                value.mtu.to_string(),
                 pts.status(value.expiry),
             ]);
         }
