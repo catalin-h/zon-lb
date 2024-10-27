@@ -32,7 +32,7 @@ inside the backend netns. This should be the preferred method for load balancing
 backends as it is faster than the NAT method and can substitute it in most
 scenarios with minimal changes (e.g. add the VIP address).
 For more details about the =zon-lb= L2 DSR implementation see the
-[[https://github.com/catalin-h/zon-lb/tree/main/examples/direct_server_return#notes][Notes]]
+[[./README.org#notes][Notes]]
 below.
 
 ** Setup
@@ -121,14 +121,14 @@ TCP window size:  128 KByte (WARNING: requested 64.0 KByte)
 #+end_src
 
 Observations:
-- The iperf server IP is bound to the same IP and port as the =backend group=. The IP is known as Virtual-IP in DSR modes and must be assigned to the =lo= interface to enable the direct response.
+- The iperf server IP is bound to the same IP and port as the =backend group=.The IP is known as Virtual-IP in DSR modes and must be assigned to the =lo= interface to enable the direct response.
 - The tests were done using the TCP window size or socket buffer size of 64KB.Using a bigger buffer can result in better performance but for the test machine this seems to be the sweet spot. Also, letting iperf decide the window can result in lower performance. It is important to stick with a known windows size in order to know if performance was degradated or not.
 - In preliminary tests the L2 DSR mode always beats the traditional NAT method but not by much. This happens because in both methods use connection tracking and the L3/L4 headers are updated only in NAT mode.
 - The =iperf= performance depends on many factors and one is the available CPUs and their load. Running other tasks that use the network can limit the test throughput.
 - The tests show that there is a significant performance gap between IPv6 and IPv4 (~0.25 Gbits/sec). This likely because of different implementations but also because of more reads and writes due to longer IP addresses. Also, for IPv6 the connection tracking keys to search the BPF maps are 3x bigger than the IPv4 equivalent.
 
 ** Notes
-- The usual methods to implement direct server return by a load balancer are by changing only the destination MAC address (L2 DSR) and by using a L3 tunnel protocol like GRE or IPv6tnl to (L3 DSR). For a brief introduction of the two methods check the Wmware AVI LB, Envoy proxy and BlueCat LB documention below.
+- The usual methods to implement direct server return by a load balancer are by changing only the destination MAC address (L2 DSR) and by using a L3 tunnel protocol like GRE or IPv6tnl to (L3 DSR). For a brief introduction of the two methods check the Vmware AVI LB, Envoy proxy and BlueCat LB [[./README.org#references][documention below]].
 - Since the =zon-lb= is a ebpf program the L2 DSR implementation differs from the traditional way by still tracking the connection in order to know to which interface to redirect the reply. This was done in order to avoid some configuration on the backend server like disabling ARP responses and allowing the node to be on another network and not on the same L2 segment as traditinal L2 DSR requires.
 - The connection tracking is optional as the node can have custom route back to the client and it was implemented since in the common scenarios the backend server reply will always reach the load balancer node/netns and the =zon-lb= can quickly search the route back to the client in its connection track cache.
 - The L2 DSR is faster than normal NAT method and in most real world scenarios it can be used instead of the latter.
