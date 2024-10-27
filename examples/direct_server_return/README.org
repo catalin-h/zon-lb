@@ -8,11 +8,11 @@
 |                │    │                          |   |                    |
 |                │    │                 10.2.0.1 |   | 10.2.0.2           |
 |                │    |            2001:db8::2:1 |   | 2001:db8::2:2      |
-│        veth1 ┌─┴────┴─┐veth0/xdp   veth2/xdp┌──┴───┴─┐ veth3 ◄----► lo  │
-│     10.0.0.2 │◄------►├┐ 10.0.0.1(VIP)     ┌┤◄------►│    (VIP)10.0.0.1 │
-│  2001:db8::2 └─┬────┬─┘│ 2001:db8::1(VIP)  |└─┬────┬─┘ (VIP)2001:db8::1 │
-|                │    │  |                   |  |    |                    |
-|                │    │  └───┤l2+redirect├───┘  |    |                    |
+│        veth1 ┌─┴────┴─┐veth0/xdp   veth2/xdp┌──┴───┴─┐ veth3 <----┐     │
+│     10.0.0.2 │<------>├┐ 10.0.0.1(VIP)     ┌┤<------>│            v     │
+│  2001:db8::2 └─┬────┬─┘│ 2001:db8::1(VIP)  |└─┬────┬─┘           lo     │
+|                │    │  |                   |  |    |      (VIP)10.0.0.1 |
+|                │    │  └───┤l2+redirect├───┘  |    |   (VIP)2001:db8::1 |
 └────────────────┘    └─────────────────────────┘    └────────────────────┘
 
 #+end_src
@@ -81,7 +81,7 @@ sudo ip netns exec zone1 iperf -s -p 23 -B 10.0.0.1
 The =iperf= client can be started in =zone0= netns by run the next command from
 default netns:
 #+begin_src sh
-sudo ip netns exec zone0 iperf -e -p 23 -c 10.0.0.1 -w 64K
+sudo ip netns exec zone0 iperf -e -p 23 -c 10.0.0.1 -w64K
 #+end_src
 
 The results should look like the following for =64K= TCP buffer:
@@ -139,7 +139,7 @@ Observations:
 - [[https://lwn.net/Articles/580893/][Namespaces in operation, part 7: Network namespaces]]
 - [[https://patchwork.kernel.org/project/netdevbpf/cover/20231009182753.851551-1-toke@redhat.com/#25547094][RFC,iproute2-next,0/5 - Persisting of mount namespaces along with network namespaces]]
 - [[https://fedepaol.github.io/blog/2023/09/06/ebpf-journey-by-examples-l4-load-balancing-with-xdp-and-katran/][ebpf journey by examples: l4 load balancing with xdp and katran]]
-- [[https://docs.vmware.com/en/VMware-Avi-Load-Balancer/30.2/Configuration-Guide/GUID-FE309741-DEFF-42C1-9AE1-69F36806E93D.html][Wmware: Direct Server Return on Avi Load Balancer]]
+- [[https://docs.vmware.com/en/VMware-Avi-Load-Balancer/30.2/Configuration-Guide/GUID-FE309741-DEFF-42C1-9AE1-69F36806E93D.html][Vmware: Direct Server Return on Avi Load Balancer]]
 - [[https://docs.bluecatnetworks.com/r/BlueCat-Edge-Deployment-Guide/DSR-load-balancing/Service-Point-v3.x.x][BlueCat: DSR load balancing]]
 - [[https://blog.envoyproxy.io/introduction-to-modern-network-load-balancing-and-proxying-a57f6ff80236][Envoy:Introduction to modern network load balancing and proxying]]
 
