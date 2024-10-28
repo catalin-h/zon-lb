@@ -163,15 +163,13 @@ fn stats_inc(idx: u32) {
 
 #[inline(always)]
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
-    let start = ctx.data();
-    let end = ctx.data_end();
-    let len = mem::size_of::<T>();
+    let offset = ctx.data() + offset;
 
-    if start + offset + len > end {
-        return Err(());
+    if offset + mem::size_of::<T>() <= ctx.data_end() {
+        return Ok(offset as *const T);
     }
 
-    Ok((start + offset) as *const T)
+    Err(())
 }
 
 #[xdp]
