@@ -308,8 +308,6 @@ struct Icmpv6NdHdr {
     flags: u32,
     /// Both NDS and NDA set this field to the target IPv6 address
     tgt_addr: Inet6U,
-    /// The source/target link-layer address option
-    lladopt: Icmpv6LLAddrOption,
 }
 
 pub fn check_mtu(ctx: &XdpContext, ifindex: u32) -> u16 {
@@ -376,38 +374,50 @@ fn update_neighbors_cache(
     );
 }
 
-fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Result<u32, ()> {
+fn neighbor_solicit(
+    ctx: &XdpContext,
+    l2ctx: &L2Context,
+    ipv6hdr: &mut Ipv6Hdr,
+    l4ctx: &L4Context,
+    feat: &Features,
+) -> Result<u32, ()> {
     let eth = ptr_at::<EthHdr>(&ctx, 0)?;
     let eth = unsafe { &mut *eth.cast_mut() };
-    let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
-    let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
     let ndhdr = ptr_at::<Icmpv6NdHdr>(&ctx, l4ctx.offset)?;
     let ndhdr = unsafe { &mut *ndhdr.cast_mut() };
-    let feat = Features::new();
-    let log_on = feat.log_enabled(Level::Info);
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
-    let llao = ndhdr.lladopt;
+    let offset = l4ctx.offset + mem::size_of::<Icmpv6NdHdr>();
+    let lladopt = ptr_at::<Icmpv6LLAddrOption>(&ctx, offset);
 
-    if !is_unicast_mac(&llao.mac) || llao.otype == 0 || llao.otype > 2 {
-        return Ok(xdp_action::XDP_PASS);
-    }
-
-    if log_on {
-        let opt = if llao.otype == 1 {
-            "sol-req"
-        } else {
-            "adver-reply"
-        };
+    if feat.log_enabled(Level::Info) {
+        let nt = ndhdr.type_ == icmpv6::ND_SOLICIT;
+        let nt = if nt { "sol-req" } else { "adver-reply" };
+        let opt = if lladopt.is_ok() { " +" } else { " no " };
         info!(
             ctx,
-            "[nd] {} if:{} src:[{:i}]/{:mac}/vlan={} for target [{:i}]",
-            opt,
+            "[nd] {} if:{} src:[{:i}]/{:mac}/vlan={} for target [{:i}]{}llddar",
+            nt,
             ifindex,
             unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
             eth.src_addr,
             (l2ctx.vlan_id() as u16).to_be(),
-            unsafe { ndhdr.tgt_addr.addr8 }
+            unsafe { ndhdr.tgt_addr.addr8 },
+            opt
         );
+    }
+
+    // The source/target link-layer address option
+    let lladopt = match lladopt {
+        Ok(ptr) => unsafe { &mut *(ptr.cast_mut()) },
+        Err(_) => {
+            // Update the neighbors table if the ND message contains a link layer option
+            // Some IPv6 implementations don't send the link layer option
+            return Ok(xdp_action::XDP_PASS);
+        }
+    };
+
+    if !is_unicast_mac(&lladopt.mac) || lladopt.otype == 0 || lladopt.otype > 2 {
+        return Ok(xdp_action::XDP_PASS);
     }
 
     // If this is a ND solicitation request
@@ -415,17 +425,17 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
         ctx,
         unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 },
         l2ctx.vlan_id(),
-        &llao.mac,
+        &lladopt.mac,
         eth,
     );
 
     // If this is a ND advertisement
-    if llao.otype == 2 {
+    if lladopt.otype == 2 {
         update_neighbors_cache(
             ctx,
             unsafe { &ndhdr.tgt_addr.addr32 },
             l2ctx.vlan_id(),
-            &llao.mac,
+            &lladopt.mac,
             eth,
         );
 
@@ -440,13 +450,15 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
         return Ok(xdp_action::XDP_PASS);
     }
 
+    // === Reply to neighbor solicitation ===
+
     // For VLANs answer to requests as this LB can act as a proxy for
     // the endpoints inside VLANs. Without special routing rules the
     // Icmpv6 ND requests are not ignored as they pertain to a different
     // network segment.
 
     if !l2ctx.has_vlan() || !is_unicast_mac(&eth.src_addr) {
-        if log_on {
+        if feat.log_enabled(Level::Info) {
             info!(ctx, "[nd] no vlan for [{:i}]", unsafe {
                 ndhdr.tgt_addr.addr8
             });
@@ -456,7 +468,7 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
 
     let smac = match unsafe { ZLB_ND.get(&ndhdr.tgt_addr.addr32) } {
         None => {
-            if log_on {
+            if feat.log_enabled(Level::Info) {
                 info!(ctx, "[nd] no entry for [{:i}]", unsafe {
                     ndhdr.tgt_addr.addr8
                 });
@@ -474,7 +486,7 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
                     entry.mac
                 }
             } else {
-                if log_on {
+                if feat.log_enabled(Level::Info) {
                     if entry.ifindex != ifindex {
                         info!(
                             ctx,
@@ -500,10 +512,8 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
 
     // NOTE: destination is always the B-CAST address
     // BUG: due to aligment constraints can't copy the llao.mac array directly
-    for i in 0..6 {
-        eth.dst_addr[i] = llao.mac[i];
-    }
-    eth.src_addr = smac;
+    array_copy(&mut eth.dst_addr, &lladopt.mac);
+    array_copy(&mut eth.src_addr, &smac);
 
     // Compute the IcmpV6 checksum first and update the header
     let mut check = !ndhdr.check as u32;
@@ -524,13 +534,15 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
     check = csum_update_u32(ndhdr.flags, flags, check);
     ndhdr.flags = flags;
 
-    // Update the option for mark this is the target link-layer address
-    ndhdr.lladopt.otype = 2;
-    ndhdr.lladopt.len = 1;
-    ndhdr.lladopt.mac = smac;
+    // Save received option in order to computed the checksum
+    let from = *lladopt.as_array();
 
-    let from = llao.as_array();
-    let to = ndhdr.lladopt.as_array();
+    // Update the option for mark this is the target link-layer address
+    lladopt.otype = 2;
+    lladopt.len = 1;
+    lladopt.mac = smac;
+
+    let to = lladopt.as_array();
     check = csum_update_u32(from[0], to[0], check);
     check = csum_update_u32(from[1], to[1], check);
 
@@ -548,7 +560,7 @@ fn neighbor_solicit(ctx: &XdpContext, l2ctx: L2Context, l4ctx: L4Context) -> Res
 
     ndhdr.check = !csum_fold_32_to_16(check);
 
-    if log_on {
+    if feat.log_enabled(Level::Info) {
         info!(
             ctx,
             "[eth] [tx] if:{} vlan_id:{} {:mac} -> {:mac}",
@@ -850,7 +862,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
                 match icmphdr.type_ {
                     icmpv6::ND_ADVERT | icmpv6::ND_SOLICIT => {
-                        return neighbor_solicit(ctx, l2ctx, l4ctx)
+                        return neighbor_solicit(ctx, &l2ctx, ipv6hdr, &l4ctx, feat)
                     }
 
                     // Handle ICMP echo request / reply to track only messages that
