@@ -676,17 +676,17 @@ struct CT6CacheKey {
 }
 
 impl CT6CacheKey {
-    fn new(ipv6hdr: &Ipv6Hdr, next_hdr: IpProto) -> Self {
-        Self {
-            next_hdr,
-            // NOTE: must manually copy the array if the prog can't
-            // be loaded at runtime due to the function  relocation
-            // error.
-            flow_label: ipv6hdr.flow_label,
-            // NOTE: the iteration will be unrolled to 4 copy ops
-            src_hash: unsafe { ipv6hdr.src_addr.in6_u.u6_addr32.iter().sum() },
-            dst_hash: unsafe { ipv6hdr.dst_addr.in6_u.u6_addr32.iter().sum() },
-        }
+    fn init(&mut self, ipv6hdr: &Ipv6Hdr, next_hdr: IpProto) {
+        self.next_hdr = next_hdr;
+
+        // NOTE: must manually copy the array if the prog can't
+        // be loaded at runtime due to the function  relocation
+        // error.
+        self.flow_label = ipv6hdr.flow_label;
+
+        // NOTE: the iteration will be unrolled to 4 copy ops
+        self.src_hash = unsafe { ipv6hdr.src_addr.in6_u.u6_addr32.iter().sum() };
+        self.dst_hash = unsafe { ipv6hdr.dst_addr.in6_u.u6_addr32.iter().sum() };
     }
 }
 
@@ -772,6 +772,7 @@ fn ct6_handler(
 // objects that can be created on any program execution path.
 #[repr(C)]
 struct Context6 {
+    ctkey: CT6CacheKey,
     feat: Features,
     nat6key: NAT6Key,
     nat6val: NAT6Value,
@@ -977,8 +978,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // that does not consume the stack.
 
     let now = coarse_ktime();
-    let ctkey = CT6CacheKey::new(&ipv6hdr, l4ctx.next_hdr);
-    if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&ctkey) } {
+
+    ctx6.ctkey.init(&ipv6hdr, l4ctx.next_hdr);
+
+    if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&ctx6.ctkey) } {
         if ctnat.time > now {
             return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat, feat);
         }
@@ -1043,7 +1046,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctnat.ifindex = nat.ifindex;
         array_copy(&mut ctx6.ctnat.macs, &nat.mac_addresses);
 
-        let _ = ZLB_CT6_CACHE.insert(&ctkey, &ctx6.ctnat, /* update or insert */ 0);
+        let _ = ZLB_CT6_CACHE.insert(&ctx6.ctkey, &ctx6.ctnat, /* update or insert */ 0);
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             // NOTE: BUG: don't use the implicit array copy (*a = mac;)
@@ -1280,7 +1283,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     ctx6.ctnat.ifindex = fib.ifindex;
     array_copy(&mut ctx6.ctnat.macs, &fib.macs);
 
-    let _ = ZLB_CT6_CACHE.insert(&ctkey, &ctx6.ctnat, /* update or insert */ 0);
+    let _ = ZLB_CT6_CACHE.insert(&ctx6.ctkey, &ctx6.ctnat, /* update or insert */ 0);
 
     // TODO: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
