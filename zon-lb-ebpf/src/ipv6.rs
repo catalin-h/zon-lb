@@ -725,7 +725,30 @@ fn ct6_handler(
         )?;
     }
 
-    if ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
+    if !ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
+        // Send back the packet to the same interface
+        if ctnat.flags.contains(EPFlags::XDP_TX) {
+            // TODO: swap mac addresses
+
+            if feat.log_enabled(Level::Info) {
+                info!(ctx, "in => xdp_tx");
+            }
+
+            stats_inc(stats::XDP_TX);
+
+            return Ok(xdp_action::XDP_TX);
+        }
+
+        if feat.log_enabled(Level::Info) {
+            info!(ctx, "in => xdp_pass");
+        }
+
+        stats_inc(stats::XDP_PASS);
+
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    {
         let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
         let macs = unsafe { &mut *macs };
         array_copy(macs, &ctnat.macs);
@@ -743,27 +766,6 @@ fn ct6_handler(
 
         return Ok(action);
     }
-
-    // Send back the packet to the same interface
-    if ctnat.flags.contains(EPFlags::XDP_TX) {
-        // TODO: swap mac addresses
-
-        if feat.log_enabled(Level::Info) {
-            info!(ctx, "in => xdp_tx");
-        }
-
-        stats_inc(stats::XDP_TX);
-
-        return Ok(xdp_action::XDP_TX);
-    }
-
-    if feat.log_enabled(Level::Info) {
-        info!(ctx, "in => xdp_pass");
-    }
-
-    stats_inc(stats::XDP_PASS);
-
-    return Ok(xdp_action::XDP_PASS);
 }
 
 // In order to avoid exhausting the 512B ebpf program stack by allocating
