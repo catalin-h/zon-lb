@@ -748,24 +748,22 @@ fn ct6_handler(
         return Ok(xdp_action::XDP_PASS);
     }
 
-    {
-        let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
-        let macs = unsafe { &mut *macs };
-        array_copy(macs, &ctnat.macs);
+    let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+    let macs = unsafe { &mut *macs };
+    array_copy(macs, &ctnat.macs);
 
-        // NOTE: This call can shrink or enlarge the packet so all pointers
-        // to headers are invalidated.
-        l2ctx.vlan_update(ctx, 0, &feat)?;
+    // NOTE: This call can shrink or enlarge the packet so all pointers
+    // to headers are invalidated.
+    l2ctx.vlan_update(ctx, 0, &feat)?;
 
-        // In case of redirect failure just try to query the FIB again
-        let action = redirect_txport(ctx, &feat, ctnat.ifindex);
+    // In case of redirect failure just try to query the FIB again
+    let action = redirect_txport(ctx, &feat, ctnat.ifindex);
 
-        if feat.log_enabled(Level::Info) {
-            info!(ctx, "[c-redirect] oif:{}, action={}", ctnat.ifindex, action);
-        }
-
-        return Ok(action);
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "[c-redirect] oif:{}, action={}", ctnat.ifindex, action);
     }
+
+    return Ok(action);
 }
 
 // In order to avoid exhausting the 512B ebpf program stack by allocating
