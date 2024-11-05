@@ -1301,7 +1301,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    let lb_addr = if be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
+    let lb_addr = if be.flags.contains(EPFlags::XDP_REDIRECT) && be.src_ip[0] != 0 {
         // TODO: check the arp table and update or insert
         // smac/dmac and derived ip src and redirect ifindex
         be.src_ip[0]

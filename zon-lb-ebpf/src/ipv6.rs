@@ -1196,7 +1196,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     // TBD: need to check BE.src_ip == 0 ?
-    let lb_addr = if be.flags.contains(EPFlags::XDP_TX) && be.src_ip[0] != 0 {
+    let lb_addr = if be.flags.contains(EPFlags::XDP_REDIRECT) && be.src_ip[0] != 0 {
         // TODO: check the ND table and update or insert
         // smac/dmac and derived ip src and redirect ifindex
         &be.src_ip
