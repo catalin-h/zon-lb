@@ -754,7 +754,7 @@ fn ct6_handler(
 
     // NOTE: This call can shrink or enlarge the packet so all pointers
     // to headers are invalidated.
-    l2ctx.vlan_update(ctx, 0, &feat)?;
+    l2ctx.vlan_update(ctx, ctnat.vlan_hdr, &feat)?;
 
     // In case of redirect failure just try to query the FIB again
     let action = redirect_txport(ctx, &feat, ctnat.ifindex);
@@ -1044,6 +1044,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         array_copy(&mut ctnat.dst_addr, dst_addr);
         ctnat.port_combo = port_combo;
         ctnat.ifindex = nat.ifindex;
+        ctnat.vlan_hdr = nat.vlan_hdr;
         array_copy(&mut ctx6.ctnat.macs, &nat.mac_addresses);
 
         let _ = ZLB_CT6_CACHE.insert(&ctx6.ctkey, &ctx6.ctnat, /* update or insert */ 0);
@@ -1282,6 +1283,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     ctx6.ctnat.port_combo = port_combo;
     ctx6.ctnat.ifindex = fib.ifindex;
     array_copy(&mut ctx6.ctnat.macs, &fib.macs);
+    ctx6.ctnat.vlan_hdr = 0;
 
     let _ = ZLB_CT6_CACHE.insert(&ctx6.ctkey, &ctx6.ctnat, /* update or insert */ 0);
 

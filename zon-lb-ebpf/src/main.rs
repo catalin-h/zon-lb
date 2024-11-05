@@ -977,6 +977,7 @@ struct CTCache {
     port_combo: u32,
     ifindex: u32,
     macs: [u32; 3],
+    vlan_hdr: u32,
 }
 
 #[map]
@@ -1049,7 +1050,7 @@ fn ct4_handler(
 
     // NOTE: This call can shrink or enlarge the packet so all pointers
     // to headers are invalidated.
-    l2ctx.vlan_update(ctx, 0, &feat)?;
+    l2ctx.vlan_update(ctx, ctnat.vlan_hdr, &feat)?;
 
     // In case of redirect failure just try to query the FIB again
     let action = redirect_txport(ctx, &feat, ctnat.ifindex);
@@ -1141,6 +1142,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 port_combo,
                 ifindex: nat.ifindex,
                 macs: nat.mac_addresses,
+                vlan_hdr: nat.vlan_hdr,
             },
             /* update or insert */ 0,
         );
@@ -1383,6 +1385,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             port_combo,
             ifindex: fib.ifindex,
             macs: fib.macs,
+            vlan_hdr: 0,
         },
         /* update or insert */ 0,
     );
