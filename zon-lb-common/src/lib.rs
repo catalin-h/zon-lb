@@ -99,6 +99,8 @@ pub struct EPFlags: u32 {
     /// MAC addresses. In DSR mode the loopback interface in the backend network
     /// namespace must be configured with the same address as the backend group IP.
     const DSR_L2 = 1 << 5;
+    /// Use DSR over a IPv6 tunnel.
+    const DSR_L3 = 1 << 6;
     /// Disable connection tracking and NAT for the backend connection.
     const NO_CONNTRACK = 1 << 8;
     /// TODO: Enable logging on this object and dimiss the runvar that controls

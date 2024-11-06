@@ -7,6 +7,7 @@ pub const DISABLE: &str = "disable";
 pub const REDIRECT: &str = "redirect";
 pub const TX: &str = "tx";
 pub const DSR_L2: &str = "dsr_l2";
+pub const DSR_L3: &str = "dsr_l3";
 pub const NO_NAT: &str = "no_nat";
 pub const SRC_IP: &str = "src_ip";
 pub const IP_ADDR: &str = "ip";
@@ -55,6 +56,7 @@ impl Options {
                 EPFlags::DISABLE => DISABLE,
                 EPFlags::XDP_TX => TX,
                 EPFlags::DSR_L2 => DSR_L2,
+                EPFlags::DSR_L3 => DSR_L3,
                 EPFlags::XDP_REDIRECT => REDIRECT,
                 EPFlags::NO_CONNTRACK => NO_NAT,
                 EPFlags::IPV4 => FLAG_IPV4,
@@ -109,6 +111,7 @@ impl Options {
                         DISABLE => flags.insert(EPFlags::DISABLE),
                         TX => flags.insert(EPFlags::XDP_TX),
                         DSR_L2 => flags.insert(EPFlags::DSR_L2),
+                        DSR_L3 => flags.insert(EPFlags::DSR_L3),
                         NO_NAT | "no_conntrack" | "no_ct" => flags.insert(EPFlags::NO_CONNTRACK),
                         REDIRECT => flags.insert(EPFlags::XDP_REDIRECT),
                         FLAG_IPV4 => flags.insert(EPFlags::IPV4),
