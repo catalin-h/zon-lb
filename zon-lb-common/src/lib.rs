@@ -295,12 +295,15 @@ impl From<u32> for BEKey {
 #[derive(Clone, Copy)]
 pub struct BE {
     /// Holds the IPv4 or IPv6 address (big-endian) of the
-    /// destination backend. Looks like using an array boosts
-    /// the iperf w/ ~0.1 Gbits/sec than separate v4 and v6
-    /// fields.
+    /// destination backend.
     pub address: [u32; 4],
     /// Prefered source ip for this backend instead of the LB ip.
-    /// It should be used if it is different than 0.0.0.0 or ::0.
+    /// It is used as source address in FIB lookup if it is different
+    /// than 0.0.0.0 or ::0.
+    /// In case of L3 DSR this represents the destination IP address
+    /// assigned to the tunnel interface through which the backend
+    /// endpoint is accessed. Usually the address is from the same
+    /// pool as the VIP or LB.
     pub src_ip: [u32; 4],
     /// The backend listening port and it should be used
     /// only if PORT flag is set. The default value is 0

@@ -1196,7 +1196,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     // TBD: need to check BE.src_ip == 0 ?
-    let lb_addr = if be.flags.contains(EPFlags::XDP_REDIRECT) && be.src_ip[0] != 0 {
+    let lb_addr = if be.flags.contains(EPFlags::XDP_REDIRECT)
+        && !be.flags.contains(EPFlags::DSR_L3)
+        && be.src_ip[0] != 0
+    {
         // TODO: check the ND table and update or insert
         // smac/dmac and derived ip src and redirect ifindex
         &be.src_ip
@@ -1596,6 +1599,9 @@ fn fetch_fib6(
         );
     }
     ctx6.init_fibentry(expiry);
+
+    // NOTE: The result is always cached even if the lookup returned an error or
+    // it couldn't obtain the MAC addresses.
 
     // NOTE: after updating the value or key struct size must remove the pinned map
     // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
