@@ -148,6 +148,23 @@ impl Options {
     fn set_be_addr(&mut self, be: &BE, addr_opt: &str) {
         self.set_if_some(addr_opt, be.ip_to_string(addr_opt));
     }
+
+    fn get_hton_addr(&self, addr_opt: &str) -> [u32; 4usize] {
+        if !self.props.contains_key(addr_opt) {
+            return [0; 4];
+        }
+
+        match self.get_ip(addr_opt) {
+            Ok(ip) => match ip {
+                IpAddr::V4(ip) => [u32::from(ip).to_be(), 0, 0, 0],
+                IpAddr::V6(ipv6) => unsafe { Inet6U::from(ipv6.octets()).addr32 },
+            },
+            Err(e) => {
+                error!("Failed get {}, {}", addr_opt, e);
+                [0_u32; 4]
+            }
+        }
+    }
 }
 
 impl ToEndPoint for BE {
@@ -243,19 +260,7 @@ impl EndPoint {
             IpAddr::V6(ip) => (unsafe { Inet6U::from(ip.octets()).addr32 }, EPFlags::IPV6),
         };
         let flags = flags | self.options.flags;
-        let src_ip = match self.options.props.get(options::SRC_IP) {
-            Some(ips) => match ips.parse::<IpAddr>() {
-                Ok(ip) => match ip {
-                    IpAddr::V4(ip) => [u32::from(ip).to_be(), 0, 0, 0],
-                    IpAddr::V6(ipv6) => unsafe { Inet6U::from(ipv6.octets()).addr32 },
-                },
-                Err(e) => {
-                    error!("[backend] invalid source ip '{}', {}", ips, e);
-                    [0_u32; 4]
-                }
-            },
-            None => [0_u32; 4],
-        };
+        let src_ip = self.options.get_hton_addr(options::SRC_IP);
 
         BE {
             address,
