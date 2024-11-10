@@ -195,6 +195,13 @@ impl Options {
             .insert(key.as_ref().to_string(), value.as_ref().to_string());
     }
 
+    pub fn set_if_some<K: AsRef<str>, V: AsRef<str>>(&mut self, key: K, value_opt: Option<V>) {
+        if let Some(value) = value_opt {
+            self.props
+                .insert(key.as_ref().to_string(), value.as_ref().to_string());
+        }
+    }
+
     pub fn get_and_parse<V, T>(&self, key: T) -> Result<V, anyhow::Error>
     where
         T: AsRef<str>,

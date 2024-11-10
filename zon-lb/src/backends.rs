@@ -77,6 +77,7 @@ pub trait BackendInfo {
     fn ipv4(&self) -> IpAddr;
     fn ipv6(&self) -> IpAddr;
     fn port(&self) -> u16;
+    fn ip_to_string(&self, address_option: &str) -> Option<String>;
 }
 
 impl BackendInfo for BE {
@@ -88,6 +89,25 @@ impl BackendInfo for BE {
     }
     fn port(&self) -> u16 {
         u16::from_be(self.port)
+    }
+    fn ip_to_string(&self, address_option: &str) -> Option<String> {
+        let addr = match address_option {
+            options::IP_ADDR => self.address,
+            options::SRC_IP => self.src_ip,
+            _ => return None,
+        };
+
+        if addr == [0; 4] {
+            return None;
+        };
+
+        let ipstr = if self.flags.contains(EPFlags::IPV6) {
+            let bytes = addr.as_ptr() as *const [u8; 16];
+            unsafe { Ipv6Addr::from(*bytes).to_string() }
+        } else {
+            Ipv4Addr::from(addr[0].to_be()).to_string()
+        };
+        Some(ipstr)
     }
 }
 
@@ -124,6 +144,12 @@ impl ToEndPoint for EPX {
     }
 }
 
+impl Options {
+    fn set_be_addr(&mut self, be: &BE, addr_opt: &str) {
+        self.set_if_some(addr_opt, be.ip_to_string(addr_opt));
+    }
+}
+
 impl ToEndPoint for BE {
     fn as_endpoint(&self) -> EndPoint {
         let ipaddr = if self.flags.contains(EPFlags::IPV4) {
@@ -132,20 +158,15 @@ impl ToEndPoint for BE {
             self.ipv6()
         };
 
-        let mut props = BTreeMap::new();
+        let mut options = Options::new(self.flags);
 
-        if self.src_ip != [0; 4] {
-            props.insert(options::SRC_IP.to_string(), Backend::be_src_ip_string(self));
-        };
+        options.set_be_addr(self, options::SRC_IP);
 
         EndPoint {
             ipaddr,
             proto: self.proto.into(),
             port: self.port(),
-            options: Options {
-                flags: self.flags,
-                props,
-            },
+            options,
         }
     }
 }
@@ -602,19 +623,6 @@ impl Backend {
         Ok(gmap.group)
     }
 
-    fn be_src_ip_string(be: &BE) -> String {
-        if be.src_ip == [0; 4] {
-            return "lb-ip".to_string();
-        };
-
-        if be.flags.contains(EPFlags::IPV6) {
-            let bytes = be.src_ip.as_ptr() as *const [u8; 16];
-            unsafe { Ipv6Addr::from(*bytes).to_string() }
-        } else {
-            Ipv4Addr::from(be.src_ip[0].to_be()).to_string()
-        }
-    }
-
     fn build_backend_list(gid: u16, becount: u16) -> Result<InfoTable, anyhow::Error> {
         let mut table = InfoTable::new(vec!["id", "endpoint", "options", "src_ip"]);
         let backends = Self::backends()?;
@@ -628,7 +636,8 @@ impl Backend {
                         index.to_string(),
                         ep.to_string(),
                         ep.options.to_string(),
-                        Self::be_src_ip_string(&be),
+                        be.ip_to_string(options::SRC_IP)
+                            .unwrap_or(String::from("lb-ip")),
                     ]);
                 }
                 _ => {}
