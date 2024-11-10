@@ -10,6 +10,7 @@ pub const DSR_L2: &str = "dsr_l2";
 pub const DSR_L3: &str = "dsr_l3";
 pub const NO_NAT: &str = "no_nat";
 pub const SRC_IP: &str = "src_ip";
+pub const ALT_ADDR: &str = "alt_addr";
 pub const IP_ADDR: &str = "ip";
 pub const PORT: &str = "port";
 pub const REPLACE: &str = "replace";
@@ -150,7 +151,7 @@ impl Options {
                         log::error!("No '{}' interface, see option '{}'", value, arg)
                     }
                 },
-                SRC_IP | IP_ADDR | IP_MASK => match value.parse::<IpAddr>() {
+                SRC_IP | ALT_ADDR | IP_ADDR | IP_MASK => match value.parse::<IpAddr>() {
                     Ok(_) => {
                         props.insert(key.to_string(), value.to_string());
                     }
