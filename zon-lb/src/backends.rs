@@ -77,7 +77,7 @@ pub trait BackendInfo {
     fn ipv4(&self) -> IpAddr;
     fn ipv6(&self) -> IpAddr;
     fn port(&self) -> u16;
-    fn ip_to_string(&self, address_option: &str) -> Option<String>;
+    fn ip_to_string(&self, address_option: &str, defval: &str) -> String;
 }
 
 impl BackendInfo for BE {
@@ -90,16 +90,16 @@ impl BackendInfo for BE {
     fn port(&self) -> u16 {
         u16::from_be(self.port)
     }
-    fn ip_to_string(&self, address_option: &str) -> Option<String> {
+    fn ip_to_string(&self, address_option: &str, defval: &str) -> String {
         let addr = match address_option {
             options::ALT_ADDR => self.alt_address,
             options::IP_ADDR => self.address,
             options::SRC_IP => self.src_ip,
-            _ => return None,
+            _ => return String::from(defval),
         };
 
         if addr == [0; 4] {
-            return None;
+            return String::from("defval");
         };
 
         let ipstr = if self.flags.contains(EPFlags::IPV6) {
@@ -108,7 +108,7 @@ impl BackendInfo for BE {
         } else {
             Ipv4Addr::from(addr[0].to_be()).to_string()
         };
-        Some(ipstr)
+        ipstr
     }
 }
 
@@ -147,7 +147,13 @@ impl ToEndPoint for EPX {
 
 impl Options {
     fn set_be_addr(&mut self, be: &BE, addr_opt: &str) {
-        self.set_if_some(addr_opt, be.ip_to_string(addr_opt));
+        let ip = be.ip_to_string(addr_opt, "n/a");
+
+        if ip == "n/a" {
+            self.set_if_some::<&str, &str>(addr_opt, None);
+        } else {
+            self.set_if_some(addr_opt, Some(ip));
+        }
     }
 
     fn get_hton_addr(&self, addr_opt: &str) -> [u32; 4usize] {
@@ -645,10 +651,8 @@ impl Backend {
                         index.to_string(),
                         ep.to_string(),
                         Options::new(be.flags).flags_short(),
-                        be.ip_to_string(options::SRC_IP)
-                            .unwrap_or(String::from("n/a")),
-                        be.ip_to_string(options::ALT_ADDR)
-                            .unwrap_or(String::from("n/a")),
+                        be.ip_to_string(options::SRC_IP, "n/a"),
+                        be.ip_to_string(options::ALT_ADDR, "n/a"),
                     ]);
                 }
                 _ => {}
@@ -681,10 +685,8 @@ impl Backend {
                 ">".to_string(),
                 bep.to_string_noproto(),
                 bep.options.flags_short(),
-                be.ip_to_string(options::SRC_IP)
-                    .unwrap_or(String::from("n/a")),
-                be.ip_to_string(options::ALT_ADDR)
-                    .unwrap_or(String::from("n/a")),
+                be.ip_to_string(options::SRC_IP, "n/a"),
+                be.ip_to_string(options::ALT_ADDR, "n/a"),
             ]);
         }
 
