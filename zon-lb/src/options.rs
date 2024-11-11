@@ -190,6 +190,28 @@ impl Options {
         Self { props, flags }
     }
 
+    pub fn flags_short(&self) -> String {
+        let mut flags = String::new();
+        for flag in self.flags {
+            let flag = match flag {
+                EPFlags::DISABLE => "D",
+                EPFlags::XDP_TX => "T",
+                EPFlags::DSR_L2 => "D2",
+                EPFlags::DSR_L3 => "D3",
+                EPFlags::XDP_REDIRECT => "R",
+                EPFlags::NO_CONNTRACK => "NC",
+                EPFlags::IPV4 => "4",
+                EPFlags::IPV6 => "6",
+                _ => continue,
+            };
+            if !flags.is_empty() {
+                flags += ":";
+            }
+            flags += flag;
+        }
+        flags
+    }
+
     pub fn set<K: AsRef<str>, V: AsRef<str>>(&mut self, key: K, value: V) {
         self.props
             .insert(key.as_ref().to_string(), value.as_ref().to_string());
