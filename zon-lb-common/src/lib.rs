@@ -305,6 +305,12 @@ pub struct BE {
     /// endpoint is accessed. Usually the address is from the same
     /// pool as the VIP or LB.
     pub src_ip: [u32; 4],
+    /// Alternative address that can be used for tunnel connections
+    /// as destination. Depending on the tunnel type the field can
+    /// store both IPv4 or IPv6 addresses. Storing the destination
+    /// tunnel address per backend allows balancing requests over
+    /// multiple methods: dsr_l2, dsr_l3 or NAT.
+    pub alt_address: [u32; 4usize],
     /// The backend listening port and it should be used
     /// only if PORT flag is set. The default value is 0
     // and it should be ignored regardless of the LB flag.

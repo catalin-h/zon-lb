@@ -92,6 +92,7 @@ impl BackendInfo for BE {
     }
     fn ip_to_string(&self, address_option: &str) -> Option<String> {
         let addr = match address_option {
+            options::ALT_ADDR => self.alt_address,
             options::IP_ADDR => self.address,
             options::SRC_IP => self.src_ip,
             _ => return None,
@@ -178,6 +179,7 @@ impl ToEndPoint for BE {
         let mut options = Options::new(self.flags);
 
         options.set_be_addr(self, options::SRC_IP);
+        options.set_be_addr(self, options::ALT_ADDR);
 
         EndPoint {
             ipaddr,
@@ -261,10 +263,12 @@ impl EndPoint {
         };
         let flags = flags | self.options.flags;
         let src_ip = self.options.get_hton_addr(options::SRC_IP);
+        let alt_address = self.options.get_hton_addr(options::ALT_ADDR);
 
         BE {
             address,
             src_ip,
+            alt_address,
             port: self.port.to_be(),
             proto: self.proto as u8,
             flags,
