@@ -205,7 +205,7 @@ impl fmt::Display for EndPoint {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let proto = match self.proto {
             Protocol::None => "".to_string(),
-            _ => format!("{:?}: ", self.proto),
+            _ => format!("{:?}:", self.proto),
         };
         if self.port == 0 {
             write!(f, "{}{}", proto, &self.ipaddr)
@@ -633,7 +633,7 @@ impl Backend {
     }
 
     fn build_backend_list(gid: u16, becount: u16) -> Result<InfoTable, anyhow::Error> {
-        let mut table = InfoTable::new(vec!["id", "endpoint", "options", "src_ip"]);
+        let mut table = InfoTable::new(vec!["id", "endpoint", "flags", "src", "alt"]);
         let backends = Self::backends()?;
 
         for index in 0..becount {
@@ -644,9 +644,11 @@ impl Backend {
                     table.push_row(vec![
                         index.to_string(),
                         ep.to_string(),
-                        ep.options.to_string(),
+                        Options::new(be.flags).flags_short(),
                         be.ip_to_string(options::SRC_IP)
-                            .unwrap_or(String::from("lb-ip")),
+                            .unwrap_or(String::from("n/a")),
+                        be.ip_to_string(options::ALT_ADDR)
+                            .unwrap_or(String::from("n/a")),
                     ]);
                 }
                 _ => {}
@@ -657,13 +659,15 @@ impl Backend {
     }
 
     fn list_all() -> Result<(), anyhow::Error> {
-        let mut table = InfoTable::new(vec!["gid:id", "if / lb", "", "backend", "options"]);
+        let mut table = InfoTable::new(vec![
+            "gid:id", "if / lb", "", "backend", "flags", "src", "alt",
+        ]);
         let backends = Self::backends()?;
         let mut cache: StdHashMap<u16, String> = StdHashMap::new();
 
         Group::iterate_all(|ep, group| {
             if group.becount > 0 {
-                let out = format!("{} / {}", if_name_or_default(group.ifindex), ep);
+                let out = format!("{}/{}", if_name_or_default(group.ifindex), ep);
                 cache.insert(group.gid, out);
             }
         })?;
@@ -674,9 +678,13 @@ impl Backend {
             table.push_row(vec![
                 format!("{}:{}", key.gid, key.index),
                 ep_str.to_string(),
-                "<->".to_string(),
+                ">".to_string(),
                 bep.to_string_noproto(),
-                bep.options.to_string(),
+                bep.options.flags_short(),
+                be.ip_to_string(options::SRC_IP)
+                    .unwrap_or(String::from("n/a")),
+                be.ip_to_string(options::ALT_ADDR)
+                    .unwrap_or(String::from("n/a")),
             ]);
         }
 
@@ -711,7 +719,7 @@ impl Backend {
             gid.to_string(),
             gmap.info.key.as_endpoint().to_string(),
             if_name_or_default(beg.ifindex),
-            Options::new(beg.flags).to_string(),
+            Options::new(beg.flags).flags_short(),
             beg.becount.to_string(),
         ]);
 
