@@ -263,11 +263,11 @@ impl EndPoint {
     }
 
     fn as_backend(&self, gid: u16) -> BE {
-        let (address, flags) = match &self.ipaddr {
+        let (address, ipflag) = match &self.ipaddr {
             IpAddr::V4(ip) => ([u32::from(*ip).to_be(), 0, 0, 0], EPFlags::IPV4),
             IpAddr::V6(ip) => (unsafe { Inet6U::from(ip.octets()).addr32 }, EPFlags::IPV6),
         };
-        let flags = flags | self.options.flags;
+        let flags = self.options.flags & !EPFlags::IPV4 & !EPFlags::IPV6 | ipflag;
         let src_ip = self.options.get_hton_addr(options::SRC_IP);
         let alt_address = self.options.get_hton_addr(options::ALT_ADDR);
 
@@ -548,6 +548,10 @@ impl GroupMap {
     }
 
     fn check_compat(&self, ep: &EndPoint) -> Result<(), anyhow::Error> {
+        if ep.options.flags.contains(EPFlags::DSR_L3) {
+            return Ok(());
+        }
+
         let (flags, epx) = match self.info.key {
             EPX::V4(ep4) => (EPFlags::IPV4, ep4.as_endpoint()),
             EPX::V6(ep6) => (EPFlags::IPV6, ep6.as_endpoint()),
