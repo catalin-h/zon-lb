@@ -1196,16 +1196,20 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     // TBD: need to check BE.src_ip == 0 ?
-    let lb_addr = if be.flags.contains(EPFlags::XDP_REDIRECT)
+    if be.flags.contains(EPFlags::XDP_REDIRECT)
         && !be.flags.contains(EPFlags::DSR_L3)
         && be.src_ip[0] != 0
     {
         // TODO: check the ND table and update or insert
         // smac/dmac and derived ip src and redirect ifindex
-        &be.src_ip
+
+        array_copy(&mut ctx6.ctnat.src_addr, &be.src_ip);
     } else {
-        unsafe { &nat6key.ip_lb_dst.addr32 }
+        array_copy(&mut ctx6.ctnat.src_addr, unsafe {
+            &nat6key.ip_lb_dst.addr32
+        });
     };
+    let lb_addr = &ctx6.ctnat.src_addr;
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, lb_addr, &be.address, now)?;
@@ -1281,7 +1285,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     ctx6.ctnat.time = now + 30;
     ctx6.ctnat.flags = be.flags;
     ctx6.ctnat.mtu = fib.mtu;
-    array_copy(&mut ctx6.ctnat.src_addr, lb_addr);
+    // The source address is actually the lb_addr and
+    // it is copied above when checking the redirect flag
     array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
     ctx6.ctnat.port_combo = port_combo;
     ctx6.ctnat.ifindex = fib.ifindex;
