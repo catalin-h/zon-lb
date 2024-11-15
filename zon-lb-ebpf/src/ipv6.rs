@@ -1318,14 +1318,16 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // ip_lb_dst   Source          Dest
     // port_be_src Dest            Source
     // port_lb_dst Source          Dest
-    let ip_src = nat6key.ip_be_src;
-    let lb_ip = nat6key.ip_lb_dst;
+
+    let ip_src = ctx6.nat6val.ip_src = nat6key.ip_be_src;
+    ctx6.nat6val.lb_ip = nat6key.ip_lb_dst;
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
     if be.flags.contains(EPFlags::DSR_L2) {
         // NOTE: for DSR L2 the reply flow will search for source as current destination
         // and destination as current source.
-        nat6key.ip_be_src = lb_ip;
-        nat6key.ip_lb_dst = ip_src;
+
+        nat6key.ip_be_src = ctx6.nat6val.lb_ip;
+        nat6key.ip_lb_dst = ctx6.nat6val.ip_src;
         nat6key.port_be_src = l4ctx.dst_port;
         nat6key.port_lb_dst = l4ctx.src_port;
     } else {
@@ -1335,8 +1337,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         nat6key.port_lb_dst = l4ctx.src_port;
     }
 
-    ctx6.nat6val.ip_src = ip_src;
-    ctx6.nat6val.lb_ip = lb_ip;
     ctx6.nat6val.port_lb = l4ctx.dst_port as u16;
     ctx6.nat6val.ifindex = ifindex;
     ctx6.nat6val.mtu = check_mtu(ctx, ifindex);
