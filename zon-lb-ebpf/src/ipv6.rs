@@ -1328,7 +1328,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // port_be_src Dest            Source
     // port_lb_dst Source          Dest
 
-    let ip_src = ctx6.nat6val.ip_src = nat6key.ip_be_src;
+    ctx6.nat6val.ip_src = nat6key.ip_be_src;
     ctx6.nat6val.lb_ip = nat6key.ip_lb_dst;
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
     if be.flags.contains(EPFlags::DSR_L2) {
@@ -1356,24 +1356,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // TBD: use lock or atomic update ?
     // TBD: use BPF_F_LOCK ?
 
-    let rc = match unsafe { ZLB_CONNTRACK6.insert(&nat6key, &ctx6.nat6val, 0) } {
-        Ok(()) => 0, // add stats for insert
-        Err(ret) => {
-            stats_inc(stats::CT_ERROR_UPDATE);
-            ret
-        }
-    };
-
-    if feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
-            unsafe { ip_src.addr8 },
-            (l4ctx.src_port as u16).to_be(),
-            l2ctx.vlanhdr,
-            rc
-        )
-    }
+    ctx6.update_conntrack(ctx);
 
     Ok(action)
 }
@@ -1546,6 +1529,27 @@ impl Context6 {
         array_copy(&mut self.fibentry.ip_src, &mut self.fiblookup.src); // not used for now
         self.fibentry.mtu = self.fiblookup.tot_len as u32;
         self.fibentry.expiry = expiry;
+    }
+
+    fn update_conntrack(&mut self, ctx: &XdpContext) {
+        self.sv.ret_code = match unsafe { ZLB_CONNTRACK6.insert(&self.nat6key, &self.nat6val, 0) } {
+            Ok(()) => 0, // add stats for insert
+            Err(ret) => {
+                stats_inc(stats::CT_ERROR_UPDATE);
+                ret
+            }
+        };
+
+        if self.feat.log_enabled(Level::Info) {
+            info!(
+                ctx,
+                "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
+                unsafe { self.nat6val.ip_src.addr8 },
+                self.nat6key.port_lb_dst,
+                self.nat6val.vlan_hdr,
+                self.sv.ret_code
+            );
+        }
     }
 }
 
