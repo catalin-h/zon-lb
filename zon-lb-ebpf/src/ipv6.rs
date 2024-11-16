@@ -766,6 +766,14 @@ fn ct6_handler(
     return Ok(action);
 }
 
+// Instead of saving data on stack use this heap memory for unrelated
+// variables. Add here result codes, return values saved IP addresses
+// or any computed values for current packet.
+#[repr(C)]
+struct StackVars {
+    ret_code: i64,
+}
+
 // In order to avoid exhausting the 512B ebpf program stack by allocating
 // diferent large objects (especially for IPv6 path) one common workaround
 // is to use a per cpu (avoids concurrency) struct that contains all the
@@ -781,6 +789,7 @@ struct Context6 {
     fibentry: FibEntry,
     fragid: Ipv6FragId,
     ptbprotohdr: ProtoHdr,
+    sv: StackVars,
 }
 
 #[map]
