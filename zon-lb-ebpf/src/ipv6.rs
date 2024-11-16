@@ -844,6 +844,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         &mut *ptr
     };
     ctx6.feat.fetch();
+    // TODO: move L4 in context
     let mut l4ctx = L4Context::new_for_ipv6(&l2ctx, ipv6hdr.next_hdr);
     let feat = &ctx6.feat;
     let mut cache_fragment = false;
@@ -1032,12 +1033,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         log_nat6(ctx, &nat, &feat);
 
         // Save fragment before updating addresses
+        // TODO: move cache_fragment in context stack vars and l4ctx in app context
+        // then create a method cache_frag_info in context
         if cache_fragment {
             cache_frag_info(&ctx6.fragid, &l4ctx);
         }
 
         // TBD: for crc32 use crc32_off
 
+        // TODO: ctnat.port_combo =
         let port_combo = l4ctx.dst_port << 16 | nat.port_lb as u32;
         let src_addr = unsafe { &nat.lb_ip.addr32 };
         let dst_addr = unsafe { &nat.ip_src.addr32 };
@@ -1176,6 +1180,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         cache_frag_info(&ctx6.fragid, &l4ctx);
     }
 
+    // TODO: ctx6.ctnat.port_combo
     let port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
     // Fast exit if packet is not redirected
@@ -1204,7 +1209,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // TBD: need to check BE.src_ip == 0 ?
+    // TODO: need to check BE.src_ip == 0 ?
     if be.flags.contains(EPFlags::XDP_REDIRECT)
         && !be.flags.contains(EPFlags::DSR_L3)
         && be.src_ip[0] != 0
