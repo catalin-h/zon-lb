@@ -4,7 +4,10 @@ use crate::{
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
-    helpers::{bpf_check_mtu, bpf_fib_lookup, bpf_ktime_get_coarse_ns, bpf_xdp_adjust_tail},
+    helpers::{
+        bpf_check_mtu, bpf_fib_lookup, bpf_ktime_get_coarse_ns, bpf_xdp_adjust_head,
+        bpf_xdp_adjust_tail,
+    },
     macros::map,
     maps::{HashMap, LruHashMap, LruPerCpuHashMap, PerCpuArray},
     programs::XdpContext,
@@ -1257,7 +1260,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     };
 
-    if !be.flags.contains(EPFlags::DSR_L2) {
+    if be.flags.contains(EPFlags::DSR_L3) {
+        ip6tnl_encap_ipv6(ctx, &l2ctx, &be.src_ip, &be.alt_address, feat)?;
+    } else if !be.flags.contains(EPFlags::DSR_L2) {
         update_inet_csum(ctx, ipv6hdr, &l4ctx, lb_addr, &be.address, port_combo)?;
     }
 
@@ -1640,4 +1645,35 @@ fn fetch_fib6(
         Some(entry) => Ok((entry, rc as u32)),
         None => Err(()),
     }
+}
+
+/// RFC 2473
+/// https://datatracker.ietf.org/doc/html/rfc2473
+///
+#[inline(always)]
+fn ip6tnl_encap_ipv6(
+    ctx: &XdpContext,
+    l2ctx: &L2Context,
+    src: &[u32; 4usize],
+    dst: &[u32; 4usize],
+    feat: &Features,
+) -> Result<(), ()> {
+    let rc = unsafe { bpf_xdp_adjust_head(ctx.ctx, -(Ipv6Hdr::LEN as i32)) };
+
+    if feat.log_enabled(Level::Info) {
+        info!(ctx, "[ip6encap] adjust rc: {}", rc);
+    }
+
+    let hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?.cast_mut();
+    let hdr = unsafe { &mut *hdr };
+
+    hdr.set_version(6);
+    hdr.set_priority(8);
+    hdr.payload_len = 10;
+    hdr.hop_limit = 8;
+    hdr.next_hdr = IpProto::Ipv6;
+    array_copy(unsafe { &mut hdr.src_addr.in6_u.u6_addr32 }, src);
+    array_copy(unsafe { &mut hdr.dst_addr.in6_u.u6_addr32 }, dst);
+
+    Ok(())
 }
