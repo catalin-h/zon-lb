@@ -1225,10 +1225,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             &nat6key.ip_lb_dst.addr32
         });
     };
-    let lb_addr = &ctx6.ctnat.src_addr;
+    array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
-    let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, lb_addr, &be.address, now)?;
+    // TODO: make fetch_fib6() update the ctnat and return only fib_rc
+    let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, &ctx6.ctnat, now)?;
     let fib = unsafe { &*fib };
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
@@ -1267,8 +1268,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             ctx,
             ipv6hdr,
             &l4ctx,
-            lb_addr,
-            &be.address,
+            &ctx6.ctnat.src_addr,
+            &ctx6.ctnat.dst_addr,
             ctx6.ctnat.port_combo,
         )?;
     }
@@ -1313,7 +1314,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     ctx6.ctnat.mtu = fib.mtu;
     // The source address is actually the lb_addr and
     // it is copied above when checking the redirect flag
-    array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
+    // The destination addr is copyied above.
+    // array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
     // The ctx6.ctnat.port_combo is set above before recomputing the csum
     ctx6.ctnat.ifindex = fib.ifindex;
     array_copy(&mut ctx6.ctnat.macs, &fib.macs);
@@ -1357,8 +1359,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         nat6key.port_be_src = l4ctx.dst_port;
         nat6key.port_lb_dst = l4ctx.src_port;
     } else {
-        nat6key.ip_lb_dst = Inet6U::from(lb_addr);
-        nat6key.ip_be_src = Inet6U::from(&be.address);
+        nat6key.ip_lb_dst = Inet6U::from(&ctx6.ctnat.src_addr);
+        nat6key.ip_be_src = Inet6U::from(&ctx6.ctnat.dst_addr);
         nat6key.port_be_src = be.port as u32;
         nat6key.port_lb_dst = l4ctx.src_port;
     }
@@ -1573,10 +1575,12 @@ impl Context6 {
 fn fetch_fib6(
     ctx: &XdpContext,
     ipv6hdr: &Ipv6Hdr,
-    src: &[u32; 4],
-    dst: &[u32; 4],
+    ctnat: &CTCache,
     now: u32,
 ) -> Result<(*const FibEntry, u32), ()> {
+    let src = &ctnat.src_addr;
+    let dst = &ctnat.dst_addr;
+
     match unsafe { ZLB_FIB6.get_ptr(&dst) } {
         Some(entry) => {
             if now <= unsafe { (*entry).expiry } {
