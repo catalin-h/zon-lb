@@ -1044,21 +1044,21 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // TBD: for crc32 use crc32_off
 
-        // TODO: ctnat.port_combo =
-        let port_combo = l4ctx.dst_port << 16 | nat.port_lb as u32;
+        let ctnat = &mut ctx6.ctnat;
+        ctnat.port_combo = l4ctx.dst_port << 16 | nat.port_lb as u32;
+
         let src_addr = unsafe { &nat.lb_ip.addr32 };
         let dst_addr = unsafe { &nat.ip_src.addr32 };
+
         if !nat.flags.contains(EPFlags::DSR_L2) {
-            update_inet_csum(ctx, ipv6hdr, &l4ctx, src_addr, dst_addr, port_combo)?;
+            update_inet_csum(ctx, ipv6hdr, &l4ctx, src_addr, dst_addr, ctnat.port_combo)?;
         }
 
-        let ctnat = &mut ctx6.ctnat;
         ctnat.time = now + 30;
         ctnat.flags = nat.flags;
         ctnat.mtu = nat.mtu as u32;
         array_copy(&mut ctnat.src_addr, src_addr);
         array_copy(&mut ctnat.dst_addr, dst_addr);
-        ctnat.port_combo = port_combo;
         ctnat.ifindex = nat.ifindex;
         ctnat.vlan_hdr = nat.vlan_hdr;
         array_copy(&mut ctx6.ctnat.macs, &nat.mac_addresses);
@@ -1183,12 +1183,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         cache_frag_info(&ctx6.fragid, &l4ctx);
     }
 
-    // TODO: ctx6.ctnat.port_combo
-    let port_combo = (be.port as u32) << 16 | l4ctx.src_port;
+    ctx6.ctnat.port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
-        update_destination_inet_csum(ctx, ipv6hdr, &l4ctx, &be.address, port_combo)?;
+        update_destination_inet_csum(ctx, ipv6hdr, &l4ctx, &be.address, ctx6.ctnat.port_combo)?;
 
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
@@ -1263,7 +1262,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     if be.flags.contains(EPFlags::DSR_L3) {
         ip6tnl_encap_ipv6(ctx, &l2ctx, &be.src_ip, &be.alt_address, feat)?;
     } else if !be.flags.contains(EPFlags::DSR_L2) {
-        update_inet_csum(ctx, ipv6hdr, &l4ctx, lb_addr, &be.address, port_combo)?;
+        // TODO: pass the cnat cache entry to update_inet_csum()
+        update_inet_csum(
+            ctx,
+            ipv6hdr,
+            &l4ctx,
+            lb_addr,
+            &be.address,
+            ctx6.ctnat.port_combo,
+        )?;
     }
 
     // NOTE: look like aya can't convert the '*eth = entry.macs' into
@@ -1307,7 +1314,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // The source address is actually the lb_addr and
     // it is copied above when checking the redirect flag
     array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
-    ctx6.ctnat.port_combo = port_combo;
+    // The ctx6.ctnat.port_combo is set above before recomputing the csum
     ctx6.ctnat.ifindex = fib.ifindex;
     array_copy(&mut ctx6.ctnat.macs, &fib.macs);
     ctx6.ctnat.vlan_hdr = 0;
