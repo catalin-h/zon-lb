@@ -1650,7 +1650,8 @@ fn fetch_fib6(
 /// RFC 2473
 /// https://datatracker.ietf.org/doc/html/rfc2473
 ///
-#[inline(always)]
+/// BUG: using #[inline(always)] and ebpf logger will trigger the
+/// linker error aka not enough stack.
 fn ip6tnl_encap_ipv6(
     ctx: &XdpContext,
     l2ctx: &L2Context,
