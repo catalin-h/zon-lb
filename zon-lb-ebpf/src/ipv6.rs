@@ -769,7 +769,10 @@ fn ct6_handler(
 // or any computed values for current packet.
 #[repr(C)]
 struct StackVars {
+    /// Stores the last return code of the last function call
     ret_code: i64,
+    /// Holds the current timestamp
+    now: u32,
 }
 
 // In order to avoid exhausting the 512B ebpf program stack by allocating
@@ -985,12 +988,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // * the aya_logger macros consumes a lot of stack so maybe create custom logger
     // that does not consume the stack.
 
-    let now = coarse_ktime();
+    ctx6.sv.now = coarse_ktime();
 
     ctx6.ctkey.init(&ipv6hdr, l4ctx.next_hdr);
 
     if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&ctx6.ctkey) } {
-        if ctnat.time > now {
+        if ctnat.time > ctx6.sv.now {
             return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat, feat);
         }
     }
@@ -1049,7 +1052,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             update_inet_csum(ctx, ipv6hdr, &l4ctx, ctnat)?;
         }
 
-        ctnat.time = now + 30;
+        ctnat.time = ctx6.sv.now + 30;
         ctnat.flags = nat.flags;
         ctnat.mtu = nat.mtu as u32;
         array_copy(&mut ctnat.src_addr, src_addr);
@@ -1224,7 +1227,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     // TODO: make fetch_fib6() update the ctnat and return only fib_rc
-    let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, &ctx6.ctnat, now)?;
+    let (fib, fib_rc) = fetch_fib6(ctx, ipv6hdr, &ctx6.ctnat, ctx6.sv.now)?;
     let fib = unsafe { &*fib };
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
@@ -1297,7 +1300,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // NOTE: Since the cache is a per CPU map the insert with flags=0
     // will update only the value for the current CPU.
 
-    ctx6.ctnat.time = now + 30;
+    ctx6.ctnat.time = ctx6.sv.now + 30;
     ctx6.ctnat.flags = be.flags;
     ctx6.ctnat.mtu = fib.mtu;
     // The source address is actually the lb_addr and
