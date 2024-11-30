@@ -1592,7 +1592,7 @@ fn fetch_fib6(
     );
 
     let p_fib_param = &ctx6.fiblookup as *const BpfFibLookUp;
-    let rc = unsafe {
+    ctx6.sv.ret_code = unsafe {
         bpf_fib_lookup(
             ctx.as_ptr(),
             p_fib_param as *mut bpf_fib_lookup_param_t,
@@ -1602,7 +1602,7 @@ fn fetch_fib6(
     };
 
     stats_inc(stats::FIB_LOOKUPS);
-    let expiry = if rc != bindings::BPF_FIB_LKUP_RET_SUCCESS as i64 {
+    let expiry = if ctx6.sv.ret_code != bindings::BPF_FIB_LKUP_RET_SUCCESS as i64 {
         stats_inc(stats::FIB_LOOKUP_FAILS);
         // Retry on next try but create the entry
         now - 1
@@ -1616,7 +1616,7 @@ fn fetch_fib6(
             ctx,
             "[fib] lkp_ret: {}, fw if: {}, src: {:i}, \
             gw: {:i}, dmac: {:mac}, smac: {:mac}, mtu: {}",
-            rc,
+            ctx6.sv.ret_code,
             ctx6.fiblookup.ifindex,
             unsafe { Inet6U::from(&ctx6.fiblookup.src).addr8 },
             unsafe { Inet6U::from(&ctx6.fiblookup.dst).addr8 },
@@ -1641,7 +1641,7 @@ fn fetch_fib6(
     }
 
     match unsafe { ZLB_FIB6.get_ptr(&dst) } {
-        Some(entry) => Ok((entry, rc as u32)),
+        Some(entry) => Ok((entry, ctx6.sv.ret_code as u32)),
         None => Err(()),
     }
 }
