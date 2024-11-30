@@ -115,14 +115,12 @@ fn update_inet_csum(
     ctx: &XdpContext,
     ipv6hdr: &mut Ipv6Hdr,
     l4ctx: &L4Context,
-    src: &[u32; 4usize],
-    dst: &[u32; 4usize],
-    port_combo: u32,
+    ctnat: &CTCache,
 ) -> Result<(), ()> {
     // TODO: move this to the place of usage as this function can't be inlined
     if l4ctx.check_off == 0 {
-        (*ipv6hdr).src_addr.in6_u.u6_addr32 = *src;
-        (*ipv6hdr).dst_addr.in6_u.u6_addr32 = *dst;
+        (*ipv6hdr).src_addr.in6_u.u6_addr32 = ctnat.src_addr;
+        (*ipv6hdr).dst_addr.in6_u.u6_addr32 = ctnat.dst_addr;
         return Ok(());
     }
 
@@ -137,9 +135,9 @@ fn update_inet_csum(
     // To correctly get the mutable ref place the &mut inside the unsafe {}:
     // let hdr = unsafe { &mut (*ipv6hdr.cast_mut()) };
     let from = unsafe { &mut ipv6hdr.src_addr.in6_u.u6_addr32 };
-    csum = compute_checksum(csum, from, src);
+    csum = compute_checksum(csum, from, &ctnat.src_addr);
     let from = unsafe { &mut ipv6hdr.dst_addr.in6_u.u6_addr32 };
-    csum = compute_checksum(csum, from, dst);
+    csum = compute_checksum(csum, from, &ctnat.dst_addr);
 
     // TODO: reduce hop limit by one on xmit and redirect
     // The IPv6 header does not have a csum field that needs to be
@@ -151,10 +149,14 @@ fn update_inet_csum(
     // a single u32 combo value as the begining of the L4 header:
     // port_combo = dst_port << 16 | src_port;
     // NOTE: the destination port remains the same.
-    if port_combo != 0 && l4ctx.next_hdr != IpProto::Ipv6Icmp {
-        csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
+    if ctnat.port_combo != 0 && l4ctx.next_hdr != IpProto::Ipv6Icmp {
+        csum = csum_update_u32(
+            l4ctx.dst_port << 16 | l4ctx.src_port,
+            ctnat.port_combo,
+            csum,
+        );
         let ptr = ptr_at::<u32>(ctx, l4ctx.offset)?;
-        unsafe { *(ptr.cast_mut()) = port_combo };
+        unsafe { *(ptr.cast_mut()) = ctnat.port_combo };
     }
 
     // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
@@ -718,14 +720,7 @@ fn ct6_handler(
     if !ctnat.flags.contains(EPFlags::DSR_L2) {
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
-        update_inet_csum(
-            ctx,
-            ipv6hdr,
-            l4ctx,
-            &ctnat.src_addr,
-            &ctnat.dst_addr,
-            ctnat.port_combo,
-        )?;
+        update_inet_csum(ctx, ipv6hdr, l4ctx, &ctnat)?;
     }
 
     if !ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
@@ -1051,7 +1046,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         let dst_addr = unsafe { &nat.ip_src.addr32 };
 
         if !nat.flags.contains(EPFlags::DSR_L2) {
-            update_inet_csum(ctx, ipv6hdr, &l4ctx, src_addr, dst_addr, ctnat.port_combo)?;
+            update_inet_csum(ctx, ipv6hdr, &l4ctx, ctnat)?;
         }
 
         ctnat.time = now + 30;
@@ -1264,14 +1259,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ip6tnl_encap_ipv6(ctx, &l2ctx, &be.src_ip, &be.alt_address, feat)?;
     } else if !be.flags.contains(EPFlags::DSR_L2) {
         // TODO: pass the cnat cache entry to update_inet_csum()
-        update_inet_csum(
-            ctx,
-            ipv6hdr,
-            &l4ctx,
-            &ctx6.ctnat.src_addr,
-            &ctx6.ctnat.dst_addr,
-            ctx6.ctnat.port_combo,
-        )?;
+        update_inet_csum(ctx, ipv6hdr, &l4ctx, &ctx6.ctnat)?;
     }
 
     // NOTE: look like aya can't convert the '*eth = entry.macs' into
