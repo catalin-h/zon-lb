@@ -296,20 +296,23 @@ impl From<u32> for BEKey {
 pub struct BE {
     /// Holds the IPv4 or IPv6 address (big-endian) of the
     /// destination backend.
+    /// In case of L3 DSR this only serves as destination address
+    /// for FIB lookups. Note that in case of DSR the original
+    /// addresses are preserved.
     pub address: [u32; 4],
     /// Prefered source ip for this backend instead of the LB ip.
     /// It is used as source address in FIB lookup if it is different
     /// than 0.0.0.0 or ::0.
-    /// In case of L3 DSR this represents the destination IP address
-    /// assigned to the tunnel interface through which the backend
-    /// endpoint is accessed. Usually the address is from the same
-    /// pool as the VIP or LB.
+    /// In case of L3 DSR this represents the outer source address
+    /// than must be used for the tunnel connection through which
+    /// the backend endpoint is accessed.
+    /// Usually the address is from the same pool as the VIP or LB.
     pub src_ip: [u32; 4],
     /// Alternative address that can be used for tunnel connections
-    /// as destination. Depending on the tunnel type the field can
-    /// store both IPv4 or IPv6 addresses. Storing the destination
-    /// tunnel address per backend allows balancing requests over
-    /// multiple methods: dsr_l2, dsr_l3 or NAT.
+    /// as outer destination address. Depending on the tunnel type
+    /// the field can store both IPv4 or IPv6 addresses.
+    /// Storing the destination tunnel address per backend allows
+    /// balancing requests over multiple methods: dsr_l2, dsr_l3 or NAT.
     pub alt_address: [u32; 4usize],
     /// The backend listening port and it should be used
     /// only if PORT flag is set. The default value is 0
