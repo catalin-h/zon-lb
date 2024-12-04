@@ -1576,6 +1576,13 @@ impl Context6 {
             }
         }
 
+        // NOTE: the IPv6 header is fixed 40 bytes.
+        // NOTE: the length of the IPv6 payload, i.e., the rest of the packet
+        // following this IPv6 header, in octets.  (Note that any extension headers
+        // (see Section 4) present are considered part of the payload,
+        // i.e., included in the length count.
+        // See: https://datatracker.ietf.org/doc/html/rfc8200#section-4.5
+
         self.fiblookup.init_inet6(
             ipv6hdr.payload_len.to_be(),
             unsafe { (*ctx.ctx).ingress_ifindex },
