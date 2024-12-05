@@ -699,6 +699,7 @@ impl CT6CacheKey {
 static ZLB_CT6_CACHE: LruPerCpuHashMap<CT6CacheKey, CTCache> =
     LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
 
+#[inline(always)]
 fn ct6_handler(
     ctx: &XdpContext,
     l2ctx: &L2Context,
@@ -707,10 +708,6 @@ fn ct6_handler(
     ctnat: &CTCache,
     feat: &Features,
 ) -> Result<u32, ()> {
-    if ipv6hdr.payload_len.to_be() > ctnat.mtu as u16 {
-        return send_ptb(ctx, &l2ctx, ipv6hdr, ctnat.mtu);
-    }
-
     stats_inc(stats::PACKETS);
 
     // NOTE: No need to save fragment because this handler is called
@@ -773,6 +770,8 @@ struct StackVars {
     ret_code: i64,
     /// Holds the current timestamp
     now: u32,
+    /// The packet length
+    pkt_len: u32,
 }
 
 // In order to avoid exhausting the 512B ebpf program stack by allocating
@@ -989,12 +988,17 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // that does not consume the stack.
 
     ctx6.sv.now = coarse_ktime();
+    ctx6.sv.pkt_len = (ctx.data_end() - ctx.data() - l2ctx.ethlen) as u32;
 
     ctx6.ctkey.init(&ipv6hdr, l4ctx.next_hdr);
 
     if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&ctx6.ctkey) } {
         if ctnat.time > ctx6.sv.now {
-            return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat, feat);
+            if ctx6.sv.pkt_len > ctnat.mtu {
+                return send_ptb(ctx, &l2ctx, ipv6hdr, ctnat.mtu);
+            } else {
+                return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat, feat);
+            }
         }
     }
 
@@ -1024,7 +1028,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     nat6key.next_hdr = l4ctx.next_hdr as u32;
 
     if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
-        if ipv6hdr.payload_len.to_be() > nat.mtu {
+        if ctx6.sv.pkt_len > nat.mtu as u32 {
             return send_ptb(ctx, &l2ctx, ipv6hdr, nat.mtu as u32);
         }
 
@@ -1209,38 +1213,26 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // TODO: need to check BE.src_ip == 0 ?
-    if be.flags.contains(EPFlags::XDP_REDIRECT)
-        && !be.flags.contains(EPFlags::DSR_L3)
-        && be.src_ip[0] != 0
-    {
-        // TODO: check the ND table and update or insert
-        // smac/dmac and derived ip src and redirect ifindex
-
-        array_copy(&mut ctx6.ctnat.src_addr, &be.src_ip);
-    } else {
-        array_copy(&mut ctx6.ctnat.src_addr, unsafe {
-            &nat6key.ip_lb_dst.addr32
-        });
-    };
-    array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
+    // Initialize src/dst before FIB lookup
+    ctx6.ctnat.init_from_be(&be, ipv6hdr);
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     // TODO: make fetch_fib6() update the ctnat and return only fib_rc
     let (fib, fib_rc) = ctx6.fetch_fib6(ctx, ipv6hdr)?;
     let fib = unsafe { &*fib };
+
+    ctx6.ctnat.init_from_fib(fib);
+
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
-            if fib.mtu as u16 >= ipv6hdr.payload_len.to_be() {
-                /* go ahead an update the packet */
-            } else {
+            if ctx6.sv.pkt_len > ctx6.ctnat.mtu {
                 /* send packet to big */
-                return send_ptb(ctx, &l2ctx, ipv6hdr, fib.mtu);
+                return send_ptb(ctx, &l2ctx, ipv6hdr, ctx6.ctnat.mtu);
             }
         }
         bindings::BPF_FIB_LKUP_RET_FRAG_NEEDED => {
             /* send  packet to big */
-            return send_ptb(ctx, &l2ctx, ipv6hdr, fib.mtu);
+            return send_ptb(ctx, &l2ctx, ipv6hdr, ctx6.ctnat.mtu);
         }
         bindings::BPF_FIB_LKUP_RET_BLACKHOLE
         | bindings::BPF_FIB_LKUP_RET_UNREACHABLE
@@ -1301,16 +1293,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // will update only the value for the current CPU.
 
     ctx6.ctnat.time = ctx6.sv.now + 30;
-    ctx6.ctnat.flags = be.flags;
-    ctx6.ctnat.mtu = fib.mtu;
+
     // The source address is actually the lb_addr and
     // it is copied above when checking the redirect flag
     // The destination addr is copyied above.
     // array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
     // The ctx6.ctnat.port_combo is set above before recomputing the csum
-    ctx6.ctnat.ifindex = fib.ifindex;
-    array_copy(&mut ctx6.ctnat.macs, &fib.macs);
-    ctx6.ctnat.vlan_hdr = 0;
 
     let _ = ZLB_CT6_CACHE.insert(&ctx6.ctkey, &ctx6.ctnat, /* update or insert */ 0);
 
@@ -1646,6 +1634,40 @@ impl Context6 {
             Some(entry) => Ok((entry, self.sv.ret_code as u32)),
             None => Err(()),
         }
+    }
+}
+
+
+impl CTCache {
+    fn init_from_be(&mut self, be: &BE, ipv6hdr: &mut Ipv6Hdr) {
+        // Choose the source address for FIB lookup and use the src_ip
+        // if this field is not empty. Use the LB address otherwise.
+        // TODO: need to check BE.src_ip == 0 ?
+        if be.src_ip[0] != 0 {
+            // TODO: check the ND table and update or insert
+            // smac/dmac and derived ip src and redirect ifindex
+            array_copy(&mut self.src_addr, &be.src_ip);
+        } else {
+            array_copy(&mut self.src_addr, unsafe {
+                &ipv6hdr.dst_addr.in6_u.u6_addr32
+            });
+        };
+        array_copy(&mut self.dst_addr, &(be.address));
+
+        // Set flags before setting the MTU
+        self.flags = be.flags;
+    }
+
+    fn init_from_fib(&mut self, fib: &FibEntry) {
+        if self.flags.contains(EPFlags::DSR_L3) {
+            self.mtu = fib.mtu - Ipv6Hdr::LEN as u32;
+        } else {
+            self.mtu = fib.mtu;
+        }
+
+        self.ifindex = fib.ifindex;
+        array_copy(&mut self.macs, &fib.macs);
+        self.vlan_hdr = 0;
     }
 }
 
