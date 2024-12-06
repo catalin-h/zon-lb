@@ -965,6 +965,8 @@ impl L4Context {
     }
 }
 
+const IPH_SIZE: usize = 2;
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct CTCache {
@@ -972,6 +974,9 @@ struct CTCache {
     /// Backend flags merged with conntrack ones
     flags: EPFlags,
     mtu: u32,
+    /// The IP header space is used in L3 DSR mode to
+    /// fill the outer IP header
+    iph: [u32; IPH_SIZE],
     src_addr: [u32; 4],
     dst_addr: [u32; 4],
     port_combo: u32,
@@ -1137,6 +1142,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 time: now + 30,
                 flags: nat.flags,
                 mtu: nat.mtu as u32,
+                iph: [0; IPH_SIZE],
                 src_addr: [nat.lb_ip, 0, 0, 0],
                 dst_addr: [nat.ip_src, 0, 0, 0],
                 port_combo,
@@ -1380,6 +1386,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             time: now + 30,
             flags: be.flags,
             mtu: fib.mtu,
+            iph: [0; IPH_SIZE],
             src_addr: [lb_addr, 0, 0, 0],
             dst_addr: [be_addr, 0, 0, 0],
             port_combo,

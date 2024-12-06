@@ -25,8 +25,8 @@ use network_types::{
 };
 use zon_lb_common::{
     stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, Ipv6FragId, Ipv6FragInfo, NAT6Key,
-    NAT6Value, EP6, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_FRAG6_ENTRIES,
-    MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
+    NAT6Value, BE, EP6, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS,
+    MAX_FRAG6_ENTRIES, MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
 /// Same as ZLB_LB4 but for IPv6 packets.
@@ -714,7 +714,7 @@ fn ct6_handler(
     // after the main flows (request & response) caches this conntrack
     // cache handler.
 
-    if !ctnat.flags.contains(EPFlags::DSR_L2) {
+    if !ctnat.flags.contains(EPFlags::DSR_L2) && !ctnat.flags.contains(EPFlags::DSR_L3) {
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
         update_inet_csum(ctx, ipv6hdr, l4ctx, &ctnat)?;
@@ -741,6 +741,11 @@ fn ct6_handler(
         stats_inc(stats::XDP_PASS);
 
         return Ok(xdp_action::XDP_PASS);
+    }
+
+    // Encapsulate packet in tunnel
+    if ctnat.flags.contains(EPFlags::DSR_L3) {
+        ip6tnl_encap_ipv6(ctx, &l2ctx, ctnat, feat)?;
     }
 
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
@@ -1112,6 +1117,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     let be = {
         let group = match unsafe {
+            // TODO: move EP6 on heap context
             ZLB_LB6.get(&EP6 {
                 address: Inet6U::from(dst_addr),
                 port: l4ctx.dst_port as u16,
@@ -1215,6 +1221,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Initialize src/dst before FIB lookup
     ctx6.ctnat.init_from_be(&be, ipv6hdr);
+    ctx6.ctnat.time = ctx6.sv.now + 30;
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     // TODO: make fetch_fib6() update the ctnat and return only fib_rc
@@ -1251,9 +1258,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     };
 
     if be.flags.contains(EPFlags::DSR_L3) {
-        ip6tnl_encap_ipv6(ctx, &l2ctx, &be.src_ip, &be.alt_address, feat)?;
+        // For L3 DSR the destination address is the tunnel address
+        // from the backend netns.
+        array_copy(&mut ctx6.ctnat.dst_addr, &(be.alt_address));
+        ctx6.ctnat.init_ip6ip6(&ipv6hdr);
+        ip6tnl_encap_ipv6(ctx, &l2ctx, &ctx6.ctnat, &ctx6.feat)?;
     } else if !be.flags.contains(EPFlags::DSR_L2) {
-        // TODO: pass the cnat cache entry to update_inet_csum()
         update_inet_csum(ctx, ipv6hdr, &l4ctx, &ctx6.ctnat)?;
     }
 
@@ -1286,21 +1296,23 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     /* === connection tracking === */
 
-    // Add conntrack cache entry to skip searching for the group,
+    // NOTE: Add conntrack cache entry to skip searching for the group,
     // the backend and the fib entry that provides the neighbor
     // mac address.
     // NOTE: Since the cache is a per CPU map the insert with flags=0
     // will update only the value for the current CPU.
-
-    ctx6.ctnat.time = ctx6.sv.now + 30;
-
-    // The source address is actually the lb_addr and
+    // NOTE: the source address is actually the lb_addr and
     // it is copied above when checking the redirect flag
     // The destination addr is copyied above.
     // array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
     // The ctx6.ctnat.port_combo is set above before recomputing the csum
 
     let _ = ZLB_CT6_CACHE.insert(&ctx6.ctkey, &ctx6.ctnat, /* update or insert */ 0);
+
+    // There is no need to conntrack the L3 DSR flow
+    if be.flags.contains(EPFlags::DSR_L3) {
+        return Ok(action);
+    }
 
     // TODO: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
@@ -1333,7 +1345,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     if be.flags.contains(EPFlags::DSR_L2) {
         // NOTE: for DSR L2 the reply flow will search for source as current destination
         // and destination as current source.
-
         nat6key.ip_be_src = ctx6.nat6val.lb_ip;
         nat6key.ip_lb_dst = ctx6.nat6val.ip_src;
         nat6key.port_be_src = l4ctx.dst_port;
@@ -1637,8 +1648,18 @@ impl Context6 {
     }
 }
 
+const IP6TNL_HOPLIMIT: u32 = 4;
 
 impl CTCache {
+    fn init_ip6ip6(&mut self, ipv6hdr: &Ipv6Hdr) {
+        // For now copy the DSCP and flow label
+        let first = ipv6hdr as *const _ as *const u32;
+        self.iph[0] = unsafe { *first };
+        // Hop limit = 2 and
+        // next header = IPPROTO_IPV6 = 41 or IPv6-in-IPv4 tunnelling
+        self.iph[1] = ((IP6TNL_HOPLIMIT << 8) | IpProto::Ipv6 as u32) << 16;
+    }
+
     fn init_from_be(&mut self, be: &BE, ipv6hdr: &mut Ipv6Hdr) {
         // Choose the source address for FIB lookup and use the src_ip
         // if this field is not empty. Use the LB address otherwise.
@@ -1679,26 +1700,36 @@ impl CTCache {
 fn ip6tnl_encap_ipv6(
     ctx: &XdpContext,
     l2ctx: &L2Context,
-    src: &[u32; 4usize],
-    dst: &[u32; 4usize],
+    ctnat: &CTCache,
     feat: &Features,
 ) -> Result<(), ()> {
     let rc = unsafe { bpf_xdp_adjust_head(ctx.ctx, -(Ipv6Hdr::LEN as i32)) };
 
-    if feat.log_enabled(Level::Info) {
-        info!(ctx, "[ip6encap] adjust rc: {}", rc);
+    if rc != 0 {
+        if feat.log_enabled(Level::Error) {
+            info!(ctx, "[ip6encap] failed adjust, rc: {}", rc);
+        }
+        return Err(());
     }
 
-    let hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?.cast_mut();
+    let hdr = ptr_at::<[u32; 11]>(&ctx, l2ctx.ethlen - 4)?.cast_mut();
     let hdr = unsafe { &mut *hdr };
 
-    hdr.set_version(6);
-    hdr.set_priority(8);
-    hdr.payload_len = 10;
-    hdr.hop_limit = 8;
-    hdr.next_hdr = IpProto::Ipv6;
-    array_copy(unsafe { &mut hdr.src_addr.in6_u.u6_addr32 }, src);
-    array_copy(unsafe { &mut hdr.dst_addr.in6_u.u6_addr32 }, dst);
+    // Copy the ethertype
+    hdr[0] = hdr[10];
+
+    // 1st word - constant for each connection
+    hdr[1] = ctnat.iph[0];
+
+    // 2nd word - only payload changes
+    let payload = (ctx.data_end() - ctx.data() - Ipv6Hdr::LEN - l2ctx.ethlen) as u16;
+    hdr[2] = ctnat.iph[1] | payload.to_be() as u32;
+
+    // copy src/dst addresses
+    for i in 0..4 {
+        hdr[3 + i] = ctnat.src_addr[i];
+        hdr[7 + i] = ctnat.dst_addr[i];
+    }
 
     Ok(())
 }
