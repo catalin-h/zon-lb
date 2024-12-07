@@ -27,6 +27,7 @@ static STATS_NAMES: [&str; stats::MAX as usize] = [
     "icmpv6_ptb",
     "icmpv6_nd_advertisement",
     "icmp_dest_unreach_frag_rq",
+    "ip6tnl_packets",
 ];
 
 pub struct Stats {

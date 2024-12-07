@@ -1705,7 +1705,7 @@ fn ip6tnl_encap_ipv6(
 
     if rc != 0 {
         if feat.log_enabled(Level::Error) {
-            info!(ctx, "[ip6encap] failed adjust, rc: {}", rc);
+            error!(ctx, "[ip6encap] failed adjust, rc: {}", rc);
         }
         return Err(());
     }
@@ -1728,6 +1728,8 @@ fn ip6tnl_encap_ipv6(
         hdr[3 + i] = ctnat.src_addr[i];
         hdr[7 + i] = ctnat.dst_addr[i];
     }
+
+    stats_inc(stats::IP6TNL_IPV6);
 
     Ok(())
 }

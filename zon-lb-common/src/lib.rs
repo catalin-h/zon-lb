@@ -73,8 +73,10 @@ pub mod stats {
     pub const ICMPV6_ND_SOL_ADVERT: u32 = 21;
     // destination unreachable, fragmentation required
     pub const ICMP_DU_FR: u32 = 22;
+    // Packets embedded in Ip6tnl tunnel
+    pub const IP6TNL_IPV6: u32 = 23;
 
-    pub const MAX: u32 = 23;
+    pub const MAX: u32 = 24;
 }
 
 // TODO: add per backend statistics
