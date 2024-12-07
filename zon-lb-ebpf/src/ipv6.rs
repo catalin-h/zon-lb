@@ -90,7 +90,6 @@ fn compute_checksum(mut csum: u32, from: &mut [u32; 4usize], to: &[u32; 4usize])
     // different; for 16B IPv6 with many zeros this will reduce the csum
     // and copy to minimum.
     // NOTE: looks like loop unroll requires some stack allocation.
-    // BUG: bpf_linker: can't make unroll loop without the if statement
     for i in (0..4).rev() {
         if to[i] != from[i] {
             csum = csum_update_u32(from[i], to[i], csum);
@@ -777,6 +776,8 @@ struct StackVars {
     now: u32,
     /// The packet length
     pkt_len: u32,
+    /// Backend count
+    becount: u16,
 }
 
 // In order to avoid exhausting the 512B ebpf program stack by allocating
@@ -789,6 +790,8 @@ struct Context6 {
     feat: Features,
     nat6key: NAT6Key,
     nat6val: NAT6Value,
+    ep6key: EP6,
+    bekey: BEKey,
     ctnat: CTCache,
     fiblookup: BpfFibLookUp,
     fibentry: FibEntry,
@@ -1116,15 +1119,14 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     let be = {
-        let group = match unsafe {
-            // TODO: move EP6 on heap context
-            ZLB_LB6.get(&EP6 {
-                address: Inet6U::from(dst_addr),
-                port: l4ctx.dst_port as u16,
-                proto: l4ctx.next_hdr as u16,
-            })
-        } {
-            Some(group) => group,
+        ctx6.ep6key.address = Inet6U::from(dst_addr);
+        ctx6.ep6key.port = l4ctx.dst_port as u16;
+        ctx6.ep6key.proto = l4ctx.next_hdr as u16;
+        match unsafe { ZLB_LB6.get(&ctx6.ep6key) } {
+            Some(group) => {
+                ctx6.sv.becount = group.becount;
+                ctx6.bekey.gid = group.gid;
+            }
             None => {
                 if feat.log_enabled(Level::Info) {
                     info!(ctx, "No LB6 entry");
@@ -1139,12 +1141,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         };
 
         if feat.log_enabled(Level::Info) {
-            info!(ctx, "[in] gid: {} match", group.gid);
+            info!(ctx, "[in] gid: {} match", ctx6.bekey.gid);
         }
 
-        if group.becount == 0 {
+        if ctx6.sv.becount == 0 {
             if feat.log_enabled(Level::Info) {
-                info!(ctx, "[in] gid: {}, no backends", group.gid);
+                info!(ctx, "[in] gid: {}, no backends", ctx6.bekey.gid);
             }
 
             stats_inc(stats::XDP_PASS);
@@ -1153,17 +1155,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_PASS);
         }
 
-        let index = (inet6_hash16(&src_addr) ^ l4ctx.src_port as u16) % group.becount;
-        match unsafe {
-            ZLB_BACKENDS.get(&BEKey {
-                gid: group.gid,
-                index,
-            })
-        } {
+        ctx6.bekey.index = (inet6_hash16(&src_addr) ^ l4ctx.src_port as u16) % ctx6.sv.becount;
+        match unsafe { ZLB_BACKENDS.get(&ctx6.bekey) } {
             Some(be) => be,
             None => {
                 if feat.log_enabled(Level::Error) {
-                    error!(ctx, "[in] gid: {}, no BE at: {}", group.gid, index);
+                    error!(
+                        ctx,
+                        "[in] gid: {}, no BE at: {}", ctx6.bekey.gid, ctx6.bekey.index
+                    );
                 }
 
                 stats_inc(stats::XDP_PASS);
