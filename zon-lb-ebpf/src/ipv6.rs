@@ -1561,9 +1561,7 @@ impl Context6 {
             );
         }
     }
-}
 
-impl Context6 {
     fn fetch_fib6(
         &mut self,
         ctx: &XdpContext,
