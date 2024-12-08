@@ -786,7 +786,7 @@ struct StackVars {
 // objects that can be created on any program execution path.
 #[repr(C)]
 struct Context6 {
-    ctkey: CT6CacheKey,
+    ct6key: CT6CacheKey,
     feat: Features,
     nat6key: NAT6Key,
     nat6val: NAT6Value,
@@ -998,9 +998,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     ctx6.sv.now = coarse_ktime();
     ctx6.sv.pkt_len = (ctx.data_end() - ctx.data() - l2ctx.ethlen) as u32;
 
-    ctx6.ctkey.init(&ipv6hdr, l4ctx.next_hdr);
+    ctx6.ct6key.init(&ipv6hdr, l4ctx.next_hdr);
 
-    if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&ctx6.ctkey) } {
+    if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&ctx6.ct6key) } {
         if ctnat.time > ctx6.sv.now {
             if ctx6.sv.pkt_len > ctnat.mtu {
                 return send_ptb(ctx, &l2ctx, ipv6hdr, ctnat.mtu);
@@ -1073,7 +1073,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctnat.vlan_hdr = nat.vlan_hdr;
         array_copy(&mut ctx6.ctnat.macs, &nat.mac_addresses);
 
-        let _ = ZLB_CT6_CACHE.insert(&ctx6.ctkey, &ctx6.ctnat, /* update or insert */ 0);
+        let _ = ZLB_CT6_CACHE.insert(&ctx6.ct6key, &ctx6.ctnat, /* update or insert */ 0);
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             // NOTE: BUG: don't use the implicit array copy (*a = mac;)
@@ -1307,7 +1307,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // array_copy(&mut ctx6.ctnat.dst_addr, &(be.address));
     // The ctx6.ctnat.port_combo is set above before recomputing the csum
 
-    let _ = ZLB_CT6_CACHE.insert(&ctx6.ctkey, &ctx6.ctnat, /* update or insert */ 0);
+    let _ = ZLB_CT6_CACHE.insert(&ctx6.ct6key, &ctx6.ctnat, /* update or insert */ 0);
 
     // There is no need to conntrack the L3 DSR flow
     if be.flags.contains(EPFlags::DSR_L3) {
