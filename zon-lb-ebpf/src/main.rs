@@ -338,6 +338,8 @@ fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u16, mac: &[u8; 6], eth:
         }
     };
 
+    // TODO: move ArpEntry in context and make update_arp_table() a context method
+
     // Set the expiry to 2 min but it can be used as last resort
     let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
     let expiry = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + NEIGH_ENTRY_EXPIRY_INTERVAL;
@@ -383,6 +385,33 @@ fn update_arp_table(ctx: &XdpContext, ip: u32, vlan_id: u16, mac: &[u8; 6], eth:
     }
 }
 
+//
+// BUG: bpf_linker: move the logging here in order to avoid
+// the linker error due to stack exhaustion.
+#[inline(never)]
+fn arp_snoop_log(ctx: &XdpContext, eth: &EthHdr, l2ctx: &L2Context, arphdr: &ArpHdr, way: &str) {
+    info!(
+        ctx,
+        "[eth] [{}] if:{} vlan_id:{} {:mac} -> {:mac}",
+        way,
+        unsafe { (*ctx.ctx).ingress_ifindex },
+        (l2ctx.vlan_id() as u16).to_be(),
+        eth.src_addr,
+        eth.dst_addr,
+    );
+
+    info!(
+        ctx,
+        "[arp] [{}] oper:{} sha={:mac} spa:{:i} tha={:mac} tpa:{:i}",
+        way,
+        arphdr.oper.to_be(),
+        arphdr.sha,
+        arphdr.spa.to_be(),
+        arphdr.tha,
+        arphdr.tpa.to_be()
+    );
+}
+
 fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let arphdr = ptr_at::<ArpHdr>(&ctx, l2ctx.ethlen)?;
     let arphdr = unsafe { &mut *arphdr.cast_mut() };
@@ -396,24 +425,7 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // TODO: add arp to stats
     // TODO: use only info! and ditch error! to generate less code
     if log_on {
-        info!(
-            ctx,
-            "[eth] if:{} vlan_id:{} {:mac} -> {:mac}",
-            ifindex,
-            (vlan_id as u16).to_be(),
-            eth.src_addr,
-            eth.dst_addr,
-        );
-
-        info!(
-            ctx,
-            "[arp] oper:{} sha={:mac} spa:{:i} tha={:mac} tpa:{:i}",
-            arphdr.oper.to_be(),
-            arphdr.sha,
-            arphdr.spa.to_be(),
-            arphdr.tha,
-            arphdr.tpa.to_be()
-        );
+        arp_snoop_log(ctx, eth, &l2ctx, arphdr, "rx");
     }
 
     update_arp_table(ctx, arphdr.spa, vlan_id, &arphdr.sha, eth);
@@ -438,12 +450,7 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // the field is 32-bit.
     let tpa = arphdr.tpa;
     let smac = match unsafe { ZLB_ARP.get(&tpa) } {
-        None => {
-            if log_on {
-                info!(ctx, "[arp] no entry for tpa: {:i}", tpa);
-            }
-            return Ok(xdp_action::XDP_PASS);
-        }
+        None => return Ok(xdp_action::XDP_PASS),
         Some(entry) => {
             // NOTE: most likely the entry.vlan_id would be 0 since it shouldn't be
             // assigned in no VLAN
@@ -454,26 +461,7 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                     entry.mac
                 }
             } else {
-                if log_on {
-                    if entry.ifindex != ifindex {
-                        info!(
-                            ctx,
-                            "[arp] if diff: {}!={} for {:i}",
-                            ifindex,
-                            entry.ifindex,
-                            tpa.to_be()
-                        );
-                    } else {
-                        info!(
-                            ctx,
-                            "[arp] vlan id diff: {}!={}, for {:i}",
-                            vlan_id,
-                            entry.vlan_id,
-                            tpa.to_be()
-                        );
-                    }
-                }
-
+                // Nothing to update
                 return Ok(xdp_action::XDP_PASS);
             }
         }
@@ -490,23 +478,7 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     arphdr.oper = 2_u16.to_be();
 
     if log_on {
-        info!(
-            ctx,
-            "[eth] [tx] if:{} vlan_id:{} {:mac} -> {:mac}",
-            ifindex,
-            (vlan_id as u16).to_be(),
-            eth.src_addr,
-            eth.dst_addr,
-        );
-
-        info!(
-            ctx,
-            "[arp] reply sha={:mac} spa:{:i} -> tha={:mac} tpa:{:i}",
-            arphdr.sha,
-            arphdr.spa.to_be(),
-            arphdr.tha,
-            arphdr.tpa.to_be()
-        );
+        arp_snoop_log(ctx, eth, &l2ctx, arphdr, "tx");
     }
 
     stats_inc(stats::ARP_REPLY);
