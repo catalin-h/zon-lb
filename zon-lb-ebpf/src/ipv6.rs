@@ -785,7 +785,7 @@ struct StackVars {
 // is to use a per cpu (avoids concurrency) struct that contains all the
 // objects that can be created on any program execution path.
 #[repr(C)]
-struct Context6 {
+struct Context {
     ct6key: CT6CacheKey,
     feat: Features,
     nat6key: NAT6Key,
@@ -801,7 +801,7 @@ struct Context6 {
 }
 
 #[map]
-static mut ZLB_CONTEXT6: PerCpuArray<Context6> = PerCpuArray::with_max_entries(1, 0);
+static mut ZLB_CONTEXT: PerCpuArray<Context> = PerCpuArray::with_max_entries(1, 0);
 
 fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
     for i in 0..N {
@@ -848,7 +848,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
     let ctx6 = unsafe {
-        let ptr = ZLB_CONTEXT6.get_ptr_mut(0).ok_or(())?;
+        let ptr = ZLB_CONTEXT.get_ptr_mut(0).ok_or(())?;
         &mut *ptr
     };
     ctx6.feat.fetch();
@@ -1428,7 +1428,7 @@ fn send_ptb(
     }
 
     let ctx6 = unsafe {
-        let ptr = ZLB_CONTEXT6.get_ptr_mut(0).ok_or(())?;
+        let ptr = ZLB_CONTEXT.get_ptr_mut(0).ok_or(())?;
         &mut *ptr
     };
 
@@ -1532,7 +1532,7 @@ impl BpfFibLookUp {
     }
 }
 
-impl Context6 {
+impl Context {
     fn init_fibentry(&mut self) {
         self.fibentry.ifindex = self.fiblookup.ifindex;
         self.fiblookup.copy_swapped_macs(&mut self.fibentry.macs);
