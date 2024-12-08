@@ -803,6 +803,10 @@ struct Context {
 #[map]
 static mut ZLB_CONTEXT: PerCpuArray<Context> = PerCpuArray::with_max_entries(1, 0);
 
+fn zlb_context() -> Result<*mut Context, ()> {
+    unsafe { ZLB_CONTEXT.get_ptr_mut(0).ok_or(()) }
+}
+
 fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
     for i in 0..N {
         to[i] = from[i];
@@ -847,10 +851,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
     let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
-    let ctx6 = unsafe {
-        let ptr = ZLB_CONTEXT.get_ptr_mut(0).ok_or(())?;
-        &mut *ptr
-    };
+    let ctx6 = unsafe { &mut *zlb_context()? };
     ctx6.feat.fetch();
     // TODO: move L4 in context
     let mut l4ctx = L4Context::new_for_ipv6(&l2ctx, ipv6hdr.next_hdr);
