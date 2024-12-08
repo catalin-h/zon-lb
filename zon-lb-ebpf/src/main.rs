@@ -493,33 +493,21 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 // - disable vlan_update: no
 // - disable arp: no
 fn try_zon_lb(ctx: XdpContext) -> Result<u32, ()> {
-    let ether_type = ptr_at::<[EtherType; 5]>(&ctx, ETH_ALEN << 1)?;
-    let ether_type = unsafe { &*ether_type };
-    let l2ctx = L2Context {
+    let eth_hdr = ptr_at::<[EtherType; 3]>(&ctx, ETH_ALEN << 1)?;
+    let eth_hdr = unsafe { &*eth_hdr };
+    let mut l2ctx = L2Context {
         ethlen: EthHdr::LEN,
         vlanhdr: 0,
     };
+    let mut ether_type = eth_hdr[0];
 
-    // BUG: Unfortunately the bpf-linker does not allow mixing
-    // match-arms that call return with function calls and match-arms
-    // that just return values. Looks like only match-arms that return
-    // compile time constant lile `Ok(xdp_action::XDP_PASS)` are allowed.`
-    //    let (idx, vlanhdr, next_ether_type) =
-    if ether_type[0] as u16 != EtherType::VlanDot1Q as u16 {
-        return match ether_type[0] {
-            EtherType::Ipv4 => ipv4_lb(&ctx, l2ctx),
-            EtherType::Ipv6 => ipv6_lb(&ctx, l2ctx),
-            EtherType::Arp => arp_snoop(&ctx, l2ctx),
-            _ => Ok(xdp_action::XDP_PASS),
-        };
+    if eth_hdr[0] as u16 == EtherType::VlanDot1Q as u16 {
+        l2ctx.ethlen = EthHdr::LEN + 4;
+        l2ctx.vlanhdr = ((eth_hdr[1] as u32) << 16) | (eth_hdr[0] as u32);
+        ether_type = eth_hdr[2];
     }
 
-    let l2ctx = L2Context {
-        ethlen: EthHdr::LEN + 4,
-        vlanhdr: ((ether_type[1] as u32) << 16) | (ether_type[0] as u32),
-    };
-
-    match ether_type[0] {
+    match ether_type {
         EtherType::Ipv4 => ipv4_lb(&ctx, l2ctx),
         EtherType::Ipv6 => ipv6_lb(&ctx, l2ctx),
         EtherType::Arp => arp_snoop(&ctx, l2ctx),
