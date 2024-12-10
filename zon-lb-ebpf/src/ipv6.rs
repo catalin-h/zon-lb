@@ -698,7 +698,6 @@ impl CT6CacheKey {
 static ZLB_CT6_CACHE: LruPerCpuHashMap<CT6CacheKey, CTCache> =
     LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
 
-#[inline(always)]
 fn ct6_handler(
     ctx: &XdpContext,
     l2ctx: &L2Context,
@@ -940,10 +939,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 l4ctx.offset += 8;
                 l4ctx.next_hdr = exthdr.base.next_header;
 
-                // BUG: move the logging inside function to avoid bpf_linker error
-                // after adding the call to stats_inc(IPV6_FRAGMENTS);
                 log_fragexthdr(ctx, &exthdr, &feat);
-
                 stats_inc(stats::IPV6_FRAGMENTS);
 
                 array_copy(&mut unsafe { ctx6.fragid.src.addr32 }, src_addr);
