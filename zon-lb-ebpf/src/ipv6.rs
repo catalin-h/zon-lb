@@ -852,8 +852,14 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
     let ctx6 = unsafe { &mut *zlb_context()? };
     ctx6.feat.fetch();
-    // TODO: move L4 in context
+
+    // BUG: aya: Can't move L4Context to the per-cpu heap Context yet (kernel 6.1)
+    // due to verifier as it has an issue with modifying a field in l4ctx and then
+    // doing math with context pointer, for e.g. getting a pointer to the L4 header:
+    // "math between pkt pointer and register with unbounded min value is not allowed"
+    // https://elixir.bootlin.com/linux/v6.1.119/source/kernel/bpf/verifier.c#L8116
     let mut l4ctx = L4Context::new_for_ipv6(&l2ctx, ipv6hdr.next_hdr);
+
     let feat = &ctx6.feat;
     let mut cache_fragment = false;
 
@@ -991,6 +997,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // * the stack exhaustion is also the cause of the bpf_linker error
     // * the aya_logger macros consumes a lot of stack so maybe create custom logger
     // that does not consume the stack.
+    // * to get an idea of the amount of stack the app used just generate a verifier
+    // error like accessing a packet pointer without checking.
 
     ctx6.sv.now = coarse_ktime();
     ctx6.sv.pkt_len = (ctx.data_end() - ctx.data() - l2ctx.ethlen) as u32;
