@@ -389,7 +389,6 @@ fn neighbor_solicit(
     let eth = unsafe { &mut *eth.cast_mut() };
     let ndhdr = ptr_at::<Icmpv6NdHdr>(&ctx, l4ctx.offset)?;
     let ndhdr = unsafe { &mut *ndhdr.cast_mut() };
-    let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
     let offset = l4ctx.offset + mem::size_of::<Icmpv6NdHdr>();
     let lladopt = ptr_at::<Icmpv6LLAddrOption>(&ctx, offset);
 
@@ -401,7 +400,7 @@ fn neighbor_solicit(
             ctx,
             "[nd] {} if:{} src:[{:i}]/{:mac}/vlan={} for target [{:i}]{}llddar",
             nt,
-            ifindex,
+            unsafe { (*ctx.ctx).ingress_ifindex },
             unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
             eth.src_addr,
             (l2ctx.vlan_id() as u16).to_be(),
@@ -482,7 +481,8 @@ fn neighbor_solicit(
         Some(entry) => {
             // NOTE: most likely the entry.vlan_id would be 0 since it shouldn't be
             // assigned in no VLAN
-            if entry.ifindex == ifindex && (l2ctx.vlan_id() == entry.vlan_id || entry.vlan_id == 0)
+            if entry.ifindex == unsafe { (*ctx.ctx).ingress_ifindex }
+                && (l2ctx.vlan_id() == entry.vlan_id || entry.vlan_id == 0)
             {
                 if is_unicast_mac(&entry.if_mac) {
                     entry.if_mac
@@ -490,25 +490,7 @@ fn neighbor_solicit(
                     entry.mac
                 }
             } else {
-                if feat.log_enabled(Level::Info) {
-                    if entry.ifindex != ifindex {
-                        info!(
-                            ctx,
-                            "[nd] if diff: {}!={} for [{:i}]",
-                            ifindex,
-                            entry.ifindex,
-                            unsafe { ndhdr.tgt_addr.addr8 }
-                        );
-                    } else {
-                        info!(
-                            ctx,
-                            "[nd] vlan id diff: {}!={}, for [{:i}]",
-                            l2ctx.vlan_id(),
-                            entry.vlan_id,
-                            unsafe { ndhdr.tgt_addr.addr8 }
-                        );
-                    }
-                }
+                // Nothing to update
                 return Ok(xdp_action::XDP_PASS);
             }
         }
@@ -568,7 +550,7 @@ fn neighbor_solicit(
         info!(
             ctx,
             "[eth] [tx] if:{} vlan_id:{} {:mac} -> {:mac}",
-            ifindex,
+            unsafe { (*ctx.ctx).ingress_ifindex },
             (l2ctx.vlan_id() as u16).to_be(),
             eth.src_addr,
             eth.dst_addr,
