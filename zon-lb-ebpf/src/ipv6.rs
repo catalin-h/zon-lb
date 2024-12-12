@@ -1328,7 +1328,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let nat6key = &mut ctx6.nat6key;
     ctx6.nat6val.ip_src = nat6key.ip_be_src;
     ctx6.nat6val.lb_ip = nat6key.ip_lb_dst;
-    let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+
     if be.flags.contains(EPFlags::DSR_L2) {
         // NOTE: for DSR L2 the reply flow will search for source as current destination
         // and destination as current source.
@@ -1344,8 +1344,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     ctx6.nat6val.port_lb = l4ctx.dst_port as u16;
-    ctx6.nat6val.ifindex = ifindex;
-    ctx6.nat6val.mtu = check_mtu(ctx, ifindex);
+    ctx6.nat6val.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+    ctx6.nat6val.mtu = check_mtu(ctx, unsafe { (*ctx.ctx).ingress_ifindex });
     ctx6.nat6val.vlan_hdr = l2ctx.vlanhdr;
     ctx6.nat6val.flags = be.flags;
     // NOTE: the original MAC addresses are cached right before redirect
