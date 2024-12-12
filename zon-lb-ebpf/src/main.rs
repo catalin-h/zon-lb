@@ -417,8 +417,6 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let arphdr = unsafe { &mut *arphdr.cast_mut() };
     let eth = ptr_at::<EthHdr>(&ctx, 0)?;
     let eth = unsafe { &mut *eth.cast_mut() };
-    let ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
-    let vlan_id = l2ctx.vlan_id();
     let feat = Features::new();
     let log_on = feat.log_enabled(Level::Info);
 
@@ -428,8 +426,8 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         arp_snoop_log(ctx, eth, &l2ctx, arphdr, "rx");
     }
 
-    update_arp_table(ctx, arphdr.spa, vlan_id, &arphdr.sha, eth);
-    update_arp_table(ctx, arphdr.tpa, vlan_id, &arphdr.tha, eth);
+    update_arp_table(ctx, arphdr.spa, l2ctx.vlan_id(), &arphdr.sha, eth);
+    update_arp_table(ctx, arphdr.tpa, l2ctx.vlan_id(), &arphdr.tha, eth);
 
     // For VLANs answer to requests as this LB can act as a proxy for
     // the endpoints inside VLANs. Without special routing rules the
@@ -454,7 +452,9 @@ fn arp_snoop(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         Some(entry) => {
             // NOTE: most likely the entry.vlan_id would be 0 since it shouldn't be
             // assigned in no VLAN
-            if entry.ifindex == ifindex && (vlan_id == entry.vlan_id || entry.vlan_id == 0) {
+            if entry.ifindex == unsafe { (*ctx.ctx).ingress_ifindex }
+                && (l2ctx.vlan_id() == entry.vlan_id || entry.vlan_id == 0)
+            {
                 if is_unicast_mac(&entry.if_mac) {
                     entry.if_mac
                 } else {
