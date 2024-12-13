@@ -949,8 +949,6 @@ struct CTCache {
 static ZLB_CT4_CACHE: LruPerCpuHashMap<NAT4Key, CTCache> =
     LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
 
-// BUG: bpf_linker error if not explicitly use attribute inline(always)
-#[inline(always)]
 fn ct4_handler(
     ctx: &XdpContext,
     l2ctx: &L2Context,
