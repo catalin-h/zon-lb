@@ -100,8 +100,8 @@ setup_ns() {
       # Enable forwarding in the default netns so the replied packet
       # from the backend server can be forwarded to the client.
       printf "enable forwarding inside default netns ...\n"
-      sysctl -w net.ipv6.conf.$IF0.forwarding=1
-      sysctl -w net.ipv4.conf.$IF0.forwarding=1      
+      sysctl -w net.ipv6.conf.all.forwarding=1
+      sysctl -w net.ipv4.conf.all.forwarding=1
     fi
 
     # Enable forwarding on veth from default netns so the
