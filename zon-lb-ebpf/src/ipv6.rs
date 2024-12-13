@@ -1403,9 +1403,9 @@ fn send_ptb(
     ipv6hdr: &mut Ipv6Hdr,
     size: u32,
 ) -> Result<u32, ()> {
-    let feat = Features::new();
+    let ctx6 = unsafe { &mut *zlb_context()? };
 
-    if feat.log_enabled(Level::Info) {
+    if ctx6.feat.log_enabled(Level::Info) {
         info!(
             ctx,
             "PTB, actual:{} max:{}",
@@ -1413,11 +1413,6 @@ fn send_ptb(
             size
         );
     }
-
-    let ctx6 = unsafe {
-        let ptr = ZLB_CONTEXT.get_ptr_mut(0).ok_or(())?;
-        &mut *ptr
-    };
 
     // NOTE: the bellow pointer getter are unlikely to fail because
     // on IPv6 the minimum MTU is 1280.
@@ -1486,7 +1481,7 @@ fn send_ptb(
     let delta = PTB_SIZE as i32 + ptb_offset as i32 - pkt_len as i32;
     let rc = unsafe { bpf_xdp_adjust_tail(ctx.ctx, delta) };
 
-    if feat.log_enabled(Level::Info) {
+    if ctx6.feat.log_enabled(Level::Info) {
         info!(
             ctx,
             "adjust tail by delta:{}, pkt_len:{}, rc={}", delta, pkt_len, rc
