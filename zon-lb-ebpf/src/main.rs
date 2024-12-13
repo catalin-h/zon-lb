@@ -1031,7 +1031,6 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv4hdr = unsafe { &mut *ipv4hdr.cast_mut() };
     let src_addr = ipv4hdr.src_addr;
     let dst_addr = ipv4hdr.dst_addr;
-    let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
     // NOTE: compute the l4 header start based on ipv4hdr.IHL
     let l4hdr_offset = (ipv4hdr.ihl() as usize) << 2;
     let l4hdr_offset = l4hdr_offset + l2ctx.ethlen;
@@ -1404,7 +1403,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // This will boost performance and less error prone on tests like iperf.
     match unsafe { ZLB_CONNTRACK4.get(&natkey) } {
         Some(&nat) => {
-            if nat.ifindex != if_index
+            if nat.ifindex != unsafe { (*ctx.ctx).ingress_ifindex }
                 || nat.ip_src != ip_src
                 || nat.mac_addresses != mac_addresses
                 || nat.vlan_hdr != l2ctx.vlanhdr
@@ -1425,8 +1424,8 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             &NAT4Value {
                 ip_src,
                 port_lb: l4ctx.dst_port as u16,
-                mtu: check_mtu(ctx, if_index),
-                ifindex: if_index,
+                mtu: check_mtu(ctx, (*ctx.ctx).ingress_ifindex),
+                ifindex: (*ctx.ctx).ingress_ifindex,
                 mac_addresses,
                 vlan_hdr: l2ctx.vlanhdr,
                 flags: be.flags,
