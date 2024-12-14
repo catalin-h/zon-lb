@@ -826,14 +826,6 @@ impl L4Context {
         self.check_off = off;
     }
 
-    fn sport(&mut self, port: u16) {
-        self.src_port = port as u32;
-    }
-
-    fn dport(&mut self, port: u16) {
-        self.dst_port = port as u32;
-    }
-
     fn set_tcp(&mut self, ctx: &XdpContext) -> Result<(), ()> {
         let tcphdr = ptr_at::<TcpHdr>(&ctx, self.offset)?;
         self.check_offset(offset_of!(TcpHdr, check));

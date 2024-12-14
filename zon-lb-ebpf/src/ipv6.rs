@@ -647,6 +647,13 @@ impl L4Context {
             next_hdr,
         }
     }
+
+    fn set_from_ipv6_frag(&mut self, frag: &Ipv6FragInfo) {
+        // No need to set the checksum offset as for IP fragments
+        // there is no checksum except the first one.
+        self.src_port = frag.src_port as u32;
+        self.dst_port = frag.dst_port as u32;
+    }
 }
 
 // NOTE: use a separate for src and dst addresses in order
@@ -929,21 +936,21 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
                 if exthdr.offset() == 0 {
                     cache_fragment = true;
-                } else {
-                    // Retrieve cached l4 info and don't set the checksum offset
-                    // as there no need to compute the checksum for fragments.
-                    // Fragments that are not recognized are passed along.
-                    match unsafe { ZLB_FRAG6.get(&ctx6.fragid) } {
-                        // Missing first fragment
-                        None => {
-                            stats_inc(stats::IPV6_FRAGMENT_ERRORS);
-                            return Err(());
-                        }
-                        Some(entry) => {
-                            l4ctx.sport(entry.src_port);
-                            l4ctx.dport(entry.dst_port);
-                            break;
-                        }
+                    break;
+                }
+
+                // Retrieve cached l4 info and don't set the checksum offset
+                // as there no need to compute the checksum for fragments.
+                // Fragments that are not recognized are passed along.
+                match unsafe { ZLB_FRAG6.get(&ctx6.fragid) } {
+                    // Missing first fragment
+                    None => {
+                        stats_inc(stats::IPV6_FRAGMENT_ERRORS);
+                        return Err(());
+                    }
+                    Some(entry) => {
+                        l4ctx.set_from_ipv6_frag(entry);
+                        break;
                     }
                 }
             }
