@@ -45,7 +45,7 @@ port = 23
 ip = "2001:db8::2:2"
 options = ["redirect", "dsr_l3", "src_ip=2001:db8::2:1", "alt_addr=2001:db8::2:3"]
 
-[netif.veth2.6]
+[netif.veth0.6]
 ip = "10.0.0.1"
 proto = 1
 
