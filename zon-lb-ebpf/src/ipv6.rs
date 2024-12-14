@@ -21,7 +21,6 @@ use network_types::{
     icmp::IcmpHdr,
     ip::{IpProto, Ipv6Hdr},
     tcp::TcpHdr,
-    udp::UdpHdr,
 };
 use zon_lb_common::{
     stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, Ipv6FragId, Ipv6FragInfo, NAT6Key,
@@ -848,17 +847,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     for _ in 0..4 {
         match l4ctx.next_hdr {
             IpProto::Tcp => {
-                let tcphdr = ptr_at::<TcpHdr>(&ctx, l4ctx.offset)?;
-                l4ctx.check_offset(offset_of!(TcpHdr, check));
-                l4ctx.sport(unsafe { (*tcphdr).source });
-                l4ctx.dport(unsafe { (*tcphdr).dest });
+                l4ctx.set_tcp(ctx)?;
                 break;
             }
             IpProto::Udp => {
-                let udphdr = ptr_at::<UdpHdr>(&ctx, l4ctx.offset)?;
-                l4ctx.check_offset(offset_of!(UdpHdr, check));
-                l4ctx.sport(unsafe { (*udphdr).source });
-                l4ctx.dport(unsafe { (*udphdr).dest });
+                l4ctx.set_udp(ctx)?;
                 break;
             }
             IpProto::Ipv6Icmp => {

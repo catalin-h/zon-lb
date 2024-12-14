@@ -923,6 +923,22 @@ impl L4Context {
     fn dport(&mut self, port: u16) {
         self.dst_port = port as u32;
     }
+
+    fn set_tcp(&mut self, ctx: &XdpContext) -> Result<(), ()> {
+        let tcphdr = ptr_at::<TcpHdr>(&ctx, self.offset)?;
+        self.check_offset(offset_of!(TcpHdr, check));
+        self.src_port = unsafe { (*tcphdr).source } as u32;
+        self.dst_port = unsafe { (*tcphdr).dest } as u32;
+        Ok(())
+    }
+
+    fn set_udp(&mut self, ctx: &XdpContext) -> Result<(), ()> {
+        let udphdr = ptr_at::<UdpHdr>(&ctx, self.offset)?;
+        self.check_off = offset_of!(UdpHdr, check);
+        self.src_port = unsafe { (*udphdr).source } as u32;
+        self.dst_port = unsafe { (*udphdr).dest } as u32;
+        Ok(())
+    }
 }
 
 const IPH_SIZE: usize = 2;
