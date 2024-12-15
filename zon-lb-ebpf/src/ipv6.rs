@@ -611,31 +611,6 @@ impl Ipv6FragExtHdr {
     }
 }
 
-fn cache_frag_info(fragid: &Ipv6FragId, l4ctx: &L4Context) {
-    match unsafe {
-        ZLB_FRAG6.insert(
-            &fragid,
-            &Ipv6FragInfo {
-                src_port: l4ctx.src_port as u16,
-                dst_port: l4ctx.dst_port as u16,
-                reserved: 0,
-            },
-            0,
-        )
-    } {
-        Ok(()) => {}
-        Err(_) => {
-            stats_inc(stats::IPV6_FRAGMENT_ERRORS);
-        }
-    };
-
-    // BUG: aya compiler generates code that exeeds the stack size:
-    // 'the BPF_PROG_LOAD syscall failed. Verifier output: combined
-    // stack size of 3 calls is 544. Too large'
-    // Calling the same log function outside works.
-    // info!(ctx, "fino");
-}
-
 impl L4Context {
     fn new_for_ipv6(l2ctx: &L2Context, next_hdr: IpProto) -> Self {
         Self {
@@ -646,13 +621,6 @@ impl L4Context {
             flags: 0,
             next_hdr,
         }
-    }
-
-    fn set_from_ipv6_frag(&mut self, frag: &Ipv6FragInfo) {
-        // No need to set the checksum offset as for IP fragments
-        // there is no checksum except the first one.
-        self.src_port = frag.src_port as u32;
-        self.dst_port = frag.dst_port as u32;
     }
 }
 
@@ -767,6 +735,71 @@ struct StackVars {
     becount: u16,
 }
 
+#[repr(C)]
+pub struct IpFragment {
+    /// Must cache the fragment in order to get the L4 context details
+    // for the other fragments
+    cache_fragment: bool,
+    key: Ipv6FragId,
+    info: Ipv6FragInfo,
+}
+
+impl IpFragment {
+    fn init(
+        &mut self,
+        ipv6hdr: &Ipv6Hdr,
+        exthdr: &Ipv6FragExtHdr,
+        l4ctx: &mut L4Context,
+    ) -> Result<bool, ()> {
+        array_copy(unsafe { &mut self.key.src.addr32 }, unsafe {
+            &ipv6hdr.src_addr.in6_u.u6_addr32
+        });
+        array_copy(unsafe { &mut self.key.dst.addr32 }, unsafe {
+            &ipv6hdr.dst_addr.in6_u.u6_addr32
+        });
+        self.key.id = exthdr.id;
+        self.cache_fragment = exthdr.offset() == 0;
+
+        if self.cache_fragment {
+            return Ok(false);
+        }
+
+        // Retrieve cached l4 info and don't set the checksum offset
+        // as there no need to compute the checksum for fragments.
+        // Fragments that are not recognized are passed along.
+        match unsafe { ZLB_FRAG6.get(&self.key) } {
+            // Missing first fragment
+            None => {
+                stats_inc(stats::IPV6_FRAGMENT_ERRORS);
+                Err(())
+            }
+            Some(entry) => {
+                // No need to set the checksum offset as for IP fragments
+                // there is no checksum except the first one.
+                l4ctx.src_port = entry.src_port as u32;
+                l4ctx.dst_port = entry.dst_port as u32;
+                Ok(true)
+            }
+        }
+    }
+
+    fn cache(&mut self, l4ctx: &L4Context) {
+        if !self.cache_fragment {
+            return;
+        }
+
+        self.info.src_port = l4ctx.src_port as u16;
+        self.info.dst_port = l4ctx.dst_port as u16;
+
+        match unsafe { ZLB_FRAG6.insert(&self.key, &self.info, 0) } {
+            Ok(()) => {}
+            Err(_) => {
+                stats_inc(stats::IPV6_FRAGMENT_ERRORS);
+            }
+        };
+    }
+}
+
 // In order to avoid exhausting the 512B ebpf program stack by allocating
 // diferent large objects (especially for IPv6 path) one common workaround
 // is to use a per cpu (avoids concurrency) struct that contains all the
@@ -782,7 +815,7 @@ struct Context {
     ctnat: CTCache,
     fiblookup: BpfFibLookUp,
     fibentry: FibEntry,
-    fragid: Ipv6FragId,
+    frag: IpFragment,
     ptbprotohdr: ProtoHdr,
     sv: StackVars,
 }
@@ -847,9 +880,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // "math between pkt pointer and register with unbounded min value is not allowed"
     // https://elixir.bootlin.com/linux/v6.1.119/source/kernel/bpf/verifier.c#L8116
     let mut l4ctx = L4Context::new_for_ipv6(&l2ctx, ipv6hdr.next_hdr);
-
-    let feat = &ctx6.feat;
-    let mut cache_fragment = false;
 
     for _ in 0..4 {
         match l4ctx.next_hdr {
@@ -930,28 +960,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 log_fragexthdr(ctx, &exthdr, &feat);
                 stats_inc(stats::IPV6_FRAGMENTS);
 
-                array_copy(&mut unsafe { ctx6.fragid.src.addr32 }, src_addr);
-                array_copy(&mut unsafe { ctx6.fragid.dst.addr32 }, dst_addr);
-                ctx6.fragid.id = exthdr.id;
-
-                if exthdr.offset() == 0 {
-                    cache_fragment = true;
+                if ctx6.frag.init(ipv6hdr, exthdr, &mut l4ctx)? {
                     break;
-                }
-
-                // Retrieve cached l4 info and don't set the checksum offset
-                // as there no need to compute the checksum for fragments.
-                // Fragments that are not recognized are passed along.
-                match unsafe { ZLB_FRAG6.get(&ctx6.fragid) } {
-                    // Missing first fragment
-                    None => {
-                        stats_inc(stats::IPV6_FRAGMENT_ERRORS);
-                        return Err(());
-                    }
-                    Some(entry) => {
-                        l4ctx.set_from_ipv6_frag(entry);
-                        break;
-                    }
                 }
             }
             _ => {
@@ -1033,11 +1043,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         log_nat6(ctx, &nat, &feat);
 
         // Save fragment before updating addresses
-        // TODO: move cache_fragment in context stack vars and l4ctx in app context
-        // then create a method cache_frag_info in context
-        if cache_fragment {
-            cache_frag_info(&ctx6.fragid, &l4ctx);
-        }
+        ctx6.frag.cache(&l4ctx);
 
         // TBD: for crc32 use crc32_off
 
@@ -1174,9 +1180,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         );
     }
 
-    if cache_fragment {
-        cache_frag_info(&ctx6.fragid, &l4ctx);
-    }
+    ctx6.frag.cache(&l4ctx);
 
     ctx6.ctnat.port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
