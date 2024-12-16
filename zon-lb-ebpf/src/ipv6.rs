@@ -800,6 +800,93 @@ impl IpFragment {
     }
 }
 
+struct NAT6 {
+    key: NAT6Key,
+    info: NAT6Value,
+    ret_code: i64,
+}
+
+impl NAT6 {
+    fn init_key(&mut self, ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
+        self.key.ip_be_src = Inet6U::from(unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 });
+        self.key.ip_lb_dst = Inet6U::from(unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 });
+        self.key.port_be_src = l4ctx.src_port;
+        self.key.port_lb_dst = l4ctx.dst_port;
+        self.key.next_hdr = l4ctx.next_hdr as u32;
+    }
+
+    // TODO: Don't insert entry if no connection tracking is enabled for this backend.
+    // For e.g. if the backend can reply directly to the source endpoint.
+    // if !be.flags.contains(EPFlags::NO_CONNTRACK) {
+    // NOTE: The LB will use the source port since there can be multiple
+    // connection to the same backend and it needs to track all of them.
+    // On reply the source port is used to identify the connection track entry.
+    // NOTE: for DSR the key does not change.
+    //
+    // Normal NAT mappings
+    //             Request         Reply
+    // ----------------------------------
+    // ip_be_src   Backend         Source
+    // ip_lb_dst   Dest | src_ip   Dest
+    // port_be_src Backend         Source
+    // port_lb_dst Source          Dest
+    //
+    // DSR NAT mappings: swap source with dest
+    //             Request         Reply
+    // ----------------------------------
+    // ip_be_src   Dest            Source
+    // ip_lb_dst   Source          Dest
+    // port_be_src Dest            Source
+    // port_lb_dst Source          Dest
+    //
+    fn update(&mut self, ctx: &XdpContext, l4ctx: &L4Context, ctnat: &CTCache) {
+        self.info.ip_src = self.key.ip_be_src;
+        self.info.lb_ip = self.key.ip_lb_dst;
+
+        if ctnat.flags.contains(EPFlags::DSR_L2) {
+            // NOTE: for DSR L2 the reply flow will search for source as current destination
+            // and destination as current source.
+            self.key.ip_be_src = self.info.lb_ip;
+            self.key.ip_lb_dst = self.info.ip_src;
+            self.key.port_be_src = l4ctx.dst_port;
+            self.key.port_lb_dst = l4ctx.src_port;
+        } else {
+            self.key.ip_lb_dst = Inet6U::from(&ctnat.src_addr);
+            self.key.ip_be_src = Inet6U::from(&ctnat.dst_addr);
+            self.key.port_be_src = ctnat.port_combo >> 16; // actually the BE::port
+            self.key.port_lb_dst = l4ctx.src_port;
+        }
+
+        self.info.port_lb = l4ctx.dst_port as u16;
+        self.info.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+        self.info.mtu = check_mtu(ctx, unsafe { (*ctx.ctx).ingress_ifindex });
+        self.info.flags = ctnat.flags;
+        // NOTE: the original MAC addresses and VLAN header are cached right before redirect
+
+        // TBD: use lock or atomic update ?
+        // TBD: use BPF_F_LOCK ?
+
+        self.ret_code = match unsafe { ZLB_CONNTRACK6.insert(&self.key, &self.info, 0) } {
+            Ok(()) => 0, // add stats for insert
+            Err(ret) => {
+                stats_inc(stats::CT_ERROR_UPDATE);
+                ret
+            }
+        };
+
+        if Features::new().log_enabled(Level::Info) {
+            info!(
+                ctx,
+                "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
+                unsafe { self.info.ip_src.addr8 },
+                self.key.port_lb_dst,
+                self.info.vlan_hdr,
+                self.ret_code
+            );
+        }
+    }
+}
+
 // In order to avoid exhausting the 512B ebpf program stack by allocating
 // diferent large objects (especially for IPv6 path) one common workaround
 // is to use a per cpu (avoids concurrency) struct that contains all the
@@ -808,8 +895,7 @@ impl IpFragment {
 struct Context {
     ct6key: CT6CacheKey,
     feat: Features,
-    nat6key: NAT6Key,
-    nat6val: NAT6Value,
+    nat6: NAT6,
     ep6key: EP6,
     bekey: BEKey,
     ctnat: CTCache,
@@ -873,6 +959,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
     let ctx6 = unsafe { &mut *zlb_context()? };
     ctx6.feat.fetch();
+    let feat = &ctx6.feat;
 
     // BUG: aya: Can't move L4Context to the per-cpu heap Context yet (kernel 6.1)
     // due to verifier as it has an issue with modifying a field in l4ctx and then
@@ -1025,14 +1112,11 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // is 3.38Gbits/sec at this commit:
     // 304f4a8 bpf6: use the Context Feature object inside the ct6 handler
 
-    let nat6key = &mut ctx6.nat6key;
-    nat6key.ip_be_src = Inet6U::from(src_addr);
-    nat6key.ip_lb_dst = Inet6U::from(dst_addr);
-    nat6key.port_be_src = l4ctx.src_port;
-    nat6key.port_lb_dst = l4ctx.dst_port;
-    nat6key.next_hdr = l4ctx.next_hdr as u32;
+    // NOTE: using ctx6 to directly modify the NAT6 key will generate
+    // a borrower error because the ctx6 var is already borrowed as mut.
+    ctx6.nat6.init_key(ipv6hdr, &l4ctx);
 
-    if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&nat6key) } {
+    if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&ctx6.nat6.key) } {
         if ctx6.sv.pkt_len > nat.mtu as u32 {
             return send_ptb(ctx, &l2ctx, ipv6hdr, nat.mtu as u32);
         }
@@ -1248,7 +1332,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     };
 
-    if be.flags.contains(EPFlags::DSR_L3) {
+    if ctx6.ctnat.flags.contains(EPFlags::DSR_L3) {
         // For L3 DSR the destination address is the tunnel address
         // from the backend netns.
         array_copy(&mut ctx6.ctnat.dst_addr, &(be.alt_address));
@@ -1265,11 +1349,17 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
     let macs = unsafe { &mut *macs };
-    ctx6.nat6val.mac_addresses = [
-        macs[2] << 16 | macs[1] >> 16,
-        macs[0] << 16 | macs[2] >> 16,
-        macs[1] << 16 | macs[0] >> 16,
-    ];
+
+    if !ctx6.ctnat.flags.contains(EPFlags::DSR_L3) {
+        ctx6.nat6.info.mac_addresses = [
+            macs[2] << 16 | macs[1] >> 16,
+            macs[0] << 16 | macs[2] >> 16,
+            macs[1] << 16 | macs[0] >> 16,
+        ];
+        // Save the VLAN header here before removing it below
+        ctx6.nat6.info.vlan_hdr = l2ctx.vlanhdr;
+    }
+
     array_copy(macs, &fib.macs);
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
@@ -1301,63 +1391,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let _ = ZLB_CT6_CACHE.insert(&ctx6.ct6key, &ctx6.ctnat, /* update or insert */ 0);
 
     // There is no need to conntrack the L3 DSR flow
-    if be.flags.contains(EPFlags::DSR_L3) {
-        return Ok(action);
+    if !ctx6.ctnat.flags.contains(EPFlags::DSR_L3) {
+        ctx6.nat6.update(ctx, &l4ctx, &ctx6.ctnat);
     }
-
-    // TODO: Don't insert entry if no connection tracking is enabled for this backend.
-    // For e.g. if the backend can reply directly to the source endpoint.
-    // if !be.flags.contains(EPFlags::NO_CONNTRACK) {
-    // NOTE: The LB will use the source port since there can be multiple
-    // connection to the same backend and it needs to track all of them.
-    // On reply the source port is used to identify the connection track entry.
-    // NOTE: for DSR the key does not change.
-    //
-    // Normal NAT mappings
-    //             Request         Reply
-    // ----------------------------------
-    // ip_be_src   Backend         Source
-    // ip_lb_dst   Dest | src_ip   Dest
-    // port_be_src Backend         Source
-    // port_lb_dst Source          Dest
-    //
-    // DSR NAT mappings: swap source with dest
-    //             Request         Reply
-    // ----------------------------------
-    // ip_be_src   Dest            Source
-    // ip_lb_dst   Source          Dest
-    // port_be_src Dest            Source
-    // port_lb_dst Source          Dest
-
-    let nat6key = &mut ctx6.nat6key;
-    ctx6.nat6val.ip_src = nat6key.ip_be_src;
-    ctx6.nat6val.lb_ip = nat6key.ip_lb_dst;
-
-    if be.flags.contains(EPFlags::DSR_L2) {
-        // NOTE: for DSR L2 the reply flow will search for source as current destination
-        // and destination as current source.
-        nat6key.ip_be_src = ctx6.nat6val.lb_ip;
-        nat6key.ip_lb_dst = ctx6.nat6val.ip_src;
-        nat6key.port_be_src = l4ctx.dst_port;
-        nat6key.port_lb_dst = l4ctx.src_port;
-    } else {
-        nat6key.ip_lb_dst = Inet6U::from(&ctx6.ctnat.src_addr);
-        nat6key.ip_be_src = Inet6U::from(&ctx6.ctnat.dst_addr);
-        nat6key.port_be_src = be.port as u32;
-        nat6key.port_lb_dst = l4ctx.src_port;
-    }
-
-    ctx6.nat6val.port_lb = l4ctx.dst_port as u16;
-    ctx6.nat6val.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
-    ctx6.nat6val.mtu = check_mtu(ctx, unsafe { (*ctx.ctx).ingress_ifindex });
-    ctx6.nat6val.vlan_hdr = l2ctx.vlanhdr;
-    ctx6.nat6val.flags = be.flags;
-    // NOTE: the original MAC addresses are cached right before redirect
-
-    // TBD: use lock or atomic update ?
-    // TBD: use BPF_F_LOCK ?
-
-    ctx6.update_conntrack(ctx);
 
     Ok(action)
 }
@@ -1525,27 +1561,6 @@ impl Context {
         array_copy(&mut self.fibentry.ip_src, &mut self.fiblookup.src); // not used for now
         self.fibentry.mtu = self.fiblookup.tot_len as u32;
         self.fibentry.expiry = self.sv.now;
-    }
-
-    fn update_conntrack(&mut self, ctx: &XdpContext) {
-        self.sv.ret_code = match unsafe { ZLB_CONNTRACK6.insert(&self.nat6key, &self.nat6val, 0) } {
-            Ok(()) => 0, // add stats for insert
-            Err(ret) => {
-                stats_inc(stats::CT_ERROR_UPDATE);
-                ret
-            }
-        };
-
-        if self.feat.log_enabled(Level::Info) {
-            info!(
-                ctx,
-                "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
-                unsafe { self.nat6val.ip_src.addr8 },
-                self.nat6key.port_lb_dst,
-                self.nat6val.vlan_hdr,
-                self.sv.ret_code
-            );
-        }
     }
 
     fn fetch_fib6(
