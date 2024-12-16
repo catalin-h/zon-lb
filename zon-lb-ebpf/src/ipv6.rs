@@ -955,8 +955,6 @@ fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
 pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv6hdr = ptr_at::<Ipv6Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
-    let src_addr = unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 };
-    let dst_addr = unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 };
     let ctx6 = unsafe { &mut *zlb_context()? };
     ctx6.feat.fetch();
     let feat = &ctx6.feat;
@@ -1196,7 +1194,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     let be = {
-        ctx6.ep6key.address = Inet6U::from(dst_addr);
+        ctx6.ep6key.address = ctx6.nat6.key.ip_lb_dst;
         ctx6.ep6key.port = l4ctx.dst_port as u16;
         ctx6.ep6key.proto = l4ctx.next_hdr as u16;
         match unsafe { ZLB_LB6.get(&ctx6.ep6key) } {
@@ -1232,7 +1230,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_PASS);
         }
 
-        ctx6.bekey.index = (inet6_hash16(&src_addr) ^ l4ctx.src_port as u16) % ctx6.sv.becount;
+        ctx6.bekey.index = (inet6_hash16(unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 })
+            ^ l4ctx.src_port as u16)
+            % ctx6.sv.becount;
         match unsafe { ZLB_BACKENDS.get(&ctx6.bekey) } {
             Some(be) => be,
             None => {
