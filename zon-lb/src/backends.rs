@@ -99,7 +99,7 @@ impl BackendInfo for BE {
         };
 
         if addr == [0; 4] {
-            return String::from("defval");
+            return String::from(defval);
         };
 
         let ipstr = if self.flags.contains(EPFlags::IPV6) {
