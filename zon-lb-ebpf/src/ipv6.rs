@@ -740,24 +740,24 @@ pub struct IpFragment {
     /// Must cache the fragment in order to get the L4 context details
     // for the other fragments
     cache_fragment: bool,
-    key: Ipv6FragId,
-    info: Ipv6FragInfo,
+    pub v6id: Ipv6FragId,
+    pub v6inf: Ipv6FragInfo,
 }
 
 impl IpFragment {
-    fn init(
+    fn init6(
         &mut self,
         ipv6hdr: &Ipv6Hdr,
         exthdr: &Ipv6FragExtHdr,
         l4ctx: &mut L4Context,
     ) -> Result<bool, ()> {
-        array_copy(unsafe { &mut self.key.src.addr32 }, unsafe {
+        array_copy(unsafe { &mut self.v6id.src.addr32 }, unsafe {
             &ipv6hdr.src_addr.in6_u.u6_addr32
         });
-        array_copy(unsafe { &mut self.key.dst.addr32 }, unsafe {
+        array_copy(unsafe { &mut self.v6id.dst.addr32 }, unsafe {
             &ipv6hdr.dst_addr.in6_u.u6_addr32
         });
-        self.key.id = exthdr.id;
+        self.v6id.id = exthdr.id;
         self.cache_fragment = exthdr.offset() == 0;
 
         if self.cache_fragment {
@@ -767,7 +767,7 @@ impl IpFragment {
         // Retrieve cached l4 info and don't set the checksum offset
         // as there no need to compute the checksum for fragments.
         // Fragments that are not recognized are passed along.
-        match unsafe { ZLB_FRAG6.get(&self.key) } {
+        match unsafe { ZLB_FRAG6.get(&self.v6id) } {
             // Missing first fragment
             None => {
                 stats_inc(stats::IPV6_FRAGMENT_ERRORS);
@@ -783,15 +783,15 @@ impl IpFragment {
         }
     }
 
-    fn cache(&mut self, l4ctx: &L4Context) {
+    fn cache6(&mut self, l4ctx: &L4Context) {
         if !self.cache_fragment {
             return;
         }
 
-        self.info.src_port = l4ctx.src_port as u16;
-        self.info.dst_port = l4ctx.dst_port as u16;
+        self.v6inf.src_port = l4ctx.src_port as u16;
+        self.v6inf.dst_port = l4ctx.dst_port as u16;
 
-        match unsafe { ZLB_FRAG6.insert(&self.key, &self.info, 0) } {
+        match unsafe { ZLB_FRAG6.insert(&self.v6id, &self.v6inf, 0) } {
             Ok(()) => {}
             Err(_) => {
                 stats_inc(stats::IPV6_FRAGMENT_ERRORS);
@@ -1044,7 +1044,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 log_fragexthdr(ctx, &exthdr, &ctx6.feat);
                 stats_inc(stats::IPV6_FRAGMENTS);
 
-                if ctx6.frag.init(ipv6hdr, exthdr, &mut l4ctx)? {
+                if ctx6.frag.init6(ipv6hdr, exthdr, &mut l4ctx)? {
                     break;
                 }
             }
@@ -1124,7 +1124,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         log_nat6(ctx, &nat, &ctx6.feat);
 
         // Save fragment before updating addresses
-        ctx6.frag.cache(&l4ctx);
+        ctx6.frag.cache6(&l4ctx);
 
         // TBD: for crc32 use crc32_off
 
@@ -1263,7 +1263,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         );
     }
 
-    ctx6.frag.cache(&l4ctx);
+    ctx6.frag.cache6(&l4ctx);
 
     ctx6.ctnat.port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
