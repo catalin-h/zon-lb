@@ -892,9 +892,9 @@ impl NAT6 {
 // is to use a per cpu (avoids concurrency) struct that contains all the
 // objects that can be created on any program execution path.
 #[repr(C)]
-struct Context {
+pub struct Context {
     ct6key: CT6CacheKey,
-    feat: Features,
+    pub feat: Features,
     nat6: NAT6,
     ep6key: EP6,
     bekey: BEKey,
@@ -909,7 +909,7 @@ struct Context {
 #[map]
 static mut ZLB_CONTEXT: PerCpuArray<Context> = PerCpuArray::with_max_entries(1, 0);
 
-fn zlb_context() -> Result<*mut Context, ()> {
+pub fn zlb_context() -> Result<*mut Context, ()> {
     unsafe { ZLB_CONTEXT.get_ptr_mut(0).ok_or(()) }
 }
 

@@ -20,7 +20,7 @@ use aya_ebpf::{
 use aya_log_ebpf::{error, info, Level};
 use core::mem::{self, offset_of};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u32};
-use ipv6::{check_mtu, coarse_ktime, ipv6_lb};
+use ipv6::{check_mtu, coarse_ktime, ipv6_lb, zlb_context, IpFragment};
 use network_types::{
     eth::EthHdr,
     icmp::IcmpHdr,
@@ -957,8 +957,10 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let src_addr = ipv4hdr.src_addr;
     let dst_addr = ipv4hdr.dst_addr;
     let mut l4ctx = L4Context::new_for_ipv4(&l2ctx, ipv4hdr);
-    let feat = Features::new();
+    let ctx4 = unsafe { &mut *zlb_context()? };
 
+    ctx4.feat.fetch();
+    let feat = &ctx4.feat;
     // For fragments, the L4 data (ports, sequences, etc.) must be obtained
     // from L4 info cache. The exception is the first fragment in the sequence
     // at offset 0 which contains the L4 info and it is used to update the L4 cache
