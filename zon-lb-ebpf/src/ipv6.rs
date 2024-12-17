@@ -957,7 +957,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv6hdr = unsafe { &mut *ipv6hdr.cast_mut() };
     let ctx6 = unsafe { &mut *zlb_context()? };
     ctx6.feat.fetch();
-    let feat = &ctx6.feat;
 
     // BUG: aya: Can't move L4Context to the per-cpu heap Context yet (kernel 6.1)
     // due to verifier as it has an issue with modifying a field in l4ctx and then
@@ -984,7 +983,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
                 match icmphdr.type_ {
                     icmpv6::ND_ADVERT | icmpv6::ND_SOLICIT => {
-                        return neighbor_solicit(ctx, &l2ctx, ipv6hdr, &l4ctx, feat)
+                        return neighbor_solicit(ctx, &l2ctx, ipv6hdr, &l4ctx, &ctx6.feat)
                     }
 
                     // Handle ICMP echo request / reply to track only messages that
@@ -1042,7 +1041,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 l4ctx.offset += 8;
                 l4ctx.next_hdr = exthdr.base.next_header;
 
-                log_fragexthdr(ctx, &exthdr, &feat);
+                log_fragexthdr(ctx, &exthdr, &ctx6.feat);
                 stats_inc(stats::IPV6_FRAGMENTS);
 
                 if ctx6.frag.init(ipv6hdr, exthdr, &mut l4ctx)? {
@@ -1056,7 +1055,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         };
     }
 
-    if feat.log_enabled(Level::Info) {
+    if ctx6.feat.log_enabled(Level::Info) {
         log_ipv6_packet(ctx, ipv6hdr, &l4ctx);
     }
 
@@ -1087,7 +1086,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             if ctx6.sv.pkt_len > ctnat.mtu {
                 return send_ptb(ctx, &l2ctx, ipv6hdr, ctnat.mtu);
             } else {
-                return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat, feat);
+                return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat, &ctx6.feat);
             }
         }
     }
@@ -1122,7 +1121,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
-        log_nat6(ctx, &nat, &feat);
+        log_nat6(ctx, &nat, &ctx6.feat);
 
         // Save fragment before updating addresses
         ctx6.frag.cache(&l4ctx);
@@ -1161,9 +1160,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             // NOTE: After this call all references derived from ctx must be recreated
             // since this method can change the packet limits.
             // This function is a no-op if no VLAN translation is needed.
-            l2ctx.vlan_update(ctx, nat.vlan_hdr, &feat)?;
+            l2ctx.vlan_update(ctx, nat.vlan_hdr, &ctx6.feat)?;
 
-            let ret = redirect_txport(ctx, &feat, nat.ifindex);
+            let ret = redirect_txport(ctx, &ctx6.feat, nat.ifindex);
 
             if nat.flags.contains(EPFlags::XDP_TX) && ret == xdp_action::XDP_REDIRECT {
                 stats_inc(stats::XDP_REDIRECT_FULL_NAT);
@@ -1178,7 +1177,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             xdp_action::XDP_PASS
         };
 
-        if feat.log_enabled(Level::Info) {
+        if ctx6.feat.log_enabled(Level::Info) {
             info!(ctx, "[out] action: {} vlan: {:x}", action, l2ctx.vlanhdr);
         }
 
@@ -1203,7 +1202,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 ctx6.bekey.gid = group.gid;
             }
             None => {
-                if feat.log_enabled(Level::Info) {
+                if ctx6.feat.log_enabled(Level::Info) {
                     info!(ctx, "No LB6 entry");
                 }
                 // *** This is the exit point for non-LB packets ***
@@ -1215,12 +1214,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             }
         };
 
-        if feat.log_enabled(Level::Info) {
+        if ctx6.feat.log_enabled(Level::Info) {
             info!(ctx, "[in] gid: {} match", ctx6.bekey.gid);
         }
 
         if ctx6.sv.becount == 0 {
-            if feat.log_enabled(Level::Info) {
+            if ctx6.feat.log_enabled(Level::Info) {
                 info!(ctx, "[in] gid: {}, no backends", ctx6.bekey.gid);
             }
 
@@ -1236,7 +1235,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         match unsafe { ZLB_BACKENDS.get(&ctx6.bekey) } {
             Some(be) => be,
             None => {
-                if feat.log_enabled(Level::Error) {
+                if ctx6.feat.log_enabled(Level::Error) {
                     error!(
                         ctx,
                         "[in] gid: {}, no BE at: {}", ctx6.bekey.gid, ctx6.bekey.index
@@ -1255,7 +1254,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // to a known backend group.
     stats_inc(stats::PACKETS);
 
-    if feat.log_enabled(Level::Info) {
+    if ctx6.feat.log_enabled(Level::Info) {
         info!(
             ctx,
             "[fwd-bknd] [{:i}]:{}",
@@ -1274,7 +1273,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
-            if feat.log_enabled(Level::Info) {
+            if ctx6.feat.log_enabled(Level::Info) {
                 info!(ctx, "in => xdp_tx");
             }
 
@@ -1285,7 +1284,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_TX);
         }
 
-        if feat.log_enabled(Level::Info) {
+        if ctx6.feat.log_enabled(Level::Info) {
             info!(ctx, "in => xdp_pass");
         }
 
