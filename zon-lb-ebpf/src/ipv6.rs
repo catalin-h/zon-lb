@@ -232,8 +232,8 @@ fn log_fragexthdr(ctx: &XdpContext, exthdr: &Ipv6FragExtHdr, feat: &Features) {
     if feat.log_enabled(Level::Info) {
         info!(
             ctx,
-            "pkt frag id: 0x{:x} off:M {}:{}",
-            exthdr.id,
+            "pkt frag id: 0x{:x} offset={} more={}",
+            exthdr.id.to_be(),
             exthdr.offset(),
             exthdr.more()
         );
