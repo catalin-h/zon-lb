@@ -826,6 +826,10 @@ impl L4Context {
         self.check_off = off;
     }
 
+    fn port_combo(&self) -> u32 {
+        self.src_port << 16 | self.dst_port
+    }
+
     fn set_tcp(&mut self, ctx: &XdpContext) -> Result<(), ()> {
         let tcphdr = ptr_at::<TcpHdr>(&ctx, self.offset)?;
         self.check_offset(offset_of!(TcpHdr, check));

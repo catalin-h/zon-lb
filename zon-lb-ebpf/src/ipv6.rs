@@ -640,22 +640,30 @@ impl L4Context {
 // NOTE: use a separate for src and dst addresses in order
 // to differentiate request and reply flows if the flow label
 // does not change.
+// NOTE: The flow label is not enough as the ICMPv6 protocol
+// sends the same value
 #[repr(C)]
 struct CT6CacheKey {
     next_hdr: IpProto,
     flow_label: [u8; 3],
+    // src:dest
+    port_combo: u32,
     src_hash: u32,
     dst_hash: u32,
 }
 
 impl CT6CacheKey {
-    fn init(&mut self, ipv6hdr: &Ipv6Hdr, next_hdr: IpProto) {
-        self.next_hdr = next_hdr;
+    fn init(&mut self, ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
+        self.next_hdr = l4ctx.next_hdr;
 
         // NOTE: must manually copy the array if the prog can't
         // be loaded at runtime due to the function  relocation
         // error.
         self.flow_label = ipv6hdr.flow_label;
+
+        // NOTE: The flow label is not enough as the ICMPv6 protocol
+        // sends the same value
+        self.port_combo = l4ctx.port_combo();
 
         // NOTE: the iteration will be unrolled to 4 copy ops
         self.src_hash = unsafe { ipv6hdr.src_addr.in6_u.u6_addr32.iter().sum() };
@@ -866,7 +874,17 @@ impl NAT6 {
         } else {
             self.key.ip_lb_dst = Inet6U::from(&ctnat.src_addr);
             self.key.ip_be_src = Inet6U::from(&ctnat.dst_addr);
-            self.key.port_be_src = ctnat.port_combo >> 16; // actually the BE::port
+            if l4ctx.next_hdr == IpProto::Ipv6Icmp {
+                // For ICMP flow the echo id and sequence number are saved as
+                // source and destination port in L4Context. However, the ICMP
+                // reply will has the same echo id and sequence number as the
+                // request. In order to distinguish the request from the reply
+                // we must swap the two values.
+                self.key.port_be_src = l4ctx.dst_port;
+            } else {
+                // use the port set in BE info
+                self.key.port_be_src = ctnat.port_combo >> 16;
+            }
             self.key.port_lb_dst = l4ctx.src_port;
         }
 
@@ -991,7 +1009,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             IpProto::Ipv6Icmp => {
                 let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
                 let icmphdr = unsafe { &*icmphdr };
-                let echo_id = unsafe { icmphdr.un.echo.id } as u32;
+                let echo_id = unsafe { icmphdr.un.echo.id.to_be() } as u32;
+                let sequence = unsafe { icmphdr.un.echo.sequence.to_be() } as u32;
+
                 l4ctx.check_offset(offset_of!(IcmpHdr, checksum));
 
                 match icmphdr.type_ {
@@ -1013,10 +1033,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                     // On ICMP request use the echo id as source port
                     icmpv6::ECHO_REQUEST => {
                         l4ctx.src_port = echo_id;
+                        l4ctx.dst_port = sequence;
                     }
                     // On ICMP reply use the echo id destination port
                     icmpv6::ECHO_REPLY => {
                         l4ctx.dst_port = echo_id;
+                        l4ctx.src_port = sequence;
                     }
 
                     // Other types are not supported
@@ -1092,7 +1114,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     ctx6.sv.now = coarse_ktime();
     ctx6.sv.pkt_len = (ctx.data_end() - ctx.data() - l2ctx.ethlen) as u32;
 
-    ctx6.ct6key.init(&ipv6hdr, l4ctx.next_hdr);
+    ctx6.ct6key.init(&ipv6hdr, &l4ctx);
 
     if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&ctx6.ct6key) } {
         if ctnat.time > ctx6.sv.now {
