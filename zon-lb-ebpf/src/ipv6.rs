@@ -1230,7 +1230,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     let be = {
         ctx6.ep6key.address = ctx6.nat6.key.ip_lb_dst;
-        ctx6.ep6key.port = l4ctx.dst_port as u16;
+        // ICMP groups are searched using the IP and protocol id
+        if l4ctx.next_hdr == IpProto::Ipv6Icmp {
+            ctx6.ep6key.port = 0;
+        } else {
+            ctx6.ep6key.port = l4ctx.dst_port as u16;
+        }
         ctx6.ep6key.proto = l4ctx.next_hdr as u16;
         match unsafe { ZLB_LB6.get(&ctx6.ep6key) } {
             Some(group) => {
