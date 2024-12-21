@@ -801,11 +801,15 @@ struct L4Context {
     check_off: usize,
     src_port: u32,
     dst_port: u32,
+    /// bit_0: cache current fragment
     flags: u32,
     next_hdr: IpProto,
 }
 
 impl L4Context {
+    /// Cache current fragment flag bit
+    const CACHE_FRAG: u32 = 1;
+
     fn new_for_ipv4(l2ctx: &L2Context, ipv4hdr: &Ipv4Hdr) -> Self {
         Self {
             // NOTE: compute the l4 header start based on ipv4hdr.IHL
@@ -851,6 +855,14 @@ impl L4Context {
         // there is no checksum except the first one.
         self.src_port = frag.src_port as u32;
         self.dst_port = frag.dst_port as u32;
+    }
+
+    fn set_flag(&mut self, flag: u32) {
+        self.flags |= flag;
+    }
+
+    fn get_flag(&self, flag: u32) -> bool {
+        (self.flags & flag) == flag
     }
 }
 

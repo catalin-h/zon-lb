@@ -779,9 +779,10 @@ impl IpFragment {
             &ipv6hdr.dst_addr.in6_u.u6_addr32
         });
         self.v6id.id = exthdr.id;
-        self.cache_fragment = exthdr.offset() == 0;
 
-        if self.cache_fragment {
+        // First fragment always start at offset 0
+        if exthdr.offset() == 0 {
+            l4ctx.set_flag(L4Context::CACHE_FRAG);
             return Ok(false);
         }
 
@@ -805,7 +806,7 @@ impl IpFragment {
     }
 
     fn cache6(&mut self, l4ctx: &L4Context) {
-        if !self.cache_fragment {
+        if !l4ctx.get_flag(L4Context::CACHE_FRAG) {
             return;
         }
 
