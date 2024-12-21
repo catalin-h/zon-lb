@@ -160,6 +160,19 @@ fn update_inet_csum(
     // NOTE: In the absence of an csum in IP header the IPv6 protocol relies
     // on Link and Transport layer for assuring packet integrity. That's
     // why UDP for IPv6 must have a valid csum and for IPv4 is not required.
+    // NOTE: ICMPv6, TCP or UDP checksums must be contructed from an pseudo-header
+    // that contains the two addresses, the upper layer packet length as an 32-bit
+    // value and the next header also as an 32-bit value:
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |                         Source Address 4 x 32-bit             |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |                      Destination Address 4 x 32-bit           |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |                   Upper-Layer Packet Length  32-bit           |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |                      zero  24-bit             | Next Header 8b|
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // See https://datatracker.ietf.org/doc/html/rfc2460#section-8.1
 
     unsafe { *check = !csum_fold_32_to_16(csum) };
 
