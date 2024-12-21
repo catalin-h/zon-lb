@@ -1128,11 +1128,13 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // TBD: for crc32 use crc32_off
 
+        // Set the port combo and src/dst addresses before updating the
+        // IP protocol inet checsum.
         let ctnat = &mut ctx6.ctnat;
         ctnat.port_combo = l4ctx.dst_port << 16 | nat.port_lb as u32;
 
-        let src_addr = unsafe { &nat.lb_ip.addr32 };
-        let dst_addr = unsafe { &nat.ip_src.addr32 };
+        array_copy(&mut ctnat.src_addr, unsafe { &nat.lb_ip.addr32 });
+        array_copy(&mut ctnat.dst_addr, unsafe { &nat.ip_src.addr32 });
 
         if !nat.flags.contains(EPFlags::DSR_L2) {
             update_inet_csum(ctx, ipv6hdr, &l4ctx, ctnat)?;
@@ -1141,8 +1143,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctnat.time = ctx6.sv.now + 30;
         ctnat.flags = nat.flags;
         ctnat.mtu = nat.mtu as u32;
-        array_copy(&mut ctnat.src_addr, src_addr);
-        array_copy(&mut ctnat.dst_addr, dst_addr);
         ctnat.ifindex = nat.ifindex;
         ctnat.vlan_hdr = nat.vlan_hdr;
         array_copy(&mut ctx6.ctnat.macs, &nat.mac_addresses);
