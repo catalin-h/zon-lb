@@ -810,6 +810,11 @@ impl L4Context {
     /// Cache current fragment flag bit
     const CACHE_FRAG: u32 = 1;
 
+    /// Set this flag in order to pass the packet when there is no
+    /// conntrack entry and the packet is identified as a reply
+    /// message, for e.g. ICMP echo reply.
+    const PASS_UNKNOWN_REPLY: u32 = 2;
+
     fn new_for_ipv4(l2ctx: &L2Context, ipv4hdr: &Ipv4Hdr) -> Self {
         Self {
             // NOTE: compute the l4 header start based on ipv4hdr.IHL

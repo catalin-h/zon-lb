@@ -1040,6 +1040,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                     icmpv6::ECHO_REPLY => {
                         l4ctx.dst_port = echo_id;
                         l4ctx.src_port = sequence;
+                        // If this is a ICMP reply that is not expected and not tracked
+                        // then just pass it to the stack. Most likely the echo request
+                        // was initiated from another source.
+                        l4ctx.set_flag(L4Context::PASS_UNKNOWN_REPLY);
                     }
 
                     // Other types are not supported
@@ -1222,9 +1226,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // === request ===
 
-    // Don't track ICMP echo replies sent to LB, only requests are tracked.
-    // On request src_port contains the echo id.
-    if ipv6hdr.next_hdr as u8 == icmpv6::ECHO_REPLY && l4ctx.src_port == 0 {
+    // Don't search for a backend group that when the packet is actually
+    // a "reply" message and it is not tracked.
+    if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY) {
         return Ok(xdp_action::XDP_PASS);
     }
 
