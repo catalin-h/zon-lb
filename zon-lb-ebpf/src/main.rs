@@ -823,7 +823,7 @@ impl L4Context {
             src_port: 0,
             dst_port: 0,
             flags: 0,
-            next_hdr: IpProto::HopOpt,
+            next_hdr: ipv4hdr.proto,
         }
     }
 
