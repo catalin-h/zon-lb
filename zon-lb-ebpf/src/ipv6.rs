@@ -766,12 +766,12 @@ pub struct IpFragment {
 }
 
 impl IpFragment {
-    fn init6(
+    fn search6(
         &mut self,
         ipv6hdr: &Ipv6Hdr,
         exthdr: &Ipv6FragExtHdr,
         l4ctx: &mut L4Context,
-    ) -> Result<bool, ()> {
+    ) -> Option<bool> {
         array_copy(unsafe { &mut self.v6id.src.addr32 }, unsafe {
             &ipv6hdr.src_addr.in6_u.u6_addr32
         });
@@ -782,25 +782,27 @@ impl IpFragment {
 
         // First fragment always start at offset 0
         if exthdr.offset() == 0 {
+            // Cache the fragment later with the key set above and the
+            // info set when the actual L4 protocol header is found.
             l4ctx.set_flag(L4Context::CACHE_FRAG);
-            return Ok(false);
+            return Some(false);
         }
 
         // Retrieve cached l4 info and don't set the checksum offset
         // as there no need to compute the checksum for fragments.
         // Fragments that are not recognized are passed along.
         match unsafe { ZLB_FRAG6.get(&self.v6id) } {
-            // Missing first fragment
-            None => {
-                stats_inc(stats::IPV6_FRAGMENT_ERRORS);
-                Err(())
-            }
+            // Not an error as there can be legitimate fragment that is not
+            // tracked by current LB config.
+            None => None,
             Some(entry) => {
                 // No need to set the checksum offset as for IP fragments
                 // there is no checksum except the first one.
                 l4ctx.src_port = entry.src_port as u32;
                 l4ctx.dst_port = entry.dst_port as u32;
-                Ok(true)
+                // Searching for L4 protol headr should stop as we found
+                // the cached fragment info.
+                Some(true)
             }
         }
     }
@@ -1084,8 +1086,20 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 log_fragexthdr(ctx, &exthdr, &ctx6.feat);
                 stats_inc(stats::IPV6_FRAGMENTS);
 
-                if ctx6.frag.init6(ipv6hdr, exthdr, &mut l4ctx)? {
-                    break;
+                match ctx6.frag.search6(ipv6hdr, exthdr, &mut l4ctx) {
+                    Some(found) => {
+                        if found {
+                            // The fragment was identified as tracked flow
+                            break;
+                        } else {
+                            // Continue to process the next header
+                        }
+                    }
+                    None => {
+                        // Unknown flow
+                        // TODO: add counter
+                        return Ok(xdp_action::XDP_PASS);
+                    }
                 }
             }
             _ => {
