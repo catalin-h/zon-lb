@@ -760,10 +760,29 @@ fn log_packet(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
 
     info!(
         ctx,
-        "tot_len:{}, frag, id:0x{:x}, off:0x{:x}",
+        "tot_len:{}, id:0x{:x}, off:0x{:x}",
         ipv4hdr.tot_len.to_be(),
-        ipv4hdr.id,
+        ipv4hdr.id.to_be(),
         ipv4hdr.frag_off.to_be() & 0x1fff
+    );
+
+    if IpProto::Icmp != l4ctx.next_hdr {
+        return;
+    }
+
+    let (id, seq) = if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY)
+        || 0 != (ipv4hdr.frag_off.to_be() & 0x1fff)
+    {
+        (l4ctx.dst_port, l4ctx.src_port)
+    } else {
+        (l4ctx.src_port, l4ctx.dst_port)
+    };
+
+    info!(
+        ctx,
+        "icmp id: 0x{:x} seq: 0x{:x}",
+        (id as u16).to_be(),
+        (seq as u16).to_be()
     );
 }
 
