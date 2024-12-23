@@ -66,17 +66,21 @@ pub mod stats {
     pub const IP_FRAGMENTS: u32 = 15;
     pub const IPV6_FRAGMENTS: u32 = 16;
     pub const IP_FRAGMENT_ERRORS: u32 = 17;
+    /// Cache first fragment errors.
     pub const IPV6_FRAGMENT_ERRORS: u32 = 18;
 
     pub const ARP_REPLY: u32 = 19;
     pub const ICMPV6_PTB: u32 = 20;
     pub const ICMPV6_ND_SOL_ADVERT: u32 = 21;
-    // destination unreachable, fragmentation required
+    /// Destination unreachable, fragmentation required
     pub const ICMP_DU_FR: u32 = 22;
-    // Packets embedded in Ip6tnl tunnel
+    /// Packets embedded in Ip6tnl tunnel
     pub const IP6TNL_IPV6: u32 = 23;
+    /// IPV6 unknown fragments. This counter is useful to debug cases
+    /// when the LB doesn't forward fragments.
+    pub const IPV6_UNKNONW_FRAGMENTS: u32 = 24;
 
-    pub const MAX: u32 = 24;
+    pub const MAX: u32 = 25;
 }
 
 // TODO: add per backend statistics

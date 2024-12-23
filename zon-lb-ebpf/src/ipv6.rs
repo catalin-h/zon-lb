@@ -1096,8 +1096,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                         }
                     }
                     None => {
-                        // Unknown flow
-                        // TODO: add counter
+                        // Unknown fragment or legit non-LB fragment
+                        stats_inc(stats::IPV6_UNKNONW_FRAGMENTS);
                         return Ok(xdp_action::XDP_PASS);
                     }
                 }
@@ -1243,6 +1243,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // Don't search for a backend group that when the packet is actually
     // a "reply" message and it is not tracked.
     if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY) {
+        if l4ctx.get_flag(L4Context::CACHE_FRAG) {
+            stats_inc(stats::IPV6_UNKNONW_FRAGMENTS);
+        }
         return Ok(xdp_action::XDP_PASS);
     }
 
