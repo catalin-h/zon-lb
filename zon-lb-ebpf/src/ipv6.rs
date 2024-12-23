@@ -23,9 +23,9 @@ use network_types::{
     tcp::TcpHdr,
 };
 use zon_lb_common::{
-    stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, Ipv6FragId, Ipv6FragInfo, NAT6Key,
-    NAT6Value, BE, EP6, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS,
-    MAX_FRAG6_ENTRIES, MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
+    stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, Ipv4FragId, Ipv4FragInfo,
+    Ipv6FragId, Ipv6FragInfo, NAT6Key, NAT6Value, BE, EP6, FIB_ENTRY_EXPIRY_INTERVAL,
+    MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_FRAG6_ENTRIES, MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
 /// Same as ZLB_LB4 but for IPv6 packets.
@@ -758,11 +758,10 @@ struct StackVars {
 
 #[repr(C)]
 pub struct IpFragment {
-    /// Must cache the fragment in order to get the L4 context details
-    // for the other fragments
-    cache_fragment: bool,
     pub v6id: Ipv6FragId,
     pub v6inf: Ipv6FragInfo,
+    pub v4id: Ipv4FragId,
+    pub v4inf: Ipv4FragInfo,
 }
 
 impl IpFragment {
@@ -935,7 +934,7 @@ pub struct Context {
     ctnat: CTCache,
     fiblookup: BpfFibLookUp,
     fibentry: FibEntry,
-    frag: IpFragment,
+    pub frag: IpFragment,
     ptbprotohdr: ProtoHdr,
     sv: StackVars,
 }

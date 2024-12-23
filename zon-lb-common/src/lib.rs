@@ -79,8 +79,11 @@ pub mod stats {
     /// IPv6 unknown fragments. This counter is useful to debug cases
     /// when the LB doesn't forward fragments.
     pub const IPV6_UNKNOWN_FRAGMENTS: u32 = 24;
+    /// IPv4 unknown fragments. This counter is useful to debug cases
+    /// when the LB doesn't forward fragments.
+    pub const IPV4_UNKNOWN_FRAGMENTS: u32 = 25;
 
-    pub const MAX: u32 = 25;
+    pub const MAX: u32 = 26;
 }
 
 // TODO: add per backend statistics

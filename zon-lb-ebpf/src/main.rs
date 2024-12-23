@@ -221,6 +221,7 @@ pub fn is_8021q_hdr(vlanhdr: u32) -> bool {
     vlanhdr as u16 == EtherType::VlanDot1Q as u16
 }
 
+#[repr(C, align(8))]
 pub struct L2Context {
     pub ethlen: usize,
     pub vlanhdr: u32,
@@ -766,36 +767,74 @@ fn log_packet(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
     );
 }
 
-/// Matches the IPv4 more fragments (MF) flag in the u16 following
-/// big-endian value combo: 0b[1111_1111][0 DF MF 1_1111]
-const MORE_FRAGMENTS: u32 = 1 << 5;
+impl IpFragment {
+    fn search4(&mut self, ipv4hdr: &Ipv4Hdr, l4ctx: &mut L4Context) -> Option<bool> {
+        /// Matches the IPv4 more fragments (MF) flag in the u16 following
+        /// big-endian value combo: 0b[1111_1111][0 DF MF 1_1111]
+        const MORE_FRAGMENTS: u32 = 1 << 5;
 
-fn cache_frag_info(ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
-    // Cache only the first fragment contains the L4 header
-    if (l4ctx.flags & MORE_FRAGMENTS) != 0 {
-        match unsafe {
-            ZLB_FRAG4.insert(
-                &Ipv4FragId {
-                    id: ipv4hdr.id,
-                    proto: ipv4hdr.proto as u16,
-                    src: ipv4hdr.src_addr,
-                    dst: ipv4hdr.dst_addr,
-                },
-                &Ipv4FragInfo {
-                    src_port: l4ctx.src_port as u16,
-                    dst_port: l4ctx.dst_port as u16,
-                    reserved: 0,
-                },
-                0,
-            )
-        } {
-            Ok(()) => stats_inc(stats::IP_FRAGMENTS),
+        /// Matches the IPv4 fragment offset
+        const FRAGMENT_OFFSET: u32 = 0xFF1F;
+
+        /// Matches the IPv4 fragment offset and MF flag
+        const FRAGMENT_MATCH: u32 = FRAGMENT_OFFSET | MORE_FRAGMENTS;
+
+        // NOTE: For fragments, the L4 data (ports, sequences, etc.) must be obtained
+        // from L4 info cache. The exception is the first fragment in the sequence
+        // at offset 0 which contains the L4 info and it is used to update the L4 cache
+        // for the next fragments.
+        // NOTE: The fragment offset field layout is like this:
+        // 0b[1111_1111][0 DF MF 1_1111]
+        // NOTE: Most packets are not fragments so must exit faster if MF (more fragments)
+        // flag is unset and/or fragment offset is not 0
+        if ((ipv4hdr.frag_off as u32) & FRAGMENT_MATCH) == 0 {
+            // Not a fragment: continue process the packet
+            return None;
+        }
+
+        stats_inc(stats::IP_FRAGMENTS);
+
+        self.v4id.id = ipv4hdr.id;
+        self.v4id.proto = ipv4hdr.proto as u16;
+        self.v4id.src = ipv4hdr.src_addr;
+        self.v4id.dst = ipv4hdr.dst_addr;
+
+        // NOTE: The 1st fragment has offset '0x0' and MF flag set.
+        if (ipv4hdr.frag_off & 0xFF1F) == 0 {
+            l4ctx.set_flag(L4Context::CACHE_FRAG);
+            // Must cache the first fragment and continue process the packet
+            return None;
+        }
+
+        // 2nd..N fragment
+        match unsafe { ZLB_FRAG4.get(&self.v4id) } {
+            // Legit or untracked fragment
+            None => Some(false),
+            Some(frag) => {
+                // No need to process the L4 header as this fragment is tracked
+                l4ctx.set_from_ipv4_frag(frag);
+                Some(true)
+            }
+        }
+    }
+
+    // NOTE: only the first fragment containing the L4 header is cached
+    fn cache4(&mut self, l4ctx: &L4Context) {
+        if !l4ctx.get_flag(L4Context::CACHE_FRAG) {
+            return;
+        }
+
+        self.v4inf.src_port = l4ctx.src_port as u16;
+        self.v4inf.dst_port = l4ctx.dst_port as u16;
+
+        match unsafe { ZLB_FRAG4.insert(&self.v4id, &self.v4inf, 0) } {
+            Ok(()) => {}
             Err(_) => stats_inc(stats::IP_FRAGMENT_ERRORS),
         }
     }
 }
 
-#[repr(C)]
+#[repr(C, align(8))]
 struct L4Context {
     offset: usize,
     check_off: usize,
@@ -982,63 +1021,51 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     ctx4.feat.fetch();
     let feat = &ctx4.feat;
-    // For fragments, the L4 data (ports, sequences, etc.) must be obtained
-    // from L4 info cache. The exception is the first fragment in the sequence
-    // at offset 0 which contains the L4 info and it is used to update the L4 cache
-    // for the next fragments.
-    // The fragment offset field layout is like this:
-    // 0b[1111_1111][0 DF MF 1_1111]
-    if (ipv4hdr.frag_off & 0xFF1F) != 0 {
-        match unsafe {
-            ZLB_FRAG4.get(&Ipv4FragId {
-                id: ipv4hdr.id,
-                proto: ipv4hdr.proto as u16,
-                src: ipv4hdr.src_addr,
-                dst: ipv4hdr.dst_addr,
-            })
-        } {
-            // Pass any non tracked fragments
-            None => return Ok(xdp_action::XDP_PASS),
-            Some(frag) => {
-                stats_inc(stats::IP_FRAGMENTS);
-                l4ctx.set_from_ipv4_frag(frag);
-            }
-        };
-    } else {
-        l4ctx.flags = (ipv4hdr.frag_off as u32) & MORE_FRAGMENTS;
 
-        match ipv4hdr.proto {
-            IpProto::Tcp => l4ctx.set_tcp(ctx)?,
-            IpProto::Udp => l4ctx.set_udp(ctx)?,
-            IpProto::Icmp => {
-                // Handle ICMP echo request / reply to track only messages that
-                // are handled by LB.
-                //  0                   1                   2                   3
-                //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                // |     Type      |      Code     |          Checksum             |
-                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                // |           Identifier          |        Sequence Number        |
-                // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                // See  https://datatracker.ietf.org/doc/html/rfc792
-                let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
-                let icmphdr = unsafe { &*icmphdr };
-                match icmphdr.type_ {
-                    icmpv4::ECHO_REQUEST => {
-                        // On ICMP request use the echo id as source port
-                        l4ctx.src_port = unsafe { icmphdr.un.echo.id } as u32
-                    }
-                    icmpv4::ECHO_REPLY => {
-                        // On ICMP reply use the echo id destination port
-                        l4ctx.dst_port = unsafe { icmphdr.un.echo.id } as u32
-                    }
-                    _ => {
-                        // Pass any non Echo messages
-                        return Ok(xdp_action::XDP_PASS);
+    match ctx4.frag.search4(ipv4hdr, &mut l4ctx) {
+        Some(found) => {
+            if found {
+                // The fragment was identified
+            } else {
+                stats_inc(stats::IPV4_UNKNOWN_FRAGMENTS);
+                // Pass the fragment if is not tracked
+                return Ok(xdp_action::XDP_PASS);
+            }
+        }
+        None => {
+            match ipv4hdr.proto {
+                IpProto::Tcp => l4ctx.set_tcp(ctx)?,
+                IpProto::Udp => l4ctx.set_udp(ctx)?,
+                IpProto::Icmp => {
+                    // Handle ICMP echo request / reply to track only messages that
+                    // are handled by LB.
+                    //  0                   1                   2                   3
+                    //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+                    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                    // |     Type      |      Code     |          Checksum             |
+                    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                    // |           Identifier          |        Sequence Number        |
+                    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                    // See  https://datatracker.ietf.org/doc/html/rfc792
+                    let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
+                    let icmphdr = unsafe { &*icmphdr };
+                    match icmphdr.type_ {
+                        icmpv4::ECHO_REQUEST => unsafe {
+                            // On ICMP request use the echo id as source port
+                            l4ctx.src_port = icmphdr.un.echo.id as u32;
+                        },
+                        icmpv4::ECHO_REPLY => unsafe {
+                            // On ICMP reply use the echo id destination port
+                            l4ctx.dst_port = icmphdr.un.echo.id as u32;
+                        },
+                        _ => {
+                            // Pass any non Echo messages
+                            return Ok(xdp_action::XDP_PASS);
+                        }
                     }
                 }
+                _ => return Ok(xdp_action::XDP_PASS),
             }
-            _ => return Ok(xdp_action::XDP_PASS),
         }
     }
 
@@ -1068,6 +1095,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // NOTE: using a cache map for the contrack map doesn't have
     // any impact on the total performance.
     if let Some(nat) = unsafe { ZLB_CONNTRACK4.get(&natkey) } {
+        // TODO: move it to own function
         if feat.log_enabled(Level::Info) {
             info!(
                 ctx,
@@ -1085,7 +1113,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         stats_inc(stats::PACKETS);
 
         // Save fragment before updating the header
-        cache_frag_info(ipv4hdr, &l4ctx);
+        ctx4.frag.cache4(&l4ctx);
 
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL.
@@ -1235,7 +1263,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
     // Save fragment before updating the header and before forwading the packet
-    cache_frag_info(ipv4hdr, &l4ctx);
+    ctx4.frag.cache4(&l4ctx);
 
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {

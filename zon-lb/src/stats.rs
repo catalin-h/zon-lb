@@ -29,6 +29,7 @@ static STATS_NAMES: [&str; stats::MAX as usize] = [
     "icmp_dest_unreach_frag_rq",
     "ip6tnl_packets",
     "ipv6_unknown_fragments",
+    "ipv4_unknown_fragments",
 ];
 
 pub struct Stats {
