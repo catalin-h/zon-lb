@@ -1,6 +1,6 @@
 use crate::{
-    is_unicast_mac, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, CTCache, Features, L2Context,
-    L4Context, AF_INET6, ZLB_BACKENDS,
+    is_unicast_mac, log_icmp, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, CTCache, Features,
+    L2Context, L4Context, AF_INET6, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -278,6 +278,10 @@ fn log_ipv6_packet(ctx: &XdpContext, ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
             u32::from_be_bytes([0, flow[0], flow[1], flow[2]])
         }
     );
+
+    if IpProto::Ipv6Icmp == l4ctx.next_hdr {
+        log_icmp(ctx, &l4ctx);
+    }
 }
 
 pub mod icmpv6 {
@@ -799,6 +803,7 @@ impl IpFragment {
                 // there is no checksum except the first one.
                 l4ctx.src_port = entry.src_port as u32;
                 l4ctx.dst_port = entry.dst_port as u32;
+                l4ctx.flags = entry.reserved;
                 // Searching for L4 protol headr should stop as we found
                 // the cached fragment info.
                 Some(true)
@@ -813,6 +818,7 @@ impl IpFragment {
 
         self.v6inf.src_port = l4ctx.src_port as u16;
         self.v6inf.dst_port = l4ctx.dst_port as u16;
+        self.v6inf.reserved = l4ctx.flags;
 
         match unsafe { ZLB_FRAG6.insert(&self.v6id, &self.v6inf, 0) } {
             Ok(()) => {}
@@ -1011,8 +1017,6 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             IpProto::Ipv6Icmp => {
                 let icmphdr = ptr_at::<IcmpHdr>(&ctx, l4ctx.offset)?;
                 let icmphdr = unsafe { &*icmphdr };
-                let echo_id = unsafe { icmphdr.un.echo.id.to_be() } as u32;
-                let sequence = unsafe { icmphdr.un.echo.sequence.to_be() } as u32;
 
                 l4ctx.check_offset(offset_of!(IcmpHdr, checksum));
 
@@ -1033,19 +1037,19 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                     // See  https://datatracker.ietf.org/doc/html/rfc792
 
                     // On ICMP request use the echo id as source port
-                    icmpv6::ECHO_REQUEST => {
-                        l4ctx.src_port = echo_id;
-                        l4ctx.dst_port = sequence;
-                    }
+                    icmpv6::ECHO_REQUEST => unsafe {
+                        l4ctx.src_port = icmphdr.un.echo.id as u32;
+                        l4ctx.dst_port = icmphdr.un.echo.sequence as u32;
+                    },
                     // On ICMP reply use the echo id destination port
-                    icmpv6::ECHO_REPLY => {
-                        l4ctx.dst_port = echo_id;
-                        l4ctx.src_port = sequence;
+                    icmpv6::ECHO_REPLY => unsafe {
+                        l4ctx.dst_port = icmphdr.un.echo.id as u32;
+                        l4ctx.src_port = icmphdr.un.echo.sequence as u32;
                         // If this is a ICMP reply that is not expected and not tracked
                         // then just pass it to the stack. Most likely the echo request
                         // was initiated from another source.
                         l4ctx.set_flag(L4Context::PASS_UNKNOWN_REPLY);
-                    }
+                    },
 
                     // Other types are not supported
                     _ => return Ok(xdp_action::XDP_PASS),

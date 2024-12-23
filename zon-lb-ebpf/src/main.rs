@@ -766,13 +766,13 @@ fn log_packet(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
         ipv4hdr.frag_off.to_be() & 0x1fff
     );
 
-    if IpProto::Icmp != l4ctx.next_hdr {
-        return;
+    if IpProto::Icmp == l4ctx.next_hdr {
+        log_icmp(ctx, &l4ctx);
     }
+}
 
-    let (id, seq) = if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY)
-        || 0 != (ipv4hdr.frag_off.to_be() & 0x1fff)
-    {
+fn log_icmp(ctx: &XdpContext, l4ctx: &L4Context) {
+    let (id, seq) = if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY) {
         (l4ctx.dst_port, l4ctx.src_port)
     } else {
         (l4ctx.src_port, l4ctx.dst_port)
@@ -845,6 +845,7 @@ impl IpFragment {
 
         self.v4inf.src_port = l4ctx.src_port as u16;
         self.v4inf.dst_port = l4ctx.dst_port as u16;
+        self.v4inf.reserved = l4ctx.flags;
 
         match unsafe { ZLB_FRAG4.insert(&self.v4id, &self.v4inf, 0) } {
             Ok(()) => {}
@@ -918,6 +919,7 @@ impl L4Context {
         // there is no checksum except the first one.
         self.src_port = frag.src_port as u32;
         self.dst_port = frag.dst_port as u32;
+        self.flags = frag.reserved;
     }
 
     fn set_flag(&mut self, flag: u32) {
