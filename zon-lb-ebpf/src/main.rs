@@ -1053,10 +1053,17 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                         icmpv4::ECHO_REQUEST => unsafe {
                             // On ICMP request use the echo id as source port
                             l4ctx.src_port = icmphdr.un.echo.id as u32;
+                            l4ctx.dst_port = icmphdr.un.echo.sequence as u32;
                         },
                         icmpv4::ECHO_REPLY => unsafe {
                             // On ICMP reply use the echo id destination port
                             l4ctx.dst_port = icmphdr.un.echo.id as u32;
+                            l4ctx.src_port = icmphdr.un.echo.sequence as u32;
+
+                            // If this is a ICMP reply that is not expected and not tracked
+                            // then just pass it to the stack. Most likely the echo request
+                            // was initiated from another source.
+                            l4ctx.set_flag(L4Context::PASS_UNKNOWN_REPLY);
                         },
                         _ => {
                             // Pass any non Echo messages
@@ -1191,15 +1198,22 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // === request ===
 
     // Don't track ICMP echo replies sent to LB, only requests are tracked.
-    // On request src_port contains the echo id.
-    if ipv4hdr.proto == IpProto::Icmp && l4ctx.src_port == 0 {
+    if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY) {
+        if l4ctx.get_flag(L4Context::CACHE_FRAG) {
+            stats_inc(stats::IPV4_UNKNOWN_FRAGMENTS);
+        }
         return Ok(xdp_action::XDP_PASS);
     }
 
     let be = match unsafe {
+        let port = if l4ctx.next_hdr == IpProto::Icmp {
+            0
+        } else {
+            l4ctx.dst_port as u16
+        };
         ZLB_LB4.get(&EP4 {
             address: dst_addr,
-            port: (l4ctx.dst_port as u16),
+            port,
             proto: ipv4hdr.proto as u16,
         })
     } {
@@ -1421,7 +1435,16 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     } else {
         natkey.ip_be_src = be_addr;
         natkey.ip_lb_dst = lb_addr;
-        natkey.port_be_src = be.port;
+        if l4ctx.next_hdr == IpProto::Icmp {
+            // For ICMP flow the echo id and sequence number are saved as
+            // source and destination port in L4Context. However, the ICMP
+            // reply will has the same echo id and sequence number as the
+            // request. In order to distinguish the request from the reply
+            // we must swap the two values.
+            natkey.port_be_src = l4ctx.dst_port as u16;
+        } else {
+            natkey.port_be_src = be.port;
+        }
         // NOTE: the LB will use the source port since there can be multiple
         // connection to the same backend and it needs to track all of them.
         // NOTE: On ICMP request is set with the echo id.
