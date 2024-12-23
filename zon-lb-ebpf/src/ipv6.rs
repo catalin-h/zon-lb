@@ -1097,7 +1097,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                     }
                     None => {
                         // Unknown fragment or legit non-LB fragment
-                        stats_inc(stats::IPV6_UNKNONW_FRAGMENTS);
+                        stats_inc(stats::IPV6_UNKNOWN_FRAGMENTS);
                         return Ok(xdp_action::XDP_PASS);
                     }
                 }
@@ -1175,6 +1175,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
+        // TODO: move the feature log check here
         log_nat6(ctx, &nat, &ctx6.feat);
 
         // Save fragment before updating addresses
@@ -1244,14 +1245,14 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // a "reply" message and it is not tracked.
     if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY) {
         if l4ctx.get_flag(L4Context::CACHE_FRAG) {
-            stats_inc(stats::IPV6_UNKNONW_FRAGMENTS);
+            stats_inc(stats::IPV6_UNKNOWN_FRAGMENTS);
         }
         return Ok(xdp_action::XDP_PASS);
     }
 
     let be = {
         ctx6.ep6key.address = ctx6.nat6.key.ip_lb_dst;
-        // ICMP groups are searched using the IP and protocol id
+        // ICMP backend groups are searched using the IP and protocol id
         if l4ctx.next_hdr == IpProto::Ipv6Icmp {
             ctx6.ep6key.port = 0;
         } else {
@@ -1355,7 +1356,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // Initialize src/dst before FIB lookup
+    // Initialize src/dst addresses before FIB lookup as the
+    // fetch_fib6() uses these fields from this struct.
     ctx6.ctnat.init_from_be(&be, ipv6hdr);
     ctx6.ctnat.time = ctx6.sv.now + 30;
 

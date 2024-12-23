@@ -76,9 +76,9 @@ pub mod stats {
     pub const ICMP_DU_FR: u32 = 22;
     /// Packets embedded in Ip6tnl tunnel
     pub const IP6TNL_IPV6: u32 = 23;
-    /// IPV6 unknown fragments. This counter is useful to debug cases
+    /// IPv6 unknown fragments. This counter is useful to debug cases
     /// when the LB doesn't forward fragments.
-    pub const IPV6_UNKNONW_FRAGMENTS: u32 = 24;
+    pub const IPV6_UNKNOWN_FRAGMENTS: u32 = 24;
 
     pub const MAX: u32 = 25;
 }
