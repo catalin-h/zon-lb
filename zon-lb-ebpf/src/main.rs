@@ -10,7 +10,8 @@ use aya_ebpf::{
         BPF_F_MMAPABLE, BPF_F_NO_COMMON_LRU,
     },
     helpers::{
-        bpf_fib_lookup, bpf_ktime_get_ns, bpf_redirect, bpf_xdp_adjust_head, bpf_xdp_adjust_tail,
+        bpf_fib_lookup, bpf_get_smp_processor_id, bpf_ktime_get_ns, bpf_redirect,
+        bpf_xdp_adjust_head, bpf_xdp_adjust_tail,
     },
     macros::{map, xdp},
     maps::{Array, DevMap, HashMap, LruHashMap, LruPerCpuHashMap, PerCpuArray},
@@ -742,48 +743,76 @@ fn send_dtb(
     Ok(xdp_action::XDP_TX)
 }
 
-#[inline(never)]
-fn log_packet(ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
-    let rx_queue = unsafe { (*ctx.ctx).rx_queue_index };
-    let if_index = unsafe { (*ctx.ctx).ingress_ifindex };
-    info!(
-        ctx,
-        "[i:{}, rx:{}] [p:{}] {:i}:{} -> {:i}:{}",
-        if_index,
-        rx_queue,
-        ipv4hdr.proto as u8,
-        ipv4hdr.src_addr.to_be(),
-        (l4ctx.src_port as u16).to_be(),
-        ipv4hdr.dst_addr.to_be(),
-        (l4ctx.dst_port as u16).to_be(),
-    );
-
-    info!(
-        ctx,
-        "tot_len:{}, id:0x{:x}, off:0x{:x}",
-        ipv4hdr.tot_len.to_be(),
-        ipv4hdr.id.to_be(),
-        ipv4hdr.frag_off.to_be() & 0x1fff
-    );
-
-    if IpProto::Icmp == l4ctx.next_hdr {
-        log_icmp(ctx, &l4ctx);
-    }
+#[repr(C)]
+struct Log {
+    hash: u32,
+    src_port_be: u16,
+    dst_port_be: u16,
+    next_hdr: u32,
 }
 
-fn log_icmp(ctx: &XdpContext, l4ctx: &L4Context) {
-    let (id, seq) = if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY) {
-        (l4ctx.dst_port, l4ctx.src_port)
-    } else {
-        (l4ctx.src_port, l4ctx.dst_port)
-    };
+impl Log {
+    #[inline(never)]
+    fn init(&mut self, l4ctx: &L4Context) {
+        self.hash = unsafe { bpf_get_smp_processor_id() } << 16;
+        self.hash |= (l4ctx.next_hdr as u32) ^ l4ctx.src_port ^ l4ctx.dst_port;
+        self.next_hdr = l4ctx.next_hdr as u32;
+        if (l4ctx.next_hdr == IpProto::Icmp || l4ctx.next_hdr == IpProto::Ipv6Icmp)
+            && l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY)
+        {
+            self.src_port_be = (l4ctx.dst_port as u16).to_be();
+            self.dst_port_be = (l4ctx.src_port as u16).to_be();
+        } else {
+            self.src_port_be = (l4ctx.src_port as u16).to_be();
+            self.dst_port_be = (l4ctx.dst_port as u16).to_be();
+        };
+    }
 
-    info!(
-        ctx,
-        "icmp id: 0x{:x} seq: 0x{:x}",
-        (id as u16).to_be(),
-        (seq as u16).to_be()
-    );
+    #[inline(never)]
+    fn hw_info(&self, ctx: &XdpContext) {
+        info!(
+            ctx,
+            "[{:x}] i={} rx={}",
+            self.hash,
+            unsafe { (*ctx.ctx).ingress_ifindex },
+            unsafe { (*ctx.ctx).rx_queue_index },
+        );
+    }
+
+    #[inline(never)]
+    fn ipv4_packet(&self, ctx: &XdpContext, ipv4hdr: &Ipv4Hdr) {
+        self.hw_info(ctx);
+        info!(
+            ctx,
+            "[{:x}] p={} {:i}:{} -> {:i}:{}",
+            self.hash,
+            self.next_hdr,
+            ipv4hdr.src_addr.to_be(),
+            self.src_port_be,
+            ipv4hdr.dst_addr.to_be(),
+            self.dst_port_be,
+        );
+        info!(
+            ctx,
+            "[{:x}] tot_len={}, id=0x{:x}, off=0x{:x}",
+            self.hash,
+            ipv4hdr.tot_len.to_be(),
+            ipv4hdr.id.to_be(),
+            ipv4hdr.frag_off.to_be() & 0x1fff
+        );
+
+        if IpProto::Icmp == ipv4hdr.proto {
+            self.log_icmp(ctx);
+        }
+    }
+
+    #[inline(never)]
+    fn log_icmp(&self, ctx: &XdpContext) {
+        info!(
+            ctx,
+            "[{:x}] icmp id: 0x{:x} seq: 0x{:x}", self.hash, self.src_port_be, self.dst_port_be,
+        );
+    }
 }
 
 impl IpFragment {
@@ -1097,8 +1126,9 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     }
 
-    if feat.log_enabled(Level::Info) {
-        log_packet(ctx, &ipv4hdr, &l4ctx);
+    if ctx4.feat.log_enabled(Level::Info) {
+        ctx4.log.init(&l4ctx);
+        ctx4.log.ipv4_packet(ctx, &ipv4hdr);
     }
 
     let natkey = NAT4Key {

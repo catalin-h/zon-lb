@@ -1,6 +1,6 @@
 use crate::{
-    is_unicast_mac, log_icmp, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, CTCache, Features,
-    L2Context, L4Context, AF_INET6, ZLB_BACKENDS,
+    is_unicast_mac, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, CTCache, Features, L2Context,
+    L4Context, Log, AF_INET6, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -253,34 +253,43 @@ fn log_fragexthdr(ctx: &XdpContext, exthdr: &Ipv6FragExtHdr, feat: &Features) {
     }
 }
 
-// NOTE: It is important to pass args by ref and not as
-// pointers in order to contain the aya log stack allocations
-// inside the function. For eg. passing the Ipv6Hdr as pointer
-// will prevent the function from containing aya allocations.
-#[inline(never)]
-fn log_ipv6_packet(ctx: &XdpContext, ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
+impl Log {
+    // NOTE: It is important to pass args by ref and not as
+    // pointers in order to contain the aya log stack allocations
+    // inside the function. For eg. passing the Ipv6Hdr as pointer
+    // will prevent the function from containing aya allocations.
     // NOTE: Looks like the log macro occupies a lot of stack
-    // TBD: maybe remove this log ?
-    info!(
-        ctx,
-        "[i:{}, rx:{}] [p:{}] [{:i}]:{} -> [{:i}]:{}, flow: {:x}",
-        unsafe { (*ctx.ctx).ingress_ifindex },
-        unsafe { (*ctx.ctx).rx_queue_index },
-        ipv6hdr.next_hdr as u32,
-        unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
-        (l4ctx.src_port as u16).to_be(),
-        // BUG: depending on current stack usage changing to dst_addr.addr8
-        // will generate code that overflows the bpf program 512B stack
-        unsafe { ipv6hdr.dst_addr.in6_u.u6_addr8 },
-        (l4ctx.dst_port as u16).to_be(),
-        {
-            let flow = ipv6hdr.flow_label;
-            u32::from_be_bytes([0, flow[0], flow[1], flow[2]])
-        }
-    );
+    #[inline(never)]
+    fn ipv6_packet(&self, ctx: &XdpContext, ipv6hdr: &Ipv6Hdr) {
+        self.hw_info(ctx);
 
-    if IpProto::Ipv6Icmp == l4ctx.next_hdr {
-        log_icmp(ctx, &l4ctx);
+        info!(
+            ctx,
+            "[{:x}] p={} [{:i}]:{} -> [{:i}]:{}",
+            self.hash,
+            self.next_hdr,
+            unsafe { ipv6hdr.src_addr.in6_u.u6_addr8 },
+            self.src_port_be,
+            // BUG: depending on current stack usage changing to dst_addr.addr8
+            // will generate code that overflows the bpf program 512B stack
+            unsafe { ipv6hdr.dst_addr.in6_u.u6_addr8 },
+            self.dst_port_be,
+        );
+
+        let flow = ipv6hdr.flow_label;
+        let flow = u32::from_be_bytes([0, flow[0], flow[1], flow[2]]);
+
+        info!(
+            ctx,
+            "[{:x}] flow=0x{:x}, payload_len={}",
+            self.hash,
+            flow,
+            ipv6hdr.payload_len.to_be()
+        );
+
+        if IpProto::Ipv6Icmp as u32 == self.next_hdr {
+            self.log_icmp(ctx);
+        }
     }
 }
 
@@ -934,6 +943,7 @@ impl NAT6 {
 pub struct Context {
     ct6key: CT6CacheKey,
     pub feat: Features,
+    pub log: Log,
     nat6: NAT6,
     ep6key: EP6,
     bekey: BEKey,
@@ -1113,7 +1123,8 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     if ctx6.feat.log_enabled(Level::Info) {
-        log_ipv6_packet(ctx, ipv6hdr, &l4ctx);
+        ctx6.log.init(&l4ctx);
+        ctx6.log.ipv6_packet(ctx, ipv6hdr);
     }
 
     // === reply ===
