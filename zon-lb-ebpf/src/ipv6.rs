@@ -1280,7 +1280,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             }
             None => {
                 if ctx6.feat.log_enabled(Level::Info) {
-                    info!(ctx, "No LB6 entry");
+                    ctx6.log.log_info(ctx, "no LB found");
                 }
                 // *** This is the exit point for non-LB packets ***
                 // These packets are not counted as they are not destined

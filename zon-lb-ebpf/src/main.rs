@@ -813,6 +813,11 @@ impl Log {
             "[{:x}] icmp id: 0x{:x} seq: 0x{:x}", self.hash, self.src_port_be, self.dst_port_be,
         );
     }
+
+    #[inline(never)]
+    fn log_info(&self, ctx: &XdpContext, text: &str) {
+        info!(ctx, "[{:x}] {}", self.hash, text);
+    }
 }
 
 impl IpFragment {
@@ -1069,6 +1074,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let mut l4ctx = L4Context::new_for_ipv4(&l2ctx, ipv4hdr);
     let ctx4 = unsafe { &mut *zlb_context()? };
 
+    // TODO: move this to context getter function
     ctx4.feat.fetch();
     let feat = &ctx4.feat;
 
@@ -1303,6 +1309,9 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             }
         }
         None => {
+            if feat.log_enabled(Level::Info) {
+                ctx4.log.log_info(ctx, "no LB found");
+            }
             // *** This is the exit point for non-LB packets ***
             // These packets are not counted as they are not destined
             // to any backend group. By counting them would mean that
