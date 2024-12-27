@@ -291,6 +291,19 @@ impl Log {
             self.log_icmp(ctx);
         }
     }
+
+    #[inline(never)]
+    fn conntrack6(&self, ctx: &XdpContext, nat: &NAT) {
+        info!(
+            ctx,
+            "[{:x}] [ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
+            self.hash,
+            unsafe { nat.v6info.ip_src.addr8 },
+            nat.v6key.port_lb_dst,
+            nat.v6info.vlan_hdr,
+            nat.ret_code
+        );
+    }
 }
 
 pub mod icmpv6 {
@@ -921,18 +934,6 @@ impl NAT {
                 ret
             }
         };
-
-        // TODO: move this logging outside
-        if Features::new().log_enabled(Level::Info) {
-            info!(
-                ctx,
-                "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
-                unsafe { self.v6info.ip_src.addr8 },
-                self.v6key.port_lb_dst,
-                self.v6info.vlan_hdr,
-                self.ret_code
-            );
-        }
     }
 }
 
@@ -1471,6 +1472,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // There is no need to conntrack the L3 DSR flow
     if !ctx6.ctnat.flags.contains(EPFlags::DSR_L3) {
         ctx6.nat.updatev6(ctx, &l4ctx, &ctx6.ctnat);
+        if ctx6.feat.log_enabled(Level::Info) {
+            ctx6.log.conntrack6(ctx, &ctx6.nat);
+        }
     }
 
     Ok(action)
