@@ -838,19 +838,19 @@ impl IpFragment {
     }
 }
 
-struct NAT6 {
-    key: NAT6Key,
-    info: NAT6Value,
+struct NAT {
+    v6key: NAT6Key,
+    v6info: NAT6Value,
     ret_code: i64,
 }
 
-impl NAT6 {
-    fn init_key(&mut self, ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
-        self.key.ip_be_src = Inet6U::from(unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 });
-        self.key.ip_lb_dst = Inet6U::from(unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 });
-        self.key.port_be_src = l4ctx.src_port;
-        self.key.port_lb_dst = l4ctx.dst_port;
-        self.key.next_hdr = l4ctx.next_hdr as u32;
+impl NAT {
+    fn init_v6key(&mut self, ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
+        self.v6key.ip_be_src = Inet6U::from(unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 });
+        self.v6key.ip_lb_dst = Inet6U::from(unsafe { &ipv6hdr.dst_addr.in6_u.u6_addr32 });
+        self.v6key.port_be_src = l4ctx.src_port;
+        self.v6key.port_lb_dst = l4ctx.dst_port;
+        self.v6key.next_hdr = l4ctx.next_hdr as u32;
     }
 
     // TODO: Don't insert entry if no connection tracking is enabled for this backend.
@@ -877,44 +877,44 @@ impl NAT6 {
     // port_be_src Dest            Source
     // port_lb_dst Source          Dest
     //
-    fn update(&mut self, ctx: &XdpContext, l4ctx: &L4Context, ctnat: &CTCache) {
-        self.info.ip_src = self.key.ip_be_src;
-        self.info.lb_ip = self.key.ip_lb_dst;
+    fn updatev6(&mut self, ctx: &XdpContext, l4ctx: &L4Context, ctnat: &CTCache) {
+        self.v6info.ip_src = self.v6key.ip_be_src;
+        self.v6info.lb_ip = self.v6key.ip_lb_dst;
 
         if ctnat.flags.contains(EPFlags::DSR_L2) {
             // NOTE: for DSR L2 the reply flow will search for source as current destination
             // and destination as current source.
-            self.key.ip_be_src = self.info.lb_ip;
-            self.key.ip_lb_dst = self.info.ip_src;
-            self.key.port_be_src = l4ctx.dst_port;
-            self.key.port_lb_dst = l4ctx.src_port;
+            self.v6key.ip_be_src = self.v6info.lb_ip;
+            self.v6key.ip_lb_dst = self.v6info.ip_src;
+            self.v6key.port_be_src = l4ctx.dst_port;
+            self.v6key.port_lb_dst = l4ctx.src_port;
         } else {
-            self.key.ip_lb_dst = Inet6U::from(&ctnat.src_addr);
-            self.key.ip_be_src = Inet6U::from(&ctnat.dst_addr);
+            self.v6key.ip_lb_dst = Inet6U::from(&ctnat.src_addr);
+            self.v6key.ip_be_src = Inet6U::from(&ctnat.dst_addr);
             if l4ctx.next_hdr == IpProto::Ipv6Icmp {
                 // For ICMP flow the echo id and sequence number are saved as
                 // source and destination port in L4Context. However, the ICMP
                 // reply will has the same echo id and sequence number as the
                 // request. In order to distinguish the request from the reply
                 // we must swap the two values.
-                self.key.port_be_src = l4ctx.dst_port;
+                self.v6key.port_be_src = l4ctx.dst_port;
             } else {
                 // use the port set in BE info
-                self.key.port_be_src = ctnat.port_combo >> 16;
+                self.v6key.port_be_src = ctnat.port_combo >> 16;
             }
-            self.key.port_lb_dst = l4ctx.src_port;
+            self.v6key.port_lb_dst = l4ctx.src_port;
         }
 
-        self.info.port_lb = l4ctx.dst_port as u16;
-        self.info.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
-        self.info.mtu = check_mtu(ctx, unsafe { (*ctx.ctx).ingress_ifindex });
-        self.info.flags = ctnat.flags;
+        self.v6info.port_lb = l4ctx.dst_port as u16;
+        self.v6info.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+        self.v6info.mtu = check_mtu(ctx, unsafe { (*ctx.ctx).ingress_ifindex });
+        self.v6info.flags = ctnat.flags;
         // NOTE: the original MAC addresses and VLAN header are cached right before redirect
 
         // TBD: use lock or atomic update ?
         // TBD: use BPF_F_LOCK ?
 
-        self.ret_code = match unsafe { ZLB_CONNTRACK6.insert(&self.key, &self.info, 0) } {
+        self.ret_code = match unsafe { ZLB_CONNTRACK6.insert(&self.v6key, &self.v6info, 0) } {
             Ok(()) => 0, // add stats for insert
             Err(ret) => {
                 stats_inc(stats::CT_ERROR_UPDATE);
@@ -922,13 +922,14 @@ impl NAT6 {
             }
         };
 
+        // TODO: move this logging outside
         if Features::new().log_enabled(Level::Info) {
             info!(
                 ctx,
                 "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
-                unsafe { self.info.ip_src.addr8 },
-                self.key.port_lb_dst,
-                self.info.vlan_hdr,
+                unsafe { self.v6info.ip_src.addr8 },
+                self.v6key.port_lb_dst,
+                self.v6info.vlan_hdr,
                 self.ret_code
             );
         }
@@ -944,7 +945,7 @@ pub struct Context {
     ct6key: CT6CacheKey,
     pub feat: Features,
     pub log: Log,
-    nat6: NAT6,
+    nat: NAT,
     ep6key: EP6,
     bekey: BEKey,
     ctnat: CTCache,
@@ -1179,9 +1180,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // NOTE: using ctx6 to directly modify the NAT6 key will generate
     // a borrower error because the ctx6 var is already borrowed as mut.
-    ctx6.nat6.init_key(ipv6hdr, &l4ctx);
+    ctx6.nat.init_v6key(ipv6hdr, &l4ctx);
 
-    if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&ctx6.nat6.key) } {
+    if let Some(nat) = unsafe { ZLB_CONNTRACK6.get(&ctx6.nat.v6key) } {
         if ctx6.sv.pkt_len > nat.mtu as u32 {
             return send_ptb(ctx, &l2ctx, ipv6hdr, nat.mtu as u32);
         }
@@ -1265,7 +1266,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     let be = {
-        ctx6.ep6key.address = ctx6.nat6.key.ip_lb_dst;
+        ctx6.ep6key.address = ctx6.nat.v6key.ip_lb_dst;
         // ICMP backend groups are searched using the IP and protocol id
         if l4ctx.next_hdr == IpProto::Ipv6Icmp {
             ctx6.ep6key.port = 0;
@@ -1428,13 +1429,13 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let macs = unsafe { &mut *macs };
 
     if !ctx6.ctnat.flags.contains(EPFlags::DSR_L3) {
-        ctx6.nat6.info.mac_addresses = [
+        ctx6.nat.v6info.mac_addresses = [
             macs[2] << 16 | macs[1] >> 16,
             macs[0] << 16 | macs[2] >> 16,
             macs[1] << 16 | macs[0] >> 16,
         ];
         // Save the VLAN header here before removing it below
-        ctx6.nat6.info.vlan_hdr = l2ctx.vlanhdr;
+        ctx6.nat.v6info.vlan_hdr = l2ctx.vlanhdr;
     }
 
     array_copy(macs, &fib.macs);
@@ -1469,7 +1470,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // There is no need to conntrack the L3 DSR flow
     if !ctx6.ctnat.flags.contains(EPFlags::DSR_L3) {
-        ctx6.nat6.update(ctx, &l4ctx, &ctx6.ctnat);
+        ctx6.nat.updatev6(ctx, &l4ctx, &ctx6.ctnat);
     }
 
     Ok(action)
