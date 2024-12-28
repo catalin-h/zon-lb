@@ -148,6 +148,13 @@ fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
     }
 }
 
+#[repr(C)]
+struct FIBLookUp {
+    param: BpfFibLookUp,
+    entry: FibEntry,
+    rc: i64,
+}
+
 // Instead of saving data on stack use this heap memory for unrelated
 // variables. Add here result codes, return values saved IP addresses
 // or any computed values for current packet.
@@ -886,6 +893,23 @@ impl Log {
             self.src_port_be,
             nat.v4info.vlan_hdr.to_be(),
             nat.ret_code
+        );
+    }
+
+    #[inline(never)]
+    fn fib_lkup_inet(&self, ctx: &XdpContext, fib: &FIBLookUp) {
+        info!(
+            ctx,
+            "[{:x}] [fib] lkp_ret: {}, fw if: {}, src: {:i}, \
+            gw: {:i}, dmac: {:mac}, smac: {:mac}, mtu: {}",
+            self.hash,
+            fib.rc,
+            fib.param.ifindex,
+            fib.param.src[0].to_be(),
+            fib.param.dst[0].to_be(),
+            fib.param.dest_mac(),
+            fib.param.src_mac(),
+            fib.param.tot_len
         );
     }
 }

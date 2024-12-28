@@ -1,6 +1,7 @@
 use crate::{
     array_copy, is_unicast_mac, ptr_at, redirect_txport, stats_inc, zlb_context, BpfFibLookUp,
-    CTCache, Context, Features, IpFragment, L2Context, L4Context, Log, AF_INET6, NAT, ZLB_BACKENDS,
+    CTCache, Context, FIBLookUp, Features, IpFragment, L2Context, L4Context, Log, AF_INET6, NAT,
+    ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -302,6 +303,23 @@ impl Log {
             self.src_port_be,
             nat.v6info.vlan_hdr.to_be(),
             nat.ret_code
+        );
+    }
+
+    #[inline(never)]
+    fn fib_lkup_inet6(&self, ctx: &XdpContext, fib: &FIBLookUp) {
+        info!(
+            ctx,
+            "[{:x}] [fib] lkp_ret: {}, fw if: {}, src: {:i}, \
+                 gw: {:i}, dmac: {:mac}, smac: {:mac}, mtu: {}",
+            self.hash,
+            fib.rc,
+            fib.param.ifindex,
+            unsafe { Inet6U::from(&fib.param.src).addr8 },
+            unsafe { Inet6U::from(&fib.param.dst).addr8 },
+            fib.param.dest_mac(),
+            fib.param.src_mac(),
+            fib.param.tot_len
         );
     }
 }
