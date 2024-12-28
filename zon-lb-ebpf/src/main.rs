@@ -31,8 +31,9 @@ use network_types::{
 };
 use zon_lb_common::{
     runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, GroupInfo, Ipv4FragId,
-    Ipv4FragInfo, NAT4Key, NAT4Value, BE, EP4, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES,
-    MAX_BACKENDS, MAX_CONNTRACKS, MAX_FRAG4_ENTRIES, MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
+    Ipv4FragInfo, NAT4Key, NAT4Value, NAT6Key, NAT6Value, BE, EP4, FIB_ENTRY_EXPIRY_INTERVAL,
+    MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_FRAG4_ENTRIES, MAX_GROUPS,
+    NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
 const ETH_ALEN: usize = 6;
@@ -818,6 +819,19 @@ impl Log {
     fn log_info(&self, ctx: &XdpContext, text: &str) {
         info!(ctx, "[{:x}] {}", self.hash, text);
     }
+
+    #[inline(never)]
+    fn conntrack4(&self, ctx: &XdpContext, nat: &NAT) {
+        info!(
+            ctx,
+            "[{:x}] [ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
+            self.hash,
+            nat.v4info.ip_src.to_be(),
+            self.src_port_be,
+            nat.v4info.vlan_hdr.to_be(),
+            nat.ret_code
+        );
+    }
 }
 
 impl IpFragment {
@@ -885,6 +899,94 @@ impl IpFragment {
             Ok(()) => {}
             Err(_) => stats_inc(stats::IP_FRAGMENT_ERRORS),
         }
+    }
+}
+
+#[repr(C)]
+struct NAT {
+    v6key: NAT6Key,
+    v6info: NAT6Value,
+    v4key: NAT4Key,
+    v4info: NAT4Value,
+    ret_code: i64,
+}
+
+impl NAT {
+    fn init_v4key(&mut self, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
+        self.v4key.ip_be_src = ipv4hdr.src_addr;
+        self.v4key.ip_lb_dst = ipv4hdr.dst_addr;
+        self.v4key.port_be_src = l4ctx.src_port as u16;
+        self.v4key.port_lb_dst = l4ctx.dst_port as u16;
+        self.v4key.proto = ipv4hdr.proto as u32;
+    }
+
+    // NOTE: for DSR the key does not change.
+    //
+    // Normal NAT mappings
+    //             Request         Reply
+    // ----------------------------------
+    // ip_be_src   Backend         Source
+    // ip_lb_dst   Dest | src_ip   Dest
+    // port_be_src Backend         Source
+    // port_lb_dst Source          Dest
+    //
+    // DSR NAT mappings: swap source with dest
+    //             Request         Reply
+    // ----------------------------------
+    // ip_be_src   Dest            Source
+    // ip_lb_dst   Source          Dest
+    // port_be_src Dest            Source
+    // port_lb_dst Source          Dest
+    fn updatev4(&mut self, ctx: &XdpContext, l4ctx: &L4Context, ctnat: &CTCache) {
+        self.v4info.ip_src = self.v4key.ip_be_src;
+        self.v4info.lb_ip = self.v4key.ip_lb_dst;
+
+        if ctnat.flags.contains(EPFlags::DSR_L2) {
+            // NOTE: for DSR L2 the reply flow will search for source as current destination
+            // and destination as current source.
+            self.v4key.ip_be_src = self.v4info.lb_ip;
+            self.v4key.ip_lb_dst = self.v4info.ip_src;
+            self.v4key.port_be_src = l4ctx.dst_port as u16;
+            self.v4key.port_lb_dst = l4ctx.src_port as u16;
+        } else {
+            self.v4key.ip_be_src = ctnat.dst_addr[0]; //  be_addr;
+            self.v4key.ip_lb_dst = ctnat.src_addr[0]; // lb_addr;
+            if l4ctx.next_hdr == IpProto::Icmp {
+                // For ICMP flow the echo id and sequence number are saved as
+                // source and destination port in L4Context. However, the ICMP
+                // reply will has the same echo id and sequence number as the
+                // request. In order to distinguish the request from the reply
+                // we must swap the two values.
+                self.v4key.port_be_src = l4ctx.dst_port as u16;
+            } else {
+                self.v4key.port_be_src = (ctnat.port_combo >> 16) as u16; //be.port;
+            }
+            // NOTE: the LB will use the source port since there can be multiple
+            // connection to the same backend and it needs to track all of them.
+            // NOTE: On ICMP request is set with the echo id.
+            self.v4key.port_lb_dst = l4ctx.src_port as u16;
+        }
+
+        self.v4info.port_lb = l4ctx.dst_port as u16;
+        self.v4info.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+        self.v4info.mtu = check_mtu(ctx, self.v4info.ifindex);
+        self.v4info.flags = ctnat.flags;
+        // NOTE: the original MAC addresses and VLAN header are cached right before redirect
+
+        // TBD: use lock or atomic update ?
+        // TBD: use BPF_F_LOCK ?
+
+        self.ret_code = match unsafe { ZLB_CONNTRACK4.insert(&self.v4key, &self.v4info, 0) } {
+            Ok(()) => {
+                // TODO: add counter for how many times the conntrack cache is updated
+                // stats_inc(stats::CT_ERROR_UPDATE);
+                0
+            }
+            Err(ret) => {
+                stats_inc(stats::CT_ERROR_UPDATE);
+                ret
+            }
+        };
     }
 }
 
@@ -1137,17 +1239,11 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx4.log.ipv4_packet(ctx, &ipv4hdr);
     }
 
-    let natkey = NAT4Key {
-        ip_be_src: src_addr,
-        ip_lb_dst: dst_addr,
-        port_be_src: l4ctx.src_port as u16,
-        port_lb_dst: l4ctx.dst_port as u16,
-        proto: ipv4hdr.proto as u32,
-    };
+    ctx4.nat.init_v4key(ipv4hdr, &l4ctx);
 
     let now = coarse_ktime();
 
-    if let Some(ctnat) = unsafe { ZLB_CT4_CACHE.get(&natkey) } {
+    if let Some(ctnat) = unsafe { ZLB_CT4_CACHE.get(&ctx4.nat.v4key) } {
         if ctnat.time > now {
             return ct4_handler(ctx, &l2ctx, &l4ctx, ipv4hdr, ctnat, &feat);
         }
@@ -1158,7 +1254,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // within the pattern match scope.
     // NOTE: using a cache map for the contrack map doesn't have
     // any impact on the total performance.
-    if let Some(nat) = unsafe { ZLB_CONNTRACK4.get(&natkey) } {
+    if let Some(nat) = unsafe { ZLB_CONNTRACK4.get(&ctx4.nat.v4key) } {
         // TODO: move it to own function
         if feat.log_enabled(Level::Info) {
             info!(
@@ -1187,7 +1283,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
 
         let _ = ZLB_CT4_CACHE.insert(
-            &natkey,
+            &ctx4.nat.v4key,
             &CTCache {
                 time: now + 30,
                 flags: nat.flags,
@@ -1333,8 +1429,8 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         );
     }
 
-    let be_addr = be.address[0];
-    let port_combo = (be.port as u32) << 16 | l4ctx.src_port;
+    ctx4.ctnat.dst_addr[0] = be.address[0];
+    ctx4.ctnat.port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
     // Save fragment before updating the header and before forwading the packet
     ctx4.frag.cache4(&l4ctx);
@@ -1343,7 +1439,14 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
-        update_inet_csum(ctx, ipv4hdr, &l4ctx, dst_addr, be_addr, port_combo)?;
+        update_inet_csum(
+            ctx,
+            ipv4hdr,
+            &l4ctx,
+            dst_addr,
+            ctx4.ctnat.dst_addr[0],
+            ctx4.ctnat.port_combo,
+        )?;
 
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
@@ -1367,16 +1470,23 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    let lb_addr = if be.flags.contains(EPFlags::XDP_REDIRECT) && be.src_ip[0] != 0 {
+    ctx4.ctnat.src_addr[0] = if be.flags.contains(EPFlags::XDP_REDIRECT) && be.src_ip[0] != 0 {
         // TODO: check the arp table and update or insert
         // smac/dmac and derived ip src and redirect ifindex
         be.src_ip[0]
     } else {
         dst_addr
     };
+    ctx4.ctnat.flags = be.flags;
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
-    let (fib, fib_rc) = fetch_fib4(ctx, ipv4hdr, lb_addr, be_addr, now)?;
+    let (fib, fib_rc) = fetch_fib4(
+        ctx,
+        ipv4hdr,
+        ctx4.ctnat.src_addr[0],
+        ctx4.ctnat.dst_addr[0],
+        now,
+    )?;
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
             if fib.mtu as u16 >= ipv4hdr.tot_len.to_be() {
@@ -1405,16 +1515,28 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // Update both IP and Transport layers checksums along with the source
     // and destination addresses and ports and others like TTL.
     if !be.flags.contains(EPFlags::DSR_L2) {
-        update_inet_csum(ctx, ipv4hdr, &l4ctx, lb_addr, be_addr, port_combo)?;
+        update_inet_csum(
+            ctx,
+            ipv4hdr,
+            &l4ctx,
+            ctx4.ctnat.src_addr[0],
+            ctx4.ctnat.dst_addr[0],
+            ctx4.ctnat.port_combo,
+        )?;
     }
 
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
     let macs = unsafe { &mut *macs };
-    let mac_addresses = [
-        macs[2] << 16 | macs[1] >> 16,
-        macs[0] << 16 | macs[2] >> 16,
-        macs[1] << 16 | macs[0] >> 16,
-    ];
+
+    if !ctx4.ctnat.flags.contains(EPFlags::DSR_L3) {
+        ctx4.nat.v4info.mac_addresses = [
+            macs[2] << 16 | macs[1] >> 16,
+            macs[0] << 16 | macs[2] >> 16,
+            macs[1] << 16 | macs[0] >> 16,
+        ];
+        // Save the VLAN header here before removing it below
+        ctx4.nat.v4info.vlan_hdr = l2ctx.vlanhdr;
+    }
 
     macs[2] = fib.macs[2];
     macs[1] = fib.macs[1];
@@ -1441,15 +1563,15 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // NOTE: Since the cache is a per CPU map the insert with flags=0
     // will update only the value for the current CPU.
     let _ = ZLB_CT4_CACHE.insert(
-        &natkey,
+        &ctx4.nat.v4key,
         &CTCache {
             time: now + 30,
             flags: be.flags,
             mtu: fib.mtu,
             iph: [0; IPH_SIZE],
-            src_addr: [lb_addr, 0, 0, 0],
-            dst_addr: [be_addr, 0, 0, 0],
-            port_combo,
+            src_addr: ctx4.ctnat.src_addr,
+            dst_addr: ctx4.ctnat.dst_addr,
+            port_combo: ctx4.ctnat.port_combo,
             ifindex: fib.ifindex,
             macs: fib.macs,
             vlan_hdr: 0,
@@ -1465,130 +1587,13 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // - ip6tnl
     // - fou
 
-    // NOTE: for DSR the key does not change.
-    //
-    // Normal NAT mappings
-    //             Request         Reply
-    // ----------------------------------
-    // ip_be_src   Backend         Source
-    // ip_lb_dst   Dest | src_ip   Dest
-    // port_be_src Backend         Source
-    // port_lb_dst Source          Dest
-    //
-    // DSR NAT mappings: swap source with dest
-    //             Request         Reply
-    // ----------------------------------
-    // ip_be_src   Dest            Source
-    // ip_lb_dst   Source          Dest
-    // port_be_src Dest            Source
-    // port_lb_dst Source          Dest
-    let ip_src = natkey.ip_be_src;
-    let lb_ip = natkey.ip_lb_dst;
-    let mut natkey = natkey;
-    if be.flags.contains(EPFlags::DSR_L2) {
-        // NOTE: for DSR L2 the reply flow will search for source as current destination
-        // and destination as current source.
-        natkey.ip_be_src = lb_ip;
-        natkey.ip_lb_dst = ip_src;
-        natkey.port_be_src = l4ctx.dst_port as u16;
-        natkey.port_lb_dst = l4ctx.src_port as u16;
-    } else {
-        natkey.ip_be_src = be_addr;
-        natkey.ip_lb_dst = lb_addr;
-        if l4ctx.next_hdr == IpProto::Icmp {
-            // For ICMP flow the echo id and sequence number are saved as
-            // source and destination port in L4Context. However, the ICMP
-            // reply will has the same echo id and sequence number as the
-            // request. In order to distinguish the request from the reply
-            // we must swap the two values.
-            natkey.port_be_src = l4ctx.dst_port as u16;
-        } else {
-            natkey.port_be_src = be.port;
+    // There is no need to conntrack the L3 DSR flow
+    if !ctx4.ctnat.flags.contains(EPFlags::DSR_L3) {
+        ctx4.nat.updatev4(ctx, &l4ctx, &ctx4.ctnat);
+        if ctx4.feat.log_enabled(Level::Info) {
+            ctx4.log.conntrack4(ctx, &ctx4.nat);
         }
-        // NOTE: the LB will use the source port since there can be multiple
-        // connection to the same backend and it needs to track all of them.
-        // NOTE: On ICMP request is set with the echo id.
-        natkey.port_lb_dst = l4ctx.src_port as u16;
     }
-
-    // Update the nat entry only if the source details changes.
-    // This will boost performance and less error prone on tests like iperf.
-    match unsafe { ZLB_CONNTRACK4.get(&natkey) } {
-        Some(&nat) => {
-            if nat.ifindex != unsafe { (*ctx.ctx).ingress_ifindex }
-                || nat.ip_src != ip_src
-                || nat.mac_addresses != mac_addresses
-                || nat.vlan_hdr != l2ctx.vlanhdr
-            {
-                /* do insert */
-            } else {
-                return Ok(action);
-            }
-        }
-        None => { /* do insert */ }
-    }
-
-    // TBD: use lock or atomic update ?
-    // TBD: use BPF_F_LOCK ?
-    let rc = match unsafe {
-        ZLB_CONNTRACK4.insert(
-            &natkey,
-            &NAT4Value {
-                ip_src,
-                port_lb: l4ctx.dst_port as u16,
-                mtu: check_mtu(ctx, (*ctx.ctx).ingress_ifindex),
-                ifindex: (*ctx.ctx).ingress_ifindex,
-                mac_addresses,
-                vlan_hdr: l2ctx.vlanhdr,
-                flags: be.flags,
-                lb_ip,
-            },
-            0,
-        )
-    } {
-        Ok(()) => {
-            // TODO: add counter for how many times the conntrack cache is updated
-            // stats_inc(stats::CT_ERROR_UPDATE);
-            0
-        }
-        Err(ret) => {
-            stats_inc(stats::CT_ERROR_UPDATE);
-            ret
-        }
-    };
-
-    if feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "[ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
-            ip_src.to_be(),
-            (l4ctx.src_port as u16).to_be(),
-            l2ctx.vlanhdr,
-            rc
-        )
-    }
-
-    // NOTE: the next function uses
-    // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
-    // in order to compute the source/dest mac + vlan info from IP source,destination
-    // before redirecting a packet to the backend. This feature is different from
-    // XDP_REDIRECT as it is used to redirect the source packet to an backend
-    // via configured interface on the ingress flow. In the egress flow we already have
-    // the ifindex and the mac addresses info, which are saved in the conntrack map
-    // on the ingress flow.
-    // NOTE: sometimes the network stack to which the packet is redirected doesn't
-    // know how to forward the packet back to the LB. In this case we must do a full
-    // NAT for both L2/L3 src and dst addresses.
-    // NOTE: using BPF_FIB_LOOKUP_OUTPUT doesn't work when reversing src and destination.
-    // NOTE: in order to obtain the _right_ source IP for the network on which the packet
-    // is redirected must use a newer kernel (>=6.7) that implements 'source IP addr
-    // derivation via bpf_*_fib_lookup()' by passing flag BPF_FIB_LOOKUP_SRC:
-    // See:
-    // Extend the bpf_fib_lookup() helper by making it to return the source
-    // IPv4/IPv6 address if the BPF_FIB_LOOKUP_SRC flag is set.
-    // https://github.com/torvalds/linux/commit/dab4e1f06cabb6834de14264394ccab197007302
-    // NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
-    // ifindex used to redirect the packet.
 
     Ok(action)
 }
@@ -1614,6 +1619,27 @@ fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_actio
     }
 }
 
+// NOTE: the next function uses
+// long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
+// in order to compute the source/dest mac + vlan info from IP source,destination
+// before redirecting a packet to the backend. This feature is different from
+// XDP_REDIRECT as it is used to redirect the source packet to an backend
+// via configured interface on the ingress flow. In the egress flow we already have
+// the ifindex and the mac addresses info, which are saved in the conntrack map
+// on the ingress flow.
+// NOTE: sometimes the network stack to which the packet is redirected doesn't
+// know how to forward the packet back to the LB. In this case we must do a full
+// NAT for both L2/L3 src and dst addresses.
+// NOTE: using BPF_FIB_LOOKUP_OUTPUT doesn't work when reversing src and destination.
+// NOTE: in order to obtain the _right_ source IP for the network on which the packet
+// is redirected must use a newer kernel (>=6.7) that implements 'source IP addr
+// derivation via bpf_*_fib_lookup()' by passing flag BPF_FIB_LOOKUP_SRC:
+// See:
+// Extend the bpf_fib_lookup() helper by making it to return the source
+// IPv4/IPv6 address if the BPF_FIB_LOOKUP_SRC flag is set.
+// https://github.com/torvalds/linux/commit/dab4e1f06cabb6834de14264394ccab197007302
+// NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
+// ifindex used to redirect the packet.
 fn fetch_fib4(
     ctx: &XdpContext,
     ipv4hdr: &Ipv4Hdr,

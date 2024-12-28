@@ -1,6 +1,6 @@
 use crate::{
     is_unicast_mac, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, CTCache, Features, L2Context,
-    L4Context, Log, AF_INET6, ZLB_BACKENDS,
+    L4Context, Log, AF_INET6, NAT, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -299,8 +299,8 @@ impl Log {
             "[{:x}] [ctrk] [{:i}]:{} vlanhdr: {:x}, rc={}",
             self.hash,
             unsafe { nat.v6info.ip_src.addr8 },
-            nat.v6key.port_lb_dst,
-            nat.v6info.vlan_hdr,
+            self.src_port_be,
+            nat.v6info.vlan_hdr.to_be(),
             nat.ret_code
         );
     }
@@ -851,12 +851,6 @@ impl IpFragment {
     }
 }
 
-struct NAT {
-    v6key: NAT6Key,
-    v6info: NAT6Value,
-    ret_code: i64,
-}
-
 impl NAT {
     fn init_v6key(&mut self, ipv6hdr: &Ipv6Hdr, l4ctx: &L4Context) {
         self.v6key.ip_be_src = Inet6U::from(unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 });
@@ -920,7 +914,7 @@ impl NAT {
 
         self.v6info.port_lb = l4ctx.dst_port as u16;
         self.v6info.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
-        self.v6info.mtu = check_mtu(ctx, unsafe { (*ctx.ctx).ingress_ifindex });
+        self.v6info.mtu = check_mtu(ctx, self.v6info.ifindex);
         self.v6info.flags = ctnat.flags;
         // NOTE: the original MAC addresses and VLAN header are cached right before redirect
 
@@ -928,7 +922,11 @@ impl NAT {
         // TBD: use BPF_F_LOCK ?
 
         self.ret_code = match unsafe { ZLB_CONNTRACK6.insert(&self.v6key, &self.v6info, 0) } {
-            Ok(()) => 0, // add stats for insert
+            Ok(()) => {
+                // TODO: add counter for how many times the conntrack cache is updated
+                // stats_inc(stats::CT_ERROR_UPDATE);
+                0
+            }
             Err(ret) => {
                 stats_inc(stats::CT_ERROR_UPDATE);
                 ret
@@ -946,10 +944,10 @@ pub struct Context {
     ct6key: CT6CacheKey,
     pub feat: Features,
     pub log: Log,
-    nat: NAT,
+    pub nat: NAT,
     ep6key: EP6,
     bekey: BEKey,
-    ctnat: CTCache,
+    pub ctnat: CTCache,
     fiblookup: BpfFibLookUp,
     fibentry: FibEntry,
     pub frag: IpFragment,
