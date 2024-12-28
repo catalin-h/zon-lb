@@ -21,7 +21,7 @@ use aya_ebpf::{
 use aya_log_ebpf::{error, info, Level};
 use core::mem::{self, offset_of};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u32};
-use ipv6::{check_mtu, coarse_ktime, ipv6_lb, zlb_context, IpFragment};
+use ipv6::{check_mtu, coarse_ktime, ipv6_lb, CT6CacheKey, Icmpv6ProtoHdr};
 use network_types::{
     eth::EthHdr,
     icmp::IcmpHdr,
@@ -31,9 +31,9 @@ use network_types::{
 };
 use zon_lb_common::{
     runvars, stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, GroupInfo, Ipv4FragId,
-    Ipv4FragInfo, NAT4Key, NAT4Value, NAT6Key, NAT6Value, BE, EP4, FIB_ENTRY_EXPIRY_INTERVAL,
-    MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_FRAG4_ENTRIES, MAX_GROUPS,
-    NEIGH_ENTRY_EXPIRY_INTERVAL,
+    Ipv4FragInfo, Ipv6FragId, Ipv6FragInfo, NAT4Key, NAT4Value, NAT6Key, NAT6Value, BE, EP4, EP6,
+    FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_BACKENDS, MAX_CONNTRACKS, MAX_FRAG4_ENTRIES,
+    MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
 const ETH_ALEN: usize = 6;
@@ -114,6 +114,56 @@ type FRAG4LHM = LruHashMap<Ipv4FragId, Ipv4FragInfo>;
 static mut ZLB_FRAG4: FRAG4LHM = FRAG4LHM::pinned(MAX_FRAG4_ENTRIES, 0);
 
 // TODO: collect errors and put them into an lru error queue or map
+
+// In order to avoid exhausting the 512B ebpf program stack by allocating
+// diferent large objects (especially for IPv6 path) one common workaround
+// is to use a per cpu (avoids concurrency) struct that contains all the
+// objects that can be created on any program execution path.
+#[repr(C)]
+struct Context {
+    feat: Features,
+    log: Log,
+    ct6key: CT6CacheKey,
+    ctnat: CTCache,
+    ep6key: EP6,
+    bekey: BEKey,
+    nat: NAT,
+    fiblookup: BpfFibLookUp,
+    fibentry: FibEntry,
+    frag: IpFragment,
+    ptbprotohdr: Icmpv6ProtoHdr,
+    sv: StackVars,
+}
+
+#[map]
+static mut ZLB_CONTEXT: PerCpuArray<Context> = PerCpuArray::with_max_entries(1, 0);
+
+fn zlb_context() -> Result<*mut Context, ()> {
+    unsafe { ZLB_CONTEXT.get_ptr_mut(0).ok_or(()) }
+}
+
+// Instead of saving data on stack use this heap memory for unrelated
+// variables. Add here result codes, return values saved IP addresses
+// or any computed values for current packet.
+#[repr(C)]
+struct StackVars {
+    /// Stores the last return code of the last function call
+    ret_code: i64,
+    /// Holds the current timestamp
+    now: u32,
+    /// The packet length
+    pkt_len: u32,
+    /// Backend count
+    becount: u16,
+}
+
+#[repr(C)]
+struct IpFragment {
+    v6id: Ipv6FragId,
+    v6inf: Ipv6FragInfo,
+    v4id: Ipv4FragId,
+    v4inf: Ipv4FragInfo,
+}
 
 struct Features {
     log_level: u64,

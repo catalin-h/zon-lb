@@ -1,6 +1,6 @@
 use crate::{
-    is_unicast_mac, ptr_at, redirect_txport, stats_inc, BpfFibLookUp, CTCache, Features, L2Context,
-    L4Context, Log, AF_INET6, NAT, ZLB_BACKENDS,
+    is_unicast_mac, ptr_at, redirect_txport, stats_inc, zlb_context, BpfFibLookUp, CTCache,
+    Context, Features, IpFragment, L2Context, L4Context, Log, AF_INET6, NAT, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -9,7 +9,7 @@ use aya_ebpf::{
         bpf_xdp_adjust_tail,
     },
     macros::map,
-    maps::{HashMap, LruHashMap, LruPerCpuHashMap, PerCpuArray},
+    maps::{HashMap, LruHashMap, LruPerCpuHashMap},
     programs::XdpContext,
     EbpfContext,
 };
@@ -23,9 +23,9 @@ use network_types::{
     tcp::TcpHdr,
 };
 use zon_lb_common::{
-    stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, Ipv4FragId, Ipv4FragInfo,
-    Ipv6FragId, Ipv6FragInfo, NAT6Key, NAT6Value, BE, EP6, FIB_ENTRY_EXPIRY_INTERVAL,
-    MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_FRAG6_ENTRIES, MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
+    stats, ArpEntry, BEGroup, EPFlags, FibEntry, Inet6U, Ipv6FragId, Ipv6FragInfo, NAT6Key,
+    NAT6Value, BE, EP6, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS,
+    MAX_FRAG6_ENTRIES, MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
 /// Same as ZLB_LB4 but for IPv6 packets.
@@ -669,7 +669,7 @@ impl L4Context {
 // NOTE: The flow label is not enough as the ICMPv6 protocol
 // sends the same value
 #[repr(C)]
-struct CT6CacheKey {
+pub struct CT6CacheKey {
     next_hdr: IpProto,
     flow_label: [u8; 3],
     // src:dest
@@ -765,29 +765,6 @@ fn ct6_handler(
     }
 
     return Ok(action);
-}
-
-// Instead of saving data on stack use this heap memory for unrelated
-// variables. Add here result codes, return values saved IP addresses
-// or any computed values for current packet.
-#[repr(C)]
-struct StackVars {
-    /// Stores the last return code of the last function call
-    ret_code: i64,
-    /// Holds the current timestamp
-    now: u32,
-    /// The packet length
-    pkt_len: u32,
-    /// Backend count
-    becount: u16,
-}
-
-#[repr(C)]
-pub struct IpFragment {
-    pub v6id: Ipv6FragId,
-    pub v6inf: Ipv6FragInfo,
-    pub v4id: Ipv4FragId,
-    pub v4inf: Ipv4FragInfo,
 }
 
 impl IpFragment {
@@ -933,33 +910,6 @@ impl NAT {
             }
         };
     }
-}
-
-// In order to avoid exhausting the 512B ebpf program stack by allocating
-// diferent large objects (especially for IPv6 path) one common workaround
-// is to use a per cpu (avoids concurrency) struct that contains all the
-// objects that can be created on any program execution path.
-#[repr(C)]
-pub struct Context {
-    ct6key: CT6CacheKey,
-    pub feat: Features,
-    pub log: Log,
-    pub nat: NAT,
-    ep6key: EP6,
-    bekey: BEKey,
-    pub ctnat: CTCache,
-    fiblookup: BpfFibLookUp,
-    fibentry: FibEntry,
-    pub frag: IpFragment,
-    ptbprotohdr: ProtoHdr,
-    sv: StackVars,
-}
-
-#[map]
-static mut ZLB_CONTEXT: PerCpuArray<Context> = PerCpuArray::with_max_entries(1, 0);
-
-pub fn zlb_context() -> Result<*mut Context, ()> {
-    unsafe { ZLB_CONTEXT.get_ptr_mut(0).ok_or(()) }
 }
 
 fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
@@ -1484,7 +1434,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 /// IPv6 extension headers.
 const MAX_HDR_EXT: usize = 4 * 8; // Up to 4 per-fragment headers
 const MAX_HDR_PROTO: usize = TcpHdr::LEN; // 40B
-type ProtoHdr = [u32; (MAX_HDR_EXT + MAX_HDR_PROTO) >> 2];
+pub type Icmpv6ProtoHdr = [u32; (MAX_HDR_EXT + MAX_HDR_PROTO) >> 2];
 
 /// The ICMPv6 Packet Too Big message as defined in RFC 4443:
 ///
@@ -1511,7 +1461,7 @@ struct Icmpv6Ptb {
     ipv6hdr: Ipv6Hdr,
     /// The quoted protocol header field is also required in order
     /// to find the connection session or process.
-    protohdr: ProtoHdr,
+    protohdr: Icmpv6ProtoHdr,
 }
 
 const PTB_SIZE: u32 = mem::size_of::<Icmpv6Ptb>() as u32;
@@ -1538,7 +1488,7 @@ fn send_ptb(
     // on IPv6 the minimum MTU is 1280.
 
     let ptb_offset = l2ctx.ethlen + Ipv6Hdr::LEN;
-    let phdr = ptr_at::<ProtoHdr>(&ctx, ptb_offset)?;
+    let phdr = ptr_at::<Icmpv6ProtoHdr>(&ctx, ptb_offset)?;
     array_copy(&mut ctx6.ptbprotohdr, unsafe { &*phdr });
 
     // NOTE: the new ICMPv6 header can be located at another offset than
