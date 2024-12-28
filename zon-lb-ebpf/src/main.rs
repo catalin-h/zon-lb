@@ -1550,7 +1550,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
-            if fib.mtu as u16 >= ipv4hdr.tot_len.to_be() {
+            if fib.mtu as u16 > ipv4hdr.tot_len.to_be() {
                 /* go ahead an update the packet */
             } else {
                 /* send datagram Too Big message */
