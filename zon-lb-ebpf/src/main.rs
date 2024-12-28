@@ -25,7 +25,7 @@ use ipv6::{check_mtu, coarse_ktime, ipv6_lb, CT6CacheKey, Icmpv6ProtoHdr};
 use network_types::{
     eth::EthHdr,
     icmp::IcmpHdr,
-    ip::{IpProto, Ipv4Hdr},
+    ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
@@ -140,6 +140,12 @@ static mut ZLB_CONTEXT: PerCpuArray<Context> = PerCpuArray::with_max_entries(1, 
 
 fn zlb_context() -> Result<*mut Context, ()> {
     unsafe { ZLB_CONTEXT.get_ptr_mut(0).ok_or(()) }
+}
+
+fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
+    for i in 0..N {
+        to[i] = from[i];
+    }
 }
 
 // Instead of saving data on stack use this heap memory for unrelated
@@ -1327,27 +1333,29 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL.
-        let port_combo = l4ctx.dst_port << 16 | (nat.port_lb as u32);
+        ctx4.ctnat.port_combo = l4ctx.dst_port << 16 | (nat.port_lb as u32);
+        ctx4.ctnat.src_addr[0] = nat.lb_ip;
+        ctx4.ctnat.dst_addr[0] = nat.ip_src;
+
         if !nat.flags.contains(EPFlags::DSR_L2) {
-            update_inet_csum(ctx, ipv4hdr, &l4ctx, nat.lb_ip, nat.ip_src, port_combo)?;
+            update_inet_csum(
+                ctx,
+                ipv4hdr,
+                &l4ctx,
+                ctx4.ctnat.src_addr[0],
+                ctx4.ctnat.dst_addr[0],
+                ctx4.ctnat.port_combo,
+            )?;
         }
 
-        let _ = ZLB_CT4_CACHE.insert(
-            &ctx4.nat.v4key,
-            &CTCache {
-                time: now + 30,
-                flags: nat.flags,
-                mtu: nat.mtu as u32,
-                iph: [0; IPH_SIZE],
-                src_addr: [nat.lb_ip, 0, 0, 0],
-                dst_addr: [nat.ip_src, 0, 0, 0],
-                port_combo,
-                ifindex: nat.ifindex,
-                macs: nat.mac_addresses,
-                vlan_hdr: nat.vlan_hdr,
-            },
-            /* update or insert */ 0,
-        );
+        ctx4.ctnat.time = now + 30;
+        ctx4.ctnat.flags = nat.flags;
+        ctx4.ctnat.mtu = nat.mtu as u32;
+        ctx4.ctnat.ifindex = nat.ifindex;
+        ctx4.ctnat.vlan_hdr = nat.vlan_hdr;
+        array_copy(&mut ctx4.ctnat.macs, &nat.mac_addresses);
+
+        let _ = ZLB_CT4_CACHE.insert(&ctx4.nat.v4key, &ctx4.ctnat, /* update or insert */ 0);
 
         let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
             // TODO: Try use:
@@ -1520,7 +1528,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    ctx4.ctnat.src_addr[0] = if be.flags.contains(EPFlags::XDP_REDIRECT) && be.src_ip[0] != 0 {
+    ctx4.ctnat.src_addr[0] = if be.src_ip[0] != 0 {
         // TODO: check the arp table and update or insert
         // smac/dmac and derived ip src and redirect ifindex
         be.src_ip[0]
@@ -1528,6 +1536,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         dst_addr
     };
     ctx4.ctnat.flags = be.flags;
+    ctx4.ctnat.time = now + 30;
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     let (fib, fib_rc) = fetch_fib4(
@@ -1537,6 +1546,9 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx4.ctnat.dst_addr[0],
         now,
     )?;
+
+    ctx4.ctnat.init_from_fib(fib);
+
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
             if fib.mtu as u16 >= ipv4hdr.tot_len.to_be() {
@@ -1612,22 +1624,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // mac address.
     // NOTE: Since the cache is a per CPU map the insert with flags=0
     // will update only the value for the current CPU.
-    let _ = ZLB_CT4_CACHE.insert(
-        &ctx4.nat.v4key,
-        &CTCache {
-            time: now + 30,
-            flags: be.flags,
-            mtu: fib.mtu,
-            iph: [0; IPH_SIZE],
-            src_addr: ctx4.ctnat.src_addr,
-            dst_addr: ctx4.ctnat.dst_addr,
-            port_combo: ctx4.ctnat.port_combo,
-            ifindex: fib.ifindex,
-            macs: fib.macs,
-            vlan_hdr: 0,
-        },
-        /* update or insert */ 0,
-    );
+    let _ = ZLB_CT4_CACHE.insert(&ctx4.nat.v4key, &ctx4.ctnat, /* update or insert */ 0);
 
     // TBD: Don't insert entry if no connection tracking is enabled for this backend.
     // For e.g. if the backend can reply directly to the source endpoint.
@@ -1666,6 +1663,21 @@ fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_actio
             }
             rda
         }
+    }
+}
+
+impl CTCache {
+    fn init_from_fib(&mut self, fib: &FibEntry) {
+        if self.flags.contains(EPFlags::DSR_L3) {
+            // Since we use ip6tnl must substract the IPv6 header size
+            self.mtu = fib.mtu - Ipv6Hdr::LEN as u32;
+        } else {
+            self.mtu = fib.mtu;
+        }
+
+        self.ifindex = fib.ifindex;
+        array_copy(&mut self.macs, &fib.macs);
+        self.vlan_hdr = 0;
     }
 }
 

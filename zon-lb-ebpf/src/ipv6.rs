@@ -1,6 +1,6 @@
 use crate::{
-    is_unicast_mac, ptr_at, redirect_txport, stats_inc, zlb_context, BpfFibLookUp, CTCache,
-    Context, Features, IpFragment, L2Context, L4Context, Log, AF_INET6, NAT, ZLB_BACKENDS,
+    array_copy, is_unicast_mac, ptr_at, redirect_txport, stats_inc, zlb_context, BpfFibLookUp,
+    CTCache, Context, Features, IpFragment, L2Context, L4Context, Log, AF_INET6, NAT, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -912,12 +912,6 @@ impl NAT {
     }
 }
 
-fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
-    for i in 0..N {
-        to[i] = from[i];
-    }
-}
-
 // NOTE: IPv6 header isn't fixed and the L4 header offset can
 // be computed iterating over the extension headers until we
 // reach a non-extension next_hdr value. For now we assume
@@ -1706,18 +1700,6 @@ impl CTCache {
 
         // Set flags before setting the MTU
         self.flags = be.flags;
-    }
-
-    fn init_from_fib(&mut self, fib: &FibEntry) {
-        if self.flags.contains(EPFlags::DSR_L3) {
-            self.mtu = fib.mtu - Ipv6Hdr::LEN as u32;
-        } else {
-            self.mtu = fib.mtu;
-        }
-
-        self.ifindex = fib.ifindex;
-        array_copy(&mut self.macs, &fib.macs);
-        self.vlan_hdr = 0;
     }
 }
 
