@@ -1296,11 +1296,10 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     ctx4.nat.init_v4key(ipv4hdr, &l4ctx);
-
-    let now = coarse_ktime();
+    ctx4.sv.now = coarse_ktime();
 
     if let Some(ctnat) = unsafe { ZLB_CT4_CACHE.get(&ctx4.nat.v4key) } {
-        if ctnat.time > now {
+        if ctnat.time > ctx4.sv.now {
             return ct4_handler(ctx, &l2ctx, &l4ctx, ipv4hdr, ctnat, &feat);
         }
     }
@@ -1348,7 +1347,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             )?;
         }
 
-        ctx4.ctnat.time = now + 30;
+        ctx4.ctnat.time = ctx4.sv.now + 30;
         ctx4.ctnat.flags = nat.flags;
         ctx4.ctnat.mtu = nat.mtu as u32;
         ctx4.ctnat.ifindex = nat.ifindex;
@@ -1536,7 +1535,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         dst_addr
     };
     ctx4.ctnat.flags = be.flags;
-    ctx4.ctnat.time = now + 30;
+    ctx4.ctnat.time = ctx4.sv.now + 30;
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     let (fib, fib_rc) = fetch_fib4(
@@ -1544,7 +1543,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ipv4hdr,
         ctx4.ctnat.src_addr[0],
         ctx4.ctnat.dst_addr[0],
-        now,
+        ctx4.sv.now,
     )?;
 
     ctx4.ctnat.init_from_fib(fib);
