@@ -1321,6 +1321,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     ctx4.nat.init_v4key(ipv4hdr, &l4ctx);
     ctx4.sv.now = coarse_ktime();
+    ctx4.sv.pkt_len = (ctx.data_end() - ctx.data() - l2ctx.ethlen) as u32;
 
     if let Some(ctnat) = unsafe { ZLB_CT4_CACHE.get(&ctx4.nat.v4key) } {
         if ctnat.time > ctx4.sv.now {
@@ -1344,7 +1345,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             );
         }
 
-        if ipv4hdr.tot_len.to_be() > nat.mtu {
+        if ctx4.sv.pkt_len > nat.mtu as u32 {
             return send_dtb(ctx, ipv4hdr, &l4ctx, nat.mtu);
         }
 
@@ -1574,9 +1575,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     match fib_rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
-            if fib.mtu as u16 > ipv4hdr.tot_len.to_be() {
-                /* go ahead an update the packet */
-            } else {
+            if ctx4.sv.pkt_len > ctx4.ctnat.mtu {
                 /* send datagram Too Big message */
                 return send_dtb(ctx, ipv4hdr, &l4ctx, fib.mtu as u16);
             }
