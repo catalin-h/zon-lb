@@ -24,7 +24,7 @@ use network_types::{
     tcp::TcpHdr,
 };
 use zon_lb_common::{
-    stats, ArpEntry, BEGroup, EPFlags, FibEntry, Inet6U, Ipv6FragId, Ipv6FragInfo, NAT6Key,
+    stats, ArpEntry, BEGroup, BEKey, EPFlags, FibEntry, Inet6U, Ipv6FragId, Ipv6FragInfo, NAT6Key,
     NAT6Value, BE, EP6, MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_FRAG6_ENTRIES, MAX_GROUPS,
     NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
@@ -320,6 +320,19 @@ impl Log {
             fib.param.dest_mac(),
             fib.param.src_mac(),
             fib.param.tot_len
+        );
+    }
+
+    #[inline(never)]
+    fn show_backend6(&self, ctx: &XdpContext, be: &BE, bekey: &BEKey) {
+        info!(
+            ctx,
+            "[{:x}] [bknd] [{}:{}] [{:i}]:{}",
+            self.hash,
+            bekey.gid,
+            bekey.index,
+            unsafe { Inet6U::from(&be.address).addr8 },
+            be.port.to_be()
         );
     }
 }
@@ -1239,6 +1252,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             Some(group) => {
                 ctx6.sv.becount = group.becount;
                 ctx6.bekey.gid = group.gid;
+
+                if ctx6.feat.log_enabled(Level::Info) {
+                    ctx6.log.show_begroup(ctx, group)
+                }
             }
             None => {
                 if ctx6.feat.log_enabled(Level::Info) {
@@ -1253,37 +1270,24 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             }
         };
 
-        if ctx6.feat.log_enabled(Level::Info) {
-            info!(ctx, "[in] gid: {} match", ctx6.bekey.gid);
-        }
-
         if ctx6.sv.becount == 0 {
-            if ctx6.feat.log_enabled(Level::Info) {
-                info!(ctx, "[in] gid: {}, no backends", ctx6.bekey.gid);
-            }
-
             stats_inc(stats::XDP_PASS);
             stats_inc(stats::LB_ERROR_NO_BE);
-
             return Ok(xdp_action::XDP_PASS);
         }
 
         ctx6.bekey.index = (inet6_hash16(unsafe { &ipv6hdr.src_addr.in6_u.u6_addr32 })
             ^ l4ctx.src_port as u16)
             % ctx6.sv.becount;
+
         match unsafe { ZLB_BACKENDS.get(&ctx6.bekey) } {
             Some(be) => be,
             None => {
                 if ctx6.feat.log_enabled(Level::Error) {
-                    error!(
-                        ctx,
-                        "[in] gid: {}, no BE at: {}", ctx6.bekey.gid, ctx6.bekey.index
-                    );
+                    ctx6.log.no_backend_error(ctx, &ctx6.bekey);
                 }
-
                 stats_inc(stats::XDP_PASS);
                 stats_inc(stats::LB_ERROR_BAD_BE);
-
                 return Ok(xdp_action::XDP_PASS);
             }
         }
@@ -1294,12 +1298,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     stats_inc(stats::PACKETS);
 
     if ctx6.feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "[fwd-bknd] [{:i}]:{}",
-            unsafe { Inet6U::from(&be.address).addr8 },
-            be.port.to_be()
-        );
+        ctx6.log.show_backend6(ctx, &be, &ctx6.bekey);
     }
 
     ctx6.frag.cache6(&l4ctx);

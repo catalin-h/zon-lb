@@ -125,6 +125,7 @@ struct Context {
     ct6key: CT6CacheKey,
     ctnat: CTCache,
     ep6key: EP6,
+    ep4key: EP4,
     bekey: BEKey,
     nat: NAT,
     fib: FIBLookUp,
@@ -910,6 +911,35 @@ impl Log {
             fib.param.tot_len
         );
     }
+
+    #[inline(never)]
+    fn show_backend(&self, ctx: &XdpContext, be: &BE, bekey: &BEKey) {
+        info!(
+            ctx,
+            "[{:x}] [bknd] [{}:{}] {:i}:{}",
+            self.hash,
+            bekey.gid,
+            bekey.index,
+            be.address[0].to_be(),
+            be.port.to_be()
+        );
+    }
+
+    #[inline(never)]
+    fn show_begroup(&self, ctx: &XdpContext, beg: &BEGroup) {
+        info!(
+            ctx,
+            "[{:x}] [group] [{}] count={}", self.hash, beg.gid, beg.becount
+        );
+    }
+
+    #[inline(never)]
+    fn no_backend_error(&self, ctx: &XdpContext, bekey: &BEKey) {
+        error!(
+            ctx,
+            "[{:x}] [bknd] [{}:{}] not found", self.hash, bekey.gid, bekey.index
+        );
+    }
 }
 
 impl IpFragment {
@@ -1438,47 +1468,37 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    let be = match unsafe {
-        let port = if l4ctx.next_hdr == IpProto::Icmp {
-            0
-        } else {
-            l4ctx.dst_port as u16
-        };
-        ZLB_LB4.get(&EP4 {
-            address: dst_addr,
-            port,
-            proto: ipv4hdr.proto as u16,
-        })
-    } {
+    if l4ctx.next_hdr == IpProto::Icmp {
+        // For ICMP there is no fixed L4 port or id
+        ctx4.ep4key.port = 0;
+    } else {
+        ctx4.ep4key.port = l4ctx.dst_port as u16;
+    }
+    ctx4.ep4key.address = ipv4hdr.dst_addr;
+    ctx4.ep4key.proto = ipv4hdr.proto as u16;
+
+    let be = match unsafe { ZLB_LB4.get(&ctx4.ep4key) } {
         Some(group) => {
-            // TODO: add logging prints for group match
             if feat.log_enabled(Level::Info) {
-                info!(ctx, "[in] gid: {} match", group.gid);
+                ctx4.log.show_begroup(ctx, &group);
             }
 
             if group.becount == 0 {
-                if feat.log_enabled(Level::Info) {
-                    info!(ctx, "[in] gid: {}, no backends", group.gid);
-                }
-
                 stats_inc(stats::XDP_PASS);
                 stats_inc(stats::LB_ERROR_NO_BE);
                 return Ok(xdp_action::XDP_PASS);
             }
 
-            let index = (((src_addr >> 16) ^ src_addr) ^ l4ctx.src_port) as u16 % group.becount;
-            match unsafe {
-                ZLB_BACKENDS.get(&BEKey {
-                    gid: group.gid,
-                    index,
-                })
-            } {
+            ctx4.bekey.gid = group.gid;
+            ctx4.bekey.index =
+                (((src_addr >> 16) ^ src_addr) ^ l4ctx.src_port) as u16 % group.becount;
+
+            match unsafe { ZLB_BACKENDS.get(&ctx4.bekey) } {
                 Some(be) => be,
                 None => {
-                    if feat.log_enabled(Level::Info) {
-                        info!(ctx, "[in] gid: {}, no BE at: {}", group.gid, index);
+                    if ctx4.feat.log_enabled(Level::Error) {
+                        ctx4.log.no_backend_error(ctx, &ctx4.bekey);
                     }
-
                     stats_inc(stats::XDP_PASS);
                     stats_inc(stats::LB_ERROR_BAD_BE);
                     return Ok(xdp_action::XDP_PASS);
@@ -1501,14 +1521,8 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // Update the total processed packets when they are destined to a known backend group
     stats_inc(stats::PACKETS);
 
-    // TODO: move to log object
     if feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "[ctrk] fw be: {:i}:{}",
-            be.address[0].to_be(),
-            be.port.to_be()
-        );
+        ctx4.log.show_backend(ctx, &be, &ctx4.bekey);
     }
 
     ctx4.ctnat.dst_addr[0] = be.address[0];
