@@ -5,9 +5,8 @@ mod ipv6;
 
 use aya_ebpf::{
     bindings::{
-        self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_FIB_LKUP_RET_BLACKHOLE,
-        BPF_FIB_LKUP_RET_PROHIBIT, BPF_FIB_LKUP_RET_SUCCESS, BPF_FIB_LKUP_RET_UNREACHABLE,
-        BPF_F_MMAPABLE, BPF_F_NO_COMMON_LRU,
+        self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_MMAPABLE,
+        BPF_F_NO_COMMON_LRU,
     },
     helpers::{
         bpf_fib_lookup, bpf_get_smp_processor_id, bpf_ktime_get_ns, bpf_redirect,
@@ -128,8 +127,7 @@ struct Context {
     ep6key: EP6,
     bekey: BEKey,
     nat: NAT,
-    fiblookup: BpfFibLookUp,
-    fibentry: FibEntry,
+    fib: FIBLookUp,
     frag: IpFragment,
     ptbprotohdr: Icmpv6ProtoHdr,
     sv: StackVars,
@@ -152,7 +150,7 @@ fn array_copy<T: Clone + Copy, const N: usize>(to: &mut [T; N], from: &[T; N]) {
 struct FIBLookUp {
     param: BpfFibLookUp,
     entry: FibEntry,
-    rc: i64,
+    rc: u32,
 }
 
 // Instead of saving data on stack use this heap memory for unrelated
@@ -1453,6 +1451,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         })
     } {
         Some(group) => {
+            // TODO: add logging prints for group match
             if feat.log_enabled(Level::Info) {
                 info!(ctx, "[in] gid: {} match", group.gid);
             }
@@ -1502,6 +1501,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // Update the total processed packets when they are destined to a known backend group
     stats_inc(stats::PACKETS);
 
+    // TODO: move to log object
     if feat.log_enabled(Level::Info) {
         info!(
             ctx,
@@ -1519,13 +1519,14 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
+        ctx4.ctnat.src_addr[0] = dst_addr;
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
         update_inet_csum(
             ctx,
             ipv4hdr,
             &l4ctx,
-            dst_addr,
+            ctx4.ctnat.src_addr[0],
             ctx4.ctnat.dst_addr[0],
             ctx4.ctnat.port_combo,
         )?;
@@ -1552,28 +1553,27 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    ctx4.ctnat.src_addr[0] = if be.src_ip[0] != 0 {
-        // TODO: check the arp table and update or insert
-        // smac/dmac and derived ip src and redirect ifindex
-        be.src_ip[0]
+    // NOTE: can't use the custom source IP for non-conntracked connections
+    // because the backend will reply to this custom source IP instead of
+    // the actual source IP.
+    if be.src_ip[0] != 0 {
+        ctx4.ctnat.src_addr[0] = be.src_ip[0];
     } else {
-        dst_addr
-    };
+        ctx4.ctnat.src_addr[0] = dst_addr;
+    }
     ctx4.ctnat.flags = be.flags;
     ctx4.ctnat.time = ctx4.sv.now + 30;
 
+    let fib = ctx4.fetch_fib4(ctx, ipv4hdr)?;
+
+    // TODO: check the arp table and update or insert smac/dmac and derived ip src
+    // and redirect ifindex
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
-    let (fib, fib_rc) = fetch_fib4(
-        ctx,
-        ipv4hdr,
-        ctx4.ctnat.src_addr[0],
-        ctx4.ctnat.dst_addr[0],
-        ctx4.sv.now,
-    )?;
+    // or the tunnel MTU. The tunnel MTU is set in init_from_fib() for now.
 
     ctx4.ctnat.init_from_fib(fib);
 
-    match fib_rc {
+    match ctx4.fib.rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
             if ctx4.sv.pkt_len > ctx4.ctnat.mtu {
                 /* send datagram Too Big message */
@@ -1625,6 +1625,8 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     macs[2] = fib.macs[2];
     macs[1] = fib.macs[1];
     macs[0] = fib.macs[0];
+
+    let feat = &ctx4.feat;
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
     // Till then assume we redirect to backends outside of any VLAN.
@@ -1703,285 +1705,89 @@ impl CTCache {
     }
 }
 
-// NOTE: the next function uses
-// long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
-// in order to compute the source/dest mac + vlan info from IP source,destination
-// before redirecting a packet to the backend. This feature is different from
-// XDP_REDIRECT as it is used to redirect the source packet to an backend
-// via configured interface on the ingress flow. In the egress flow we already have
-// the ifindex and the mac addresses info, which are saved in the conntrack map
-// on the ingress flow.
-// NOTE: sometimes the network stack to which the packet is redirected doesn't
-// know how to forward the packet back to the LB. In this case we must do a full
-// NAT for both L2/L3 src and dst addresses.
-// NOTE: using BPF_FIB_LOOKUP_OUTPUT doesn't work when reversing src and destination.
-// NOTE: in order to obtain the _right_ source IP for the network on which the packet
-// is redirected must use a newer kernel (>=6.7) that implements 'source IP addr
-// derivation via bpf_*_fib_lookup()' by passing flag BPF_FIB_LOOKUP_SRC:
-// See:
-// Extend the bpf_fib_lookup() helper by making it to return the source
-// IPv4/IPv6 address if the BPF_FIB_LOOKUP_SRC flag is set.
-// https://github.com/torvalds/linux/commit/dab4e1f06cabb6834de14264394ccab197007302
-// NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
-// ifindex used to redirect the packet.
-fn fetch_fib4(
-    ctx: &XdpContext,
-    ipv4hdr: &Ipv4Hdr,
-    src: u32,
-    dst: u32,
-    now: u32,
-) -> Result<(&'static FibEntry, u32), ()> {
-    match unsafe { ZLB_FIB4.get(&dst) } {
-        Some(entry) => {
-            if now <= (*entry).expiry {
-                return Ok((entry, bindings::BPF_FIB_LKUP_RET_SUCCESS as u32));
-            }
-        }
-        None => {}
-    }
+impl FIBLookUp {
+    fn init_entry(&mut self, now: u32) {
+        self.entry.ifindex = self.param.ifindex;
+        self.param.copy_swapped_macs(&mut self.entry.macs);
+        array_copy(&mut self.entry.ip_src, &mut self.param.src); // not used for now
+        self.entry.mtu = self.param.tot_len as u32;
 
-    let fib_param = BpfFibLookUp::new_inet(
-        ipv4hdr.tot_len.to_be(),
-        unsafe { (*ctx.ctx).ingress_ifindex },
-        ipv4hdr.tos as u32,
-        src,
-        dst,
-    );
-    let p_fib_param = &fib_param as *const BpfFibLookUp;
-    let rc = unsafe {
-        bpf_fib_lookup(
-            ctx.as_ptr(),
-            p_fib_param as *mut bpf_fib_lookup_param_t,
-            mem::size_of::<BpfFibLookUp>() as i32,
-            0,
-        )
-    };
-
-    stats_inc(stats::FIB_LOOKUPS);
-    let expiry = if rc != bindings::BPF_FIB_LKUP_RET_SUCCESS as i64 {
-        stats_inc(stats::FIB_LOOKUP_FAILS);
-        // Retry on next try but create the entry
-        now - 1
-    } else {
-        // TODO: make the expiry time a runvar
-        now + FIB_ENTRY_EXPIRY_INTERVAL
-    };
-
-    let feat = Features::new();
-
-    if feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "[fib] lkp_ret: {}, fw if: {}, src: {:i}, \
-            gw: {:i}, dmac: {:mac}, smac: {:mac}, mtu: {}",
-            rc,
-            fib_param.ifindex,
-            fib_param.src[0].to_be(),
-            fib_param.dst[0].to_be(),
-            fib_param.dest_mac(),
-            fib_param.src_mac(),
-            fib_param.tot_len
-        );
-    }
-
-    let entry = FibEntry {
-        ifindex: fib_param.ifindex,
-        macs: fib_param.ethdr_macs(),
-        ip_src: fib_param.src, // not used for now
-        expiry,
-        mtu: fib_param.tot_len as u32,
-    };
-
-    // NOTE: after updating the value or key struct size must remove the pinned map
-    // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
-    match unsafe { ZLB_FIB4.insert(&dst, &entry, 0) } {
-        Ok(()) => {}
-        Err(_) => {
-            stats_inc(stats::FIB_ERROR_UPDATE);
-            return Err(());
-        }
-    }
-
-    match unsafe { ZLB_FIB4.get(&dst) } {
-        Some(entry) => Ok((entry, rc as u32)),
-        None => Err(()),
+        if self.rc != bindings::BPF_FIB_LKUP_RET_SUCCESS {
+            stats_inc(stats::FIB_LOOKUP_FAILS);
+            // Retry on next try but create the entry
+            self.entry.expiry = now - 1;
+        } else {
+            // TODO: make the expiry time a runvar
+            self.entry.expiry = now + FIB_ENTRY_EXPIRY_INTERVAL;
+        };
     }
 }
 
-fn _redirect_ipv4(
-    ctx: &XdpContext,
-    feat: Features,
-    ipv4hdr: &Ipv4Hdr,
-    l2ctx: &L2Context,
-) -> Result<u32, ()> {
-    if let Some(&entry) = unsafe { ZLB_FIB4.get(&ipv4hdr.dst_addr) } {
-        // NOTE: check expiry before using this entry
-        // TODO: check performance
-        let now = unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32;
-
-        if now <= entry.expiry {
-            let eth = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
-
-            // NOTE: look like aya can't convert the '*eth = entry.macs' into
-            // a 3 load instructions block that doesn't panic the bpf verifier
-            // with 'invalid access to packet'. The same statement when modifying
-            // stack data passes the verifier check.
-            unsafe {
-                (*eth)[0] = entry.macs[0];
-                (*eth)[1] = entry.macs[1];
-                (*eth)[2] = entry.macs[2];
-            };
-
-            // TODO: use the vlan info from fib lookup to update the frame vlan.
-            // Till then assume we redirect to backends outside of any VLAN.
-            l2ctx.vlan_update(ctx, 0, &feat)?;
-
-            // In case of redirect failure just try to query the FIB again
-            if xdp_action::XDP_REDIRECT == redirect_txport(ctx, &feat, entry.ifindex) {
-                if feat.log_enabled(Level::Info) {
-                    info!(ctx, "[redirect] [fib-cache] oif: {}", entry.ifindex);
-                }
-                return Ok(xdp_action::XDP_REDIRECT);
+impl Context {
+    // NOTE: the next function uses
+    // long bpf_fib_lookup(void *ctx, struct bpf_fib_lookup *params, int plen, u32 flags);
+    // in order to compute the source/dest mac + vlan info from IP source,destination
+    // before redirecting a packet to the backend. This feature is different from
+    // XDP_REDIRECT as it is used to redirect the source packet to an backend
+    // via configured interface on the ingress flow. In the egress flow we already have
+    // the ifindex and the mac addresses info, which are saved in the conntrack map
+    // on the ingress flow.
+    // NOTE: sometimes the network stack to which the packet is redirected doesn't
+    // know how to forward the packet back to the LB. In this case we must do a full
+    // NAT for both L2/L3 src and dst addresses.
+    // NOTE: using BPF_FIB_LOOKUP_OUTPUT doesn't work when reversing src and destination.
+    // NOTE: in order to obtain the _right_ source IP for the network on which the packet
+    // is redirected must use a newer kernel (>=6.7) that implements 'source IP addr
+    // derivation via bpf_*_fib_lookup()' by passing flag BPF_FIB_LOOKUP_SRC:
+    // See:
+    // Extend the bpf_fib_lookup() helper by making it to return the source
+    // IPv4/IPv6 address if the BPF_FIB_LOOKUP_SRC flag is set.
+    // https://github.com/torvalds/linux/commit/dab4e1f06cabb6834de14264394ccab197007302
+    // NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
+    // ifindex used to redirect the packet.
+    fn fetch_fib4(&mut self, ctx: &XdpContext, ipv4hdr: &Ipv4Hdr) -> Result<&'static FibEntry, ()> {
+        if let Some(entry) = unsafe { ZLB_FIB4.get(&self.ctnat.dst_addr[0]) } {
+            if self.sv.now <= entry.expiry {
+                self.fib.rc = bindings::BPF_FIB_LKUP_RET_SUCCESS;
+                return Ok(entry);
             }
         }
-    }
 
-    // If the packet was already adjusted after the vlan header was stripped
-    // on first attempt to redirect the packet with cached fib data must
-    // recompute the ip header ref before accessing it again.
-    let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
-    let ipv4hdr = unsafe { &*ipv4hdr };
+        self.fib.param.init_inet(ctx, ipv4hdr, &self.ctnat);
 
-    let fib_param = unsafe {
-        BpfFibLookUp::new_inet(
-            ipv4hdr.tot_len.to_be(),
-            (*ctx.ctx).ingress_ifindex,
-            ipv4hdr.tos as u32,
-            ipv4hdr.src_addr,
-            ipv4hdr.dst_addr,
-        )
-    };
-
-    // NOTE: with veth first ping returns no macs because the FIB is not initialized
-    // redirect] output, lkp_ret: 7, fw if: 54, src: 10.2.0.1, gw: 10.2.0.2,
-    // dmac: 00:00:00:00:00:00, smac: 00:00:00:00:00:00
-    // This happens because ARP failed.
-    // To debug run `ip netns exec $NS ip neigh show`
-    // Also make sure that `forwarding` for the expected redirect interface is on.
-    // If not set it with sysctl -w net.ipv4.conf.$IF0.forwarding=1
-    let p_fib_param = &fib_param as *const BpfFibLookUp as *mut bpf_fib_lookup_param_t;
-    let rc = unsafe {
-        bpf_fib_lookup(
-            ctx.as_ptr(),
-            p_fib_param,
-            mem::size_of::<BpfFibLookUp>() as i32,
-            0,
-        )
-    };
-    stats_inc(stats::FIB_LOOKUPS);
-
-    if feat.log_enabled(Level::Info) {
-        info!(
-        ctx,
-        "[redirect] output, lkp_ret: {}, fw if: {}, tot_len: {}, tos: {}, src: {:i}, gw: {:i}, dmac: {:mac}, smac: {:mac}",
-        rc,
-        fib_param.ifindex,
-        fib_param.tot_len,
-        fib_param.tos,
-        fib_param.src[0].to_be(),
-        fib_param.dst[0].to_be(),
-        fib_param.dest_mac(),
-        fib_param.src_mac(),
-    );
-    }
-
-    if rc == BPF_FIB_LKUP_RET_SUCCESS as i64 {
-        // TODO: decrease the ipv4 ttl or ipv6 hop limit + ip hdr csum
-
-        let action = unsafe {
-            let eth = ptr_at::<EthHdr>(&ctx, 0)?;
-            fib_param._fill_ethdr_macs(eth.cast_mut());
-
-            // TODO: use the vlan info from fib lookup to update the frame vlan.
-            // Till then assume we redirect to backends outside of any VLAN.
-            l2ctx.vlan_update(ctx, 0, &feat)?;
-
-            redirect_txport(ctx, &feat, fib_param.ifindex)
+        let p_fib_param = &self.fib.param as *const BpfFibLookUp;
+        self.fib.rc = unsafe {
+            bpf_fib_lookup(
+                ctx.as_ptr(),
+                p_fib_param as *mut bpf_fib_lookup_param_t,
+                mem::size_of::<BpfFibLookUp>() as i32,
+                0,
+            ) as u32
         };
 
-        if feat.log_enabled(Level::Info) {
-            info!(ctx, "[redirect] action => {}", action);
+        stats_inc(stats::FIB_LOOKUPS);
+
+        if self.feat.log_enabled(Level::Info) {
+            self.log.fib_lkup_inet(ctx, &self.fib);
         }
 
-        _update_fib(ctx, &feat, fib_param);
+        self.fib.init_entry(self.sv.now);
 
-        return Ok(action);
-    }
-
-    // All other result codes represent a fib loopup fail,
-    // even though the packet is eventually XDP_PASS-ed
-    stats_inc(stats::FIB_LOOKUP_FAILS);
-
-    if rc == BPF_FIB_LKUP_RET_BLACKHOLE as i64
-        || rc == BPF_FIB_LKUP_RET_UNREACHABLE as i64
-        || rc == BPF_FIB_LKUP_RET_PROHIBIT as i64
-    {
-        if feat.log_enabled(Level::Error) {
-            error!(ctx, "[redirect] can't fw, fib rc: {}", rc);
-        }
-
-        stats_inc(stats::XDP_DROP);
-        return Ok(xdp_action::XDP_DROP);
-    }
-
-    if feat.log_enabled(Level::Error) && rc < 0 {
-        error!(ctx, "[redirect] invalid arg, fib rc: {}", rc);
-    }
-    if feat.log_enabled(Level::Info) && rc >= 0 {
-        // let it pass to the stack to handle it
-        info!(ctx, "[redirect] packet not fwd, fib rc: {}", rc);
-    }
-
-    // TODO: use the vlan info from fib lookup to update the frame vlan.
-    // Till then assume we redirect to backends outside of any VLAN.
-    l2ctx.vlan_update(ctx, 0, &feat)?;
-
-    stats_inc(stats::XDP_PASS);
-    Ok(xdp_action::XDP_PASS)
-}
-
-fn _update_fib(ctx: &XdpContext, feat: &Features, fib_param: BpfFibLookUp) {
-    let arp = FibEntry {
-        ifindex: fib_param.ifindex,
-        macs: fib_param.ethdr_macs(),
-        ip_src: fib_param.src,
-        expiry: unsafe { bpf_ktime_get_ns() / 1_000_000_000 } as u32 + FIB_ENTRY_EXPIRY_INTERVAL,
-        mtu: fib_param.tot_len as u32,
-    };
-
-    // NOTE: after updating the value or key struct size must remove the pinned map
-    // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
-    match unsafe { ZLB_FIB4.insert(&fib_param.dst[0], &arp, 0) } {
-        Ok(()) => {
-            if feat.log_enabled(Level::Info) {
-                info!(
-                    ctx,
-                    "[fib] insert {:i} -> if:{}, smac: {:mac}, dmac: {:mac}, src: {:i}",
-                    fib_param.dst[0].to_be(),
-                    fib_param.ifindex,
-                    fib_param.src_mac(),
-                    fib_param.dest_mac(),
-                    fib_param.src[0].to_be(),
-                )
+        // NOTE: after updating the value or key struct size must remove the pinned map
+        // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
+        match unsafe { ZLB_FIB4.insert(&self.ctnat.dst_addr[0], &self.fib.entry, 0) } {
+            Ok(()) => {}
+            Err(_) => {
+                stats_inc(stats::FIB_ERROR_UPDATE);
+                return Err(());
             }
         }
-        Err(e) => {
-            if feat.log_enabled(Level::Error) {
-                error!(ctx, "[fib] fail to insert entry, err:{}", e)
-            }
-            stats_inc(stats::FIB_ERROR_UPDATE);
+
+        match unsafe { ZLB_FIB4.get(&self.ctnat.dst_addr[0]) } {
+            Some(entry) => Ok(entry),
+            None => Err(()),
         }
-    };
+    }
 }
 
 #[repr(C)]
@@ -2024,15 +1830,16 @@ struct BpfFibLookUp {
 }
 
 impl BpfFibLookUp {
-    fn new_inet(tot_len: u16, ifindex: u32, tos: u32, src: u32, dst: u32) -> Self {
-        let mut fib: BpfFibLookUp = unsafe { core::mem::zeroed() };
-        fib.family = AF_INET;
-        fib.tot_len = tot_len;
-        fib.ifindex = ifindex;
-        fib.tos = tos;
-        fib.src[0] = src;
-        fib.dst[0] = dst;
-        fib
+    fn init_inet(&mut self, ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, ctnat: &CTCache) {
+        self.family = AF_INET;
+        self.l4_protocol = 0;
+        self.sport = 0;
+        self.dport = 0;
+        self.tot_len = ipv4hdr.tot_len.to_be();
+        self.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+        self.tos = ipv4hdr.tos as u32;
+        self.src[0] = ctnat.src_addr[0];
+        self.dst[0] = ctnat.dst_addr[0];
     }
 
     unsafe fn _fill_ethdr_macs(&self, ethdr: *mut EthHdr) {
@@ -2042,7 +1849,7 @@ impl BpfFibLookUp {
         (*mac)[2] = self.macs[1] << 16 | self.macs[0] >> 16;
     }
 
-    fn ethdr_macs(&self) -> [u32; 3] {
+    fn _ethdr_macs(&self) -> [u32; 3] {
         [
             self.macs[2] << 16 | self.macs[1] >> 16,
             self.macs[0] << 16 | self.macs[2] >> 16,

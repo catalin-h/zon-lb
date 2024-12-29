@@ -25,8 +25,8 @@ use network_types::{
 };
 use zon_lb_common::{
     stats, ArpEntry, BEGroup, EPFlags, FibEntry, Inet6U, Ipv6FragId, Ipv6FragInfo, NAT6Key,
-    NAT6Value, BE, EP6, FIB_ENTRY_EXPIRY_INTERVAL, MAX_ARP_ENTRIES, MAX_CONNTRACKS,
-    MAX_FRAG6_ENTRIES, MAX_GROUPS, NEIGH_ENTRY_EXPIRY_INTERVAL,
+    NAT6Value, BE, EP6, MAX_ARP_ENTRIES, MAX_CONNTRACKS, MAX_FRAG6_ENTRIES, MAX_GROUPS,
+    NEIGH_ENTRY_EXPIRY_INTERVAL,
 };
 
 /// Same as ZLB_LB4 but for IPv6 packets.
@@ -1339,12 +1339,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     // TODO: make fetch_fib6() update the ctnat and return only fib_rc
-    let (fib, fib_rc) = ctx6.fetch_fib6(ctx, ipv6hdr)?;
+    let fib = ctx6.fetch_fib6(ctx, ipv6hdr)?;
     let fib = unsafe { &*fib };
 
     ctx6.ctnat.init_from_fib(fib);
 
-    match fib_rc {
+    match ctx6.fib.rc {
         bindings::BPF_FIB_LKUP_RET_SUCCESS => {
             if ctx6.sv.pkt_len > ctx6.ctnat.mtu {
                 /* send packet to big */
@@ -1597,22 +1597,11 @@ impl BpfFibLookUp {
 }
 
 impl Context {
-    fn init_fibentry(&mut self) {
-        self.fibentry.ifindex = self.fiblookup.ifindex;
-        self.fiblookup.copy_swapped_macs(&mut self.fibentry.macs);
-        array_copy(&mut self.fibentry.ip_src, &mut self.fiblookup.src); // not used for now
-        self.fibentry.mtu = self.fiblookup.tot_len as u32;
-        self.fibentry.expiry = self.sv.now;
-    }
-
-    fn fetch_fib6(
-        &mut self,
-        ctx: &XdpContext,
-        ipv6hdr: &Ipv6Hdr,
-    ) -> Result<(*const FibEntry, u32), ()> {
+    fn fetch_fib6(&mut self, ctx: &XdpContext, ipv6hdr: &Ipv6Hdr) -> Result<*const FibEntry, ()> {
         if let Some(entry) = unsafe { ZLB_FIB6.get_ptr(&self.ctnat.dst_addr) } {
             if self.sv.now <= unsafe { (*entry).expiry } {
-                return Ok((entry, bindings::BPF_FIB_LKUP_RET_SUCCESS as u32));
+                self.fib.rc = bindings::BPF_FIB_LKUP_RET_SUCCESS;
+                return Ok(entry);
             }
         }
 
@@ -1623,7 +1612,8 @@ impl Context {
         // i.e., included in the length count.
         // See: https://datatracker.ietf.org/doc/html/rfc8200#section-4.5
 
-        self.fiblookup.init_inet6(
+        // TODO: pass only the ipv6hdr
+        self.fib.param.init_inet6(
             ipv6hdr.payload_len.to_be(),
             unsafe { (*ctx.ctx).ingress_ifindex },
             ipv6hdr.priority() as u32,
@@ -1631,50 +1621,30 @@ impl Context {
             &self.ctnat.dst_addr,
         );
 
-        let p_fib_param = &self.fiblookup as *const BpfFibLookUp;
-        self.sv.ret_code = unsafe {
+        let p_fib_param = &self.fib.param as *const BpfFibLookUp;
+        self.fib.rc = unsafe {
             bpf_fib_lookup(
                 ctx.as_ptr(),
                 p_fib_param as *mut bpf_fib_lookup_param_t,
                 mem::size_of::<BpfFibLookUp>() as i32,
                 0,
-            )
+            ) as u32
         };
 
         stats_inc(stats::FIB_LOOKUPS);
 
         if self.feat.log_enabled(Level::Info) {
-            info!(
-                ctx,
-                "[fib] lkp_ret: {}, fw if: {}, src: {:i}, \
-                 gw: {:i}, dmac: {:mac}, smac: {:mac}, mtu: {}",
-                self.sv.ret_code,
-                self.fiblookup.ifindex,
-                unsafe { Inet6U::from(&self.fiblookup.src).addr8 },
-                unsafe { Inet6U::from(&self.fiblookup.dst).addr8 },
-                self.fiblookup.dest_mac(),
-                self.fiblookup.src_mac(),
-                self.fiblookup.tot_len
-            );
+            self.log.fib_lkup_inet6(ctx, &self.fib);
         }
 
-        self.init_fibentry();
-
-        if self.sv.ret_code != bindings::BPF_FIB_LKUP_RET_SUCCESS as i64 {
-            stats_inc(stats::FIB_LOOKUP_FAILS);
-            // Retry on next try but create the entry
-            self.fibentry.expiry -= 1;
-        } else {
-            // TODO: make the expiry time a runvar
-            self.fibentry.expiry += FIB_ENTRY_EXPIRY_INTERVAL;
-        };
+        self.fib.init_entry(self.sv.now);
 
         // NOTE: The result is always cached even if the lookup returned an error or
         // it couldn't obtain the MAC addresses.
 
         // NOTE: after updating the value or key struct size must remove the pinned map
         // from bpffs. Otherwise, the verifier will throw 'invalid indirect access to stack'.
-        match unsafe { ZLB_FIB6.insert(&self.ctnat.dst_addr, &self.fibentry, 0) } {
+        match unsafe { ZLB_FIB6.insert(&self.ctnat.dst_addr, &self.fib.entry, 0) } {
             Ok(()) => {}
             Err(_) => {
                 stats_inc(stats::FIB_ERROR_UPDATE);
@@ -1683,7 +1653,7 @@ impl Context {
         }
 
         match unsafe { ZLB_FIB6.get_ptr(&self.ctnat.dst_addr) } {
-            Some(entry) => Ok((entry, self.sv.ret_code as u32)),
+            Some(entry) => Ok(entry),
             None => Err(()),
         }
     }
