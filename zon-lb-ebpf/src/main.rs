@@ -1193,10 +1193,6 @@ fn ct4_handler(
     ctnat: &CTCache,
     feat: &Features,
 ) -> Result<u32, ()> {
-    if ipv4hdr.tot_len.to_be() > ctnat.mtu as u16 {
-        return send_dtb(ctx, ipv4hdr, &l4ctx, ctnat.mtu as u16);
-    }
-
     stats_inc(stats::PACKETS);
 
     // NOTE: No need to save fragment because this handler is called
@@ -1332,7 +1328,11 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     if let Some(ctnat) = unsafe { ZLB_CT4_CACHE.get(&ctx4.nat.v4key) } {
         if ctnat.time > ctx4.sv.now {
-            return ct4_handler(ctx, &l2ctx, &l4ctx, ipv4hdr, ctnat, &feat);
+            if ctx4.sv.pkt_len > ctnat.mtu {
+                return send_dtb(ctx, ipv4hdr, &l4ctx, ctnat.mtu as u16);
+            } else {
+                return ct4_handler(ctx, &l2ctx, &l4ctx, ipv4hdr, ctnat, &feat);
+            }
         }
     }
 
