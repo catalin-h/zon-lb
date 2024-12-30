@@ -1243,9 +1243,7 @@ fn ct4_handler(
 
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
     let macs = unsafe { &mut *macs };
-    macs[2] = ctnat.macs[2];
-    macs[1] = ctnat.macs[1];
-    macs[0] = ctnat.macs[0];
+    array_copy(macs, &ctnat.macs);
 
     // NOTE: This call can shrink or enlarge the packet so all pointers
     // to headers are invalidated.
@@ -1405,9 +1403,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             // during the program load.
             let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
             let macs = unsafe { &mut *macs };
-            macs[2] = nat.mac_addresses[2];
-            macs[1] = nat.mac_addresses[1];
-            macs[0] = nat.mac_addresses[0];
+            array_copy(macs, &nat.mac_addresses);
 
             // NOTE: After this call all references derived from ctx must be recreated
             // since this method can change the packet limits.
@@ -1600,10 +1596,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx4.nat.v4info.vlan_hdr = l2ctx.vlanhdr;
     }
 
-    macs[2] = fib.macs[2];
-    macs[1] = fib.macs[1];
-    macs[0] = fib.macs[0];
-
+    array_copy(macs, &fib.macs);
     let feat = &ctx4.feat;
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
