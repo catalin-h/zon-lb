@@ -1268,9 +1268,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let mut l4ctx = L4Context::new_for_ipv4(&l2ctx, ipv4hdr);
     let ctx4 = unsafe { &mut *zlb_context()? };
 
-    // TODO: move this to context getter function
     ctx4.feat.fetch();
-    let feat = &ctx4.feat;
 
     match ctx4.frag.search4(ipv4hdr, &mut l4ctx) {
         Some(found) => {
@@ -1340,7 +1338,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             if ctx4.sv.pkt_len > ctnat.mtu {
                 return send_dtb(ctx, ipv4hdr, &l4ctx, ctnat.mtu as u16);
             } else {
-                return ct4_handler(ctx, &l2ctx, &l4ctx, ipv4hdr, ctnat, &feat);
+                return ct4_handler(ctx, &l2ctx, &l4ctx, ipv4hdr, ctnat, &ctx4.feat);
             }
         }
     }
@@ -1408,9 +1406,9 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             // NOTE: After this call all references derived from ctx must be recreated
             // since this method can change the packet limits.
             // This function is a no-op if no VLAN translation is needed.
-            l2ctx.vlan_update(ctx, nat.vlan_hdr, &feat)?;
+            l2ctx.vlan_update(ctx, nat.vlan_hdr, &ctx4.feat)?;
 
-            let ret = redirect_txport(ctx, &feat, nat.ifindex);
+            let ret = redirect_txport(ctx, &ctx4.feat, nat.ifindex);
 
             if nat.flags.contains(EPFlags::XDP_TX) && ret == xdp_action::XDP_REDIRECT {
                 stats_inc(stats::XDP_REDIRECT_FULL_NAT);
@@ -1425,7 +1423,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             xdp_action::XDP_PASS
         };
 
-        if feat.log_enabled(Level::Info) {
+        if ctx4.feat.log_enabled(Level::Info) {
             info!(ctx, "[out] action: {}", action);
         }
 
@@ -1453,7 +1451,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     let be = match unsafe { ZLB_LB4.get(&ctx4.ep4key) } {
         Some(group) => {
-            if feat.log_enabled(Level::Info) {
+            if ctx4.feat.log_enabled(Level::Info) {
                 ctx4.log.show_begroup(ctx, &group);
             }
 
@@ -1480,7 +1478,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             }
         }
         None => {
-            if feat.log_enabled(Level::Info) {
+            if ctx4.feat.log_enabled(Level::Info) {
                 ctx4.log.log_info(ctx, "no LB found");
             }
             // *** This is the exit point for non-LB packets ***
@@ -1495,7 +1493,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // Update the total processed packets when they are destined to a known backend group
     stats_inc(stats::PACKETS);
 
-    if feat.log_enabled(Level::Info) {
+    if ctx4.feat.log_enabled(Level::Info) {
         ctx4.log.show_backend(ctx, &be, &ctx4.bekey);
     }
 
@@ -1514,7 +1512,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
-            if feat.log_enabled(Level::Info) {
+            if ctx4.feat.log_enabled(Level::Info) {
                 info!(ctx, "in => xdp_tx");
             }
 
@@ -1525,7 +1523,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_TX);
         }
 
-        if feat.log_enabled(Level::Info) {
+        if ctx4.feat.log_enabled(Level::Info) {
             info!(ctx, "in => xdp_pass");
         }
 
@@ -1597,18 +1595,17 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     }
 
     array_copy(macs, &fib.macs);
-    let feat = &ctx4.feat;
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
     // Till then assume we redirect to backends outside of any VLAN.
     // NOTE: This call can shrink or enlarge the packet so all pointers
     // to headers are invalidated.
-    l2ctx.vlan_update(ctx, 0, &feat)?;
+    l2ctx.vlan_update(ctx, 0, &ctx4.feat)?;
 
     // In case of redirect failure just try to query the FIB again
-    let action = redirect_txport(ctx, &feat, fib.ifindex);
+    let action = redirect_txport(ctx, &ctx4.feat, fib.ifindex);
 
-    if feat.log_enabled(Level::Info) {
+    if ctx4.feat.log_enabled(Level::Info) {
         info!(ctx, "[redirect] oif:{}, action={}", fib.ifindex, action);
     }
 
