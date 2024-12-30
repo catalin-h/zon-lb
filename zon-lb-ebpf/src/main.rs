@@ -1263,8 +1263,6 @@ fn ct4_handler(
 fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     let ipv4hdr = ptr_at::<Ipv4Hdr>(&ctx, l2ctx.ethlen)?;
     let ipv4hdr = unsafe { &mut *ipv4hdr.cast_mut() };
-    let src_addr = ipv4hdr.src_addr;
-    let dst_addr = ipv4hdr.dst_addr;
     let mut l4ctx = L4Context::new_for_ipv4(&l2ctx, ipv4hdr);
     let ctx4 = unsafe { &mut *zlb_context()? };
 
@@ -1463,7 +1461,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
             ctx4.bekey.gid = group.gid;
             ctx4.bekey.index =
-                (((src_addr >> 16) ^ src_addr) ^ l4ctx.src_port) as u16 % group.becount;
+                (csum_fold_32_to_16(ipv4hdr.src_addr) ^ l4ctx.src_port as u16) % group.becount;
 
             match unsafe { ZLB_BACKENDS.get(&ctx4.bekey) } {
                 Some(be) => be,
@@ -1505,7 +1503,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
-        ctx4.ctnat.src_addr[0] = dst_addr;
+        ctx4.ctnat.src_addr[0] = ipv4hdr.dst_addr;
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
         update_inet_csum(ctx, ipv4hdr, &l4ctx, &ctx4.ctnat)?;
@@ -1538,7 +1536,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     if be.src_ip[0] != 0 {
         ctx4.ctnat.src_addr[0] = be.src_ip[0];
     } else {
-        ctx4.ctnat.src_addr[0] = dst_addr;
+        ctx4.ctnat.src_addr[0] = ipv4hdr.dst_addr;
     }
     ctx4.ctnat.flags = be.flags;
     ctx4.ctnat.time = ctx4.sv.now + 30;
