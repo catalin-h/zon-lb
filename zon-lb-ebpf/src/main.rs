@@ -585,17 +585,12 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
-/// Compute delta checksum after switching header addresses,
-/// updates ipv4 checksum, source and destination addresses.
-/// It returns the delta checksum to be used to update the
-/// the transport header.
-///
-/// BUG: the bpf_linker throws the following error if this
-/// function attribute is `inline(always)` or no attribute:
-/// error: LLVM issued diagnostic with error severity
-// Found that only inline(always) works here.
-#[inline(never)]
-fn update_ipv4hdr(ipv4hdr: &mut Ipv4Hdr, src: u32, dst: u32) -> u32 {
+fn update_inet_csum(
+    ctx: &XdpContext,
+    ipv4hdr: &mut Ipv4Hdr,
+    l4ctx: &L4Context,
+    ctnat: &CTCache,
+) -> Result<(), ()> {
     // NOTE: since the destination IP (LB) 'remains' in the csum
     // we can recompute it as if only the source IP changes.
     // However, this optimization requires two checks that doesn't seem
@@ -608,52 +603,43 @@ fn update_ipv4hdr(ipv4hdr: &mut Ipv4Hdr, src: u32, dst: u32) -> u32 {
     // WARNING: This checksum seems to work for iperf but if there is
     // a case when it doesn't just use the bpftrace to investigate it.
     // See the scripts folder for bpftrace scripts.
-    let cso = csum_update_u32(ipv4hdr.src_addr, src, 0);
-    let cso = csum_update_u32(ipv4hdr.dst_addr, dst, cso);
-    let csum = csum_update_u32(0, cso, !ipv4hdr.check as u32);
+    let mut cso = csum_update_u32(ipv4hdr.src_addr, ctnat.src_addr[0], 0);
+    cso = csum_update_u32(ipv4hdr.dst_addr, ctnat.dst_addr[0], cso);
 
-    ipv4hdr.src_addr = src;
-    ipv4hdr.dst_addr = dst;
+    ipv4hdr.src_addr = ctnat.src_addr[0];
+    ipv4hdr.dst_addr = ctnat.dst_addr[0];
+
+    let csum = csum_update_u32(0, cso, !ipv4hdr.check as u32);
     ipv4hdr.check = !csum_fold_32_to_16(csum);
 
-    cso
-}
-
-/// BUG: bpf_linker requires inline(always) or no attribute because
-/// with inline(never) it throws LLVM diagnostigs error.
-/// NOTE: without any attribute the linker optimizes the code better
-/// as the iperf throughput is slightly higher (~0.03Gbits/sec).
-fn update_inet_csum(
-    ctx: &XdpContext,
-    ipv4hdr: &mut Ipv4Hdr,
-    l4ctx: &L4Context,
-    src: u32,
-    dst: u32,
-    port_combo: u32,
-) -> Result<(), ()> {
-    // TODO: just set the addresses if l4ctx.check_off == 0
-    let cso = update_ipv4hdr(ipv4hdr, src, dst);
-
-    if l4ctx.check_off != 0 {
-        // NOTE: Update the csum from TCP/UDP header. This csum
-        // is computed from the pseudo header (e.g. addresses
-        // from IP header) + header (checksum is 0) + the
-        // text (payload data).
-        // NOTE: in order to compute the L4 csum must use bpf_loop
-        // as the verifier doesn't allow loops. Without loop support
-        // can't iterate over the entire packet as the number of iterations
-        // are limited; e.g. for _ 0..100 {..}
-        // Recomputing the L4 csum seems to be necessary only if the packet
-        // is forwarded between local interfaces.
-        let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
-        let csum = unsafe { !(*check) } as u32;
-        let csum = csum_update_u32(0, cso, csum);
-        let csum = csum_update_u32(l4ctx.dst_port << 16 | l4ctx.src_port, port_combo, csum);
-        unsafe { *check = !csum_fold_32_to_16(csum) };
-
-        let ports = ptr_at::<u32>(ctx, l4ctx.offset)?.cast_mut();
-        unsafe { *ports = port_combo };
+    // For some protocols like ICMP the inet csum is computed only on the
+    // L4 header and data without the IP pseudo header.
+    if l4ctx.check_off == 0 {
+        return Ok(());
     }
+
+    // NOTE: Update the csum from TCP/UDP header. This csum
+    // is computed from the pseudo header (e.g. addresses
+    // from IP header) + header (checksum is 0) + the
+    // text (payload data).
+    // NOTE: in order to compute the L4 csum must use bpf_loop
+    // as the verifier doesn't allow loops. Without loop support
+    // can't iterate over the entire packet as the number of iterations
+    // are limited; e.g. for _ 0..100 {..}
+    // Recomputing the L4 csum seems to be necessary only if the packet
+    // is forwarded between local interfaces.
+    let check = ptr_at::<u16>(ctx, l4ctx.check_pkt_off())?.cast_mut();
+    let mut csum = unsafe { !(*check) } as u32;
+    csum = csum_update_u32(0, cso, csum);
+    csum = csum_update_u32(
+        l4ctx.dst_port << 16 | l4ctx.src_port,
+        ctnat.port_combo,
+        csum,
+    );
+    unsafe { *check = !csum_fold_32_to_16(csum) };
+
+    let ports = ptr_at::<u32>(ctx, l4ctx.offset)?.cast_mut();
+    unsafe { *ports = ctnat.port_combo };
 
     Ok(())
 }
@@ -1220,14 +1206,7 @@ fn ct4_handler(
     if !ctnat.flags.contains(EPFlags::DSR_L2) {
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
-        update_inet_csum(
-            ctx,
-            ipv4hdr,
-            &l4ctx,
-            ctnat.src_addr[0],
-            ctnat.dst_addr[0],
-            ctnat.port_combo,
-        )?;
+        update_inet_csum(ctx, ipv4hdr, &l4ctx, &ctnat)?;
     }
 
     if !ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
@@ -1390,14 +1369,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx4.ctnat.dst_addr[0] = nat.ip_src;
 
         if !nat.flags.contains(EPFlags::DSR_L2) {
-            update_inet_csum(
-                ctx,
-                ipv4hdr,
-                &l4ctx,
-                ctx4.ctnat.src_addr[0],
-                ctx4.ctnat.dst_addr[0],
-                ctx4.ctnat.port_combo,
-            )?;
+            update_inet_csum(ctx, ipv4hdr, &l4ctx, &ctx4.ctnat)?;
         }
 
         ctx4.ctnat.time = ctx4.sv.now + 30;
@@ -1536,14 +1508,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx4.ctnat.src_addr[0] = dst_addr;
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
-        update_inet_csum(
-            ctx,
-            ipv4hdr,
-            &l4ctx,
-            ctx4.ctnat.src_addr[0],
-            ctx4.ctnat.dst_addr[0],
-            ctx4.ctnat.port_combo,
-        )?;
+        update_inet_csum(ctx, ipv4hdr, &l4ctx, &ctx4.ctnat)?;
 
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
@@ -1613,14 +1578,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // Update both IP and Transport layers checksums along with the source
     // and destination addresses and ports and others like TTL.
     if !be.flags.contains(EPFlags::DSR_L2) {
-        update_inet_csum(
-            ctx,
-            ipv4hdr,
-            &l4ctx,
-            ctx4.ctnat.src_addr[0],
-            ctx4.ctnat.dst_addr[0],
-            ctx4.ctnat.port_combo,
-        )?;
+        update_inet_csum(ctx, ipv4hdr, &l4ctx, &ctx4.ctnat)?;
     }
 
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
