@@ -926,6 +926,17 @@ impl Log {
             "[{:x}] [bknd] [{}:{}] not found", self.hash, bekey.gid, bekey.index
         );
     }
+
+    #[inline(never)]
+    fn reply_nat4(&self, ctx: &XdpContext, nat: &NAT4Value) {
+        info!(
+            ctx,
+            "[{:x}] [nat] src={:i} lb_port={}",
+            self.hash,
+            nat.ip_src.to_be(),
+            (nat.port_lb as u16).to_be()
+        );
+    }
 }
 
 impl IpFragment {
@@ -1343,13 +1354,8 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // any impact on the total performance.
     if let Some(nat) = unsafe { ZLB_CONNTRACK4.get(&ctx4.nat.v4key) } {
         // TODO: move it to own function
-        if feat.log_enabled(Level::Info) {
-            info!(
-                ctx,
-                "[out] nat, src: {:i}, lb_port: {}",
-                nat.ip_src.to_be(),
-                (nat.port_lb as u16).to_be()
-            );
+        if ctx4.feat.log_enabled(Level::Info) {
+            ctx4.log.reply_nat4(ctx, nat);
         }
 
         if ctx4.sv.pkt_len > nat.mtu as u32 {

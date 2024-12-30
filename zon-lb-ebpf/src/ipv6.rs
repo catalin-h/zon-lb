@@ -227,33 +227,6 @@ fn update_destination_inet_csum(
 // and this prevents other program stack allocations.
 // NOTE: Use attribute inline(never) to contain allocations
 // inside the function.
-#[inline(never)]
-fn log_nat6(ctx: &XdpContext, nat: &NAT6Value, feat: &Features) {
-    if !feat.log_enabled(Level::Info) {
-        return;
-    }
-
-    info!(
-        ctx,
-        "[out] nat, src:{:i}, lb_port: {}",
-        unsafe { nat.ip_src.addr8 },
-        (nat.port_lb as u16).to_be()
-    );
-}
-
-#[inline(never)]
-fn log_fragexthdr(ctx: &XdpContext, exthdr: &Ipv6FragExtHdr, feat: &Features) {
-    if feat.log_enabled(Level::Info) {
-        info!(
-            ctx,
-            "pkt frag id: 0x{:x} offset={} more={}",
-            exthdr.id.to_be(),
-            exthdr.offset(),
-            exthdr.more()
-        );
-    }
-}
-
 impl Log {
     // NOTE: It is important to pass args by ref and not as
     // pointers in order to contain the aya log stack allocations
@@ -333,6 +306,29 @@ impl Log {
             bekey.index,
             unsafe { Inet6U::from(&be.address).addr8 },
             be.port.to_be()
+        );
+    }
+
+    #[inline(never)]
+    fn reply_nat6(&self, ctx: &XdpContext, nat: &NAT6Value) {
+        info!(
+            ctx,
+            "[{:x}] [nat] src={:i} lb_port={}",
+            self.hash,
+            unsafe { nat.ip_src.addr8 },
+            (nat.port_lb as u16).to_be()
+        );
+    }
+
+    #[inline(never)]
+    fn frag_exthdr(&self, ctx: &XdpContext, exthdr: &Ipv6FragExtHdr) {
+        info!(
+            ctx,
+            "[{:x}] [frag] id=0x{:x} offset={} more={}",
+            self.hash,
+            exthdr.id.to_be(),
+            exthdr.offset(),
+            exthdr.more()
         );
     }
 }
@@ -1071,7 +1067,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
                 l4ctx.offset += 8;
                 l4ctx.next_hdr = exthdr.base.next_header;
 
-                log_fragexthdr(ctx, &exthdr, &ctx6.feat);
+                if ctx6.feat.log_enabled(Level::Info) {
+                    ctx6.log.frag_exthdr(ctx, exthdr);
+                }
                 stats_inc(stats::IPV6_FRAGMENTS);
 
                 match ctx6.frag.search6(ipv6hdr, exthdr, &mut l4ctx) {
@@ -1164,8 +1162,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         // Update the total processed packets when they are from a tracked connection
         stats_inc(stats::PACKETS);
 
-        // TODO: move the feature log check here
-        log_nat6(ctx, &nat, &ctx6.feat);
+        if !ctx6.feat.log_enabled(Level::Info) {
+            ctx6.log.reply_nat6(ctx, &nat);
+        }
 
         // Save fragment before updating addresses
         ctx6.frag.cache6(&l4ctx);
