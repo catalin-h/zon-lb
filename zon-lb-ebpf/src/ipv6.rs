@@ -724,76 +724,6 @@ impl CT6CacheKey {
     }
 }
 
-#[map]
-static ZLB_CT6_CACHE: LruPerCpuHashMap<CT6CacheKey, CTCache> =
-    LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
-
-fn ct6_handler(
-    ctx: &XdpContext,
-    l2ctx: &L2Context,
-    l4ctx: &L4Context,
-    ipv6hdr: &mut Ipv6Hdr,
-    ctnat: &CTCache,
-    feat: &Features,
-) -> Result<u32, ()> {
-    stats_inc(stats::PACKETS);
-
-    // NOTE: No need to save fragment because this handler is called
-    // after the main flows (request & response) caches this conntrack
-    // cache handler.
-
-    if !ctnat.flags.contains(EPFlags::DSR_L2) && !ctnat.flags.contains(EPFlags::DSR_L3) {
-        // Update both IP and Transport layers checksums along with the source
-        // and destination addresses and ports and others like TTL
-        update_inet_csum(ctx, ipv6hdr, l4ctx, &ctnat)?;
-    }
-
-    if !ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
-        // Send back the packet to the same interface
-        if ctnat.flags.contains(EPFlags::XDP_TX) {
-            // TODO: swap mac addresses
-
-            if feat.log_enabled(Level::Info) {
-                info!(ctx, "in => xdp_tx");
-            }
-
-            stats_inc(stats::XDP_TX);
-
-            return Ok(xdp_action::XDP_TX);
-        }
-
-        if feat.log_enabled(Level::Info) {
-            info!(ctx, "in => xdp_pass");
-        }
-
-        stats_inc(stats::XDP_PASS);
-
-        return Ok(xdp_action::XDP_PASS);
-    }
-
-    // Encapsulate packet in tunnel
-    if ctnat.flags.contains(EPFlags::DSR_L3) {
-        ip6tnl_encap_ipv6(ctx, &l2ctx, ctnat, feat)?;
-    }
-
-    let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
-    let macs = unsafe { &mut *macs };
-    array_copy(macs, &ctnat.macs);
-
-    // NOTE: This call can shrink or enlarge the packet so all pointers
-    // to headers are invalidated.
-    l2ctx.vlan_update(ctx, ctnat.vlan_hdr, &feat)?;
-
-    // In case of redirect failure just try to query the FIB again
-    let action = redirect_txport(ctx, &feat, ctnat.ifindex);
-
-    if feat.log_enabled(Level::Info) {
-        info!(ctx, "[c-redirect] oif:{}, action={}", ctnat.ifindex, action);
-    }
-
-    return Ok(action);
-}
-
 impl IpFragment {
     fn search6(
         &mut self,
@@ -937,6 +867,65 @@ impl NAT {
             }
         };
     }
+}
+
+#[map]
+static ZLB_CT6_CACHE: LruPerCpuHashMap<CT6CacheKey, CTCache> =
+    LruPerCpuHashMap::with_max_entries(256, BPF_F_NO_COMMON_LRU);
+
+fn ct6_handler(
+    ctx: &XdpContext,
+    l2ctx: &L2Context,
+    l4ctx: &L4Context,
+    ipv6hdr: &mut Ipv6Hdr,
+    ctnat: &CTCache,
+    ctx6: &Context,
+) -> Result<u32, ()> {
+    stats_inc(stats::PACKETS);
+
+    // NOTE: No need to save fragment because this handler is called
+    // after the main flows (request & response) caches this conntrack
+    // cache handler.
+
+    if !ctnat.flags.contains(EPFlags::DSR_L2) && !ctnat.flags.contains(EPFlags::DSR_L3) {
+        // Update both IP and Transport layers checksums along with the source
+        // and destination addresses and ports and others like TTL
+        update_inet_csum(ctx, ipv6hdr, l4ctx, &ctnat)?;
+    }
+
+    if !ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
+        // Send back the packet to the same interface
+        if ctnat.flags.contains(EPFlags::XDP_TX) {
+            // TODO: swap mac addresses
+            stats_inc(stats::XDP_TX);
+            return Ok(xdp_action::XDP_TX);
+        }
+
+        stats_inc(stats::XDP_PASS);
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    // Encapsulate packet in tunnel
+    if ctnat.flags.contains(EPFlags::DSR_L3) {
+        ip6tnl_encap_ipv6(ctx, &l2ctx, ctnat, &ctx6.feat)?;
+    }
+
+    let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+    let macs = unsafe { &mut *macs };
+    array_copy(macs, &ctnat.macs);
+
+    // NOTE: This call can shrink or enlarge the packet so all pointers
+    // to headers are invalidated.
+    l2ctx.vlan_update(ctx, ctnat.vlan_hdr, &ctx6.feat)?;
+
+    // In case of redirect failure just try to query the FIB again
+    let action = redirect_txport(ctx, &ctx6.feat, ctnat.ifindex);
+
+    if ctx6.feat.log_enabled(Level::Info) {
+        ctx6.log.redirect_pkt(ctx, ctnat.ifindex, action);
+    }
+
+    return Ok(action);
 }
 
 // NOTE: IPv6 header isn't fixed and the L4 header offset can
@@ -1127,7 +1116,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             if ctx6.sv.pkt_len > ctnat.mtu {
                 return send_ptb(ctx, &l2ctx, ipv6hdr, ctnat.mtu);
             } else {
-                return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat, &ctx6.feat);
+                return ct6_handler(ctx, &l2ctx, &l4ctx, ipv6hdr, ctnat, ctx6);
             }
         }
     }
@@ -1192,36 +1181,36 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         let _ = ZLB_CT6_CACHE.insert(&ctx6.ct6key, &ctx6.ctnat, /* update or insert */ 0);
 
-        let action = if nat.flags.contains(EPFlags::XDP_REDIRECT) {
-            // NOTE: BUG: don't use the implicit array copy (*a = mac;)
-            // as aya will generate code that will throw the `relocation function` error
-            // during the program load.
-            let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
-            let macs = unsafe { &mut *macs };
-            array_copy(macs, &nat.mac_addresses);
-
-            // NOTE: After this call all references derived from ctx must be recreated
-            // since this method can change the packet limits.
-            // This function is a no-op if no VLAN translation is needed.
-            l2ctx.vlan_update(ctx, nat.vlan_hdr, &ctx6.feat)?;
-
-            let ret = redirect_txport(ctx, &ctx6.feat, nat.ifindex);
-
-            if nat.flags.contains(EPFlags::XDP_TX) && ret == xdp_action::XDP_REDIRECT {
-                stats_inc(stats::XDP_REDIRECT_FULL_NAT);
+        if !nat.flags.contains(EPFlags::XDP_REDIRECT) {
+            if nat.flags.contains(EPFlags::XDP_TX) {
+                stats_inc(stats::XDP_TX);
+                return Ok(xdp_action::XDP_TX);
+            } else {
+                stats_inc(stats::XDP_PASS);
+                return Ok(xdp_action::XDP_PASS);
             }
+        }
 
-            ret as xdp_action::Type
-        } else if nat.flags.contains(EPFlags::XDP_TX) {
-            stats_inc(stats::XDP_TX);
-            xdp_action::XDP_TX
-        } else {
-            stats_inc(stats::XDP_PASS);
-            xdp_action::XDP_PASS
-        };
+        // NOTE: BUG: don't use the implicit array copy (*a = mac;)
+        // as aya will generate code that will throw the `relocation function` error
+        // during the program load.
+        let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
+        let macs = unsafe { &mut *macs };
+        array_copy(macs, &ctx6.ctnat.macs);
+
+        // NOTE: After this call all references derived from ctx must be recreated
+        // since this method can change the packet limits.
+        // This function is a no-op if no VLAN translation is needed.
+        l2ctx.vlan_update(ctx, ctx6.ctnat.vlan_hdr, &ctx6.feat)?;
+
+        let action = redirect_txport(ctx, &ctx6.feat, ctx6.ctnat.ifindex);
+
+        if nat.flags.contains(EPFlags::XDP_TX) && action == xdp_action::XDP_REDIRECT {
+            stats_inc(stats::XDP_REDIRECT_FULL_NAT);
+        }
 
         if ctx6.feat.log_enabled(Level::Info) {
-            info!(ctx, "[out] action: {} vlan: {:x}", action, l2ctx.vlanhdr);
+            ctx6.log.redirect_pkt(ctx, ctx6.ctnat.ifindex, action);
         }
 
         return Ok(action);
@@ -1310,23 +1299,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // Send back the packet to the same interface
         if be.flags.contains(EPFlags::XDP_TX) {
-            if ctx6.feat.log_enabled(Level::Info) {
-                info!(ctx, "in => xdp_tx");
-            }
-
             // TODO: swap eth addresses
-
             stats_inc(stats::XDP_TX);
-
             return Ok(xdp_action::XDP_TX);
         }
 
-        if ctx6.feat.log_enabled(Level::Info) {
-            info!(ctx, "in => xdp_pass");
-        }
-
         stats_inc(stats::XDP_PASS);
-
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -1397,7 +1375,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx6.nat.v6info.vlan_hdr = l2ctx.vlanhdr;
     }
 
-    array_copy(macs, &fib.macs);
+    array_copy(macs, &ctx6.ctnat.macs);
 
     // TODO: use the vlan info from fib lookup to update the frame vlan.
     // Till then assume we redirect to backends outside of any VLAN.
@@ -1406,10 +1384,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     l2ctx.vlan_update(ctx, 0, &ctx6.feat)?;
 
     // In case of redirect failure just try to query the FIB again
-    let action = redirect_txport(ctx, &ctx6.feat, fib.ifindex);
+    let action = redirect_txport(ctx, &ctx6.feat, ctx6.ctnat.ifindex);
 
     if ctx6.feat.log_enabled(Level::Info) {
-        info!(ctx, "[redirect] oif:{}, action={}", fib.ifindex, action);
+        ctx6.log.redirect_pkt(ctx, ctx6.ctnat.ifindex, action);
     }
 
     /* === connection tracking === */
