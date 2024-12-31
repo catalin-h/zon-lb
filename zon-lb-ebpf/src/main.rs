@@ -1380,14 +1380,14 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         let _ = ZLB_CT4_CACHE.insert(&ctx4.nat.v4key, &ctx4.ctnat, /* update or insert */ 0);
 
-        if !nat.flags.contains(EPFlags::XDP_REDIRECT) {
-            if nat.flags.contains(EPFlags::XDP_TX) {
+        if !ctx4.ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
+            if ctx4.ctnat.flags.contains(EPFlags::XDP_TX) {
                 stats_inc(stats::XDP_TX);
                 return Ok(xdp_action::XDP_TX);
-            } else {
-                stats_inc(stats::XDP_PASS);
-                return Ok(xdp_action::XDP_PASS);
             }
+
+            stats_inc(stats::XDP_PASS);
+            return Ok(xdp_action::XDP_PASS);
         }
 
         // NOTE: BUG: don't use the implicit array copy (*a = mac;)
@@ -1404,7 +1404,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         let action = redirect_txport(ctx, &ctx4.feat, ctx4.ctnat.ifindex);
 
-        if nat.flags.contains(EPFlags::XDP_TX) && action == xdp_action::XDP_REDIRECT {
+        if ctx4.ctnat.flags.contains(EPFlags::XDP_TX) && action == xdp_action::XDP_REDIRECT {
             stats_inc(stats::XDP_REDIRECT_FULL_NAT);
         }
 

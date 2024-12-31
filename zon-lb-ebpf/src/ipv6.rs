@@ -1162,33 +1162,32 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         // Set the port combo and src/dst addresses before updating the
         // IP protocol inet checsum.
-        let ctnat = &mut ctx6.ctnat;
-        ctnat.port_combo = l4ctx.dst_port << 16 | nat.port_lb as u32;
+        ctx6.ctnat.port_combo = l4ctx.dst_port << 16 | nat.port_lb as u32;
 
-        array_copy(&mut ctnat.src_addr, unsafe { &nat.lb_ip.addr32 });
-        array_copy(&mut ctnat.dst_addr, unsafe { &nat.ip_src.addr32 });
+        array_copy(&mut ctx6.ctnat.src_addr, unsafe { &nat.lb_ip.addr32 });
+        array_copy(&mut ctx6.ctnat.dst_addr, unsafe { &nat.ip_src.addr32 });
 
         if !nat.flags.contains(EPFlags::DSR_L2) {
-            update_inet_csum(ctx, ipv6hdr, &l4ctx, ctnat)?;
+            update_inet_csum(ctx, ipv6hdr, &l4ctx, &ctx6.ctnat)?;
         }
 
-        ctnat.time = ctx6.sv.now + 30;
-        ctnat.flags = nat.flags;
-        ctnat.mtu = nat.mtu as u32;
-        ctnat.ifindex = nat.ifindex;
-        ctnat.vlan_hdr = nat.vlan_hdr;
+        ctx6.ctnat.time = ctx6.sv.now + 30;
+        ctx6.ctnat.flags = nat.flags;
+        ctx6.ctnat.mtu = nat.mtu as u32;
+        ctx6.ctnat.ifindex = nat.ifindex;
+        ctx6.ctnat.vlan_hdr = nat.vlan_hdr;
         array_copy(&mut ctx6.ctnat.macs, &nat.mac_addresses);
 
         let _ = ZLB_CT6_CACHE.insert(&ctx6.ct6key, &ctx6.ctnat, /* update or insert */ 0);
 
-        if !nat.flags.contains(EPFlags::XDP_REDIRECT) {
-            if nat.flags.contains(EPFlags::XDP_TX) {
+        if !ctx6.ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
+            if ctx6.ctnat.flags.contains(EPFlags::XDP_TX) {
                 stats_inc(stats::XDP_TX);
                 return Ok(xdp_action::XDP_TX);
-            } else {
-                stats_inc(stats::XDP_PASS);
-                return Ok(xdp_action::XDP_PASS);
             }
+
+            stats_inc(stats::XDP_PASS);
+            return Ok(xdp_action::XDP_PASS);
         }
 
         // NOTE: BUG: don't use the implicit array copy (*a = mac;)
@@ -1205,7 +1204,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
         let action = redirect_txport(ctx, &ctx6.feat, ctx6.ctnat.ifindex);
 
-        if nat.flags.contains(EPFlags::XDP_TX) && action == xdp_action::XDP_REDIRECT {
+        if ctx6.ctnat.flags.contains(EPFlags::XDP_TX) && action == xdp_action::XDP_REDIRECT {
             stats_inc(stats::XDP_REDIRECT_FULL_NAT);
         }
 
