@@ -87,33 +87,24 @@ setup_ns() {
 	  ip -netns $NS link add name $IP6TNL1 type ip6tnl local $IP6TNL1IP mode any
 	  ip -netns $NS address add $IP6TNL1IP dev $IP6TNL1
 	  ip -netns $NS link set $IP6TNL1 up
-
-      # clear RP_FILTER for backend netns conf.all
-      ip netns exec $NS sysctl -w net.ipv4.conf.all.rp_filter=0
-
-      # Enable forwarding inside the backend netns so the tunnel
-      # interface can forward the inner packet.
-      printf "enable forwarding inside $NS ...\n"
-      ip netns exec $NS sysctl -w net.ipv6.conf.all.forwarding=1
-      ip netns exec $NS sysctl -w net.ipv4.conf.all.forwarding=1
-
-      # Enable forwarding in the default netns so the replied packet
-      # from the backend server can be forwarded to the client.
-      printf "enable forwarding inside default netns ...\n"
-      sysctl -w net.ipv6.conf.all.forwarding=1
-      sysctl -w net.ipv4.conf.all.forwarding=1
     fi
-
-    # Enable forwarding on veth from default netns so the
-    # fib lookup wouldn't fail.
-    printf "enable forwarding for $NS/$IF1 ...\n"
-    sysctl -w net.ipv6.conf.$IF0.forwarding=1
-    sysctl -w net.ipv4.conf.$IF0.forwarding=1
 
     # In order for receiving veth interfaces to handle xdp redirects they must
     # have an xdp program loaded and must return XDP_PASS.
     printf "attaching xdp program to $NS/$IF1 ...\n"
     ip -netns $NS link set $IF1 xdp obj xdp_pass.o sec .text
+
+    printf "$LINK link created!\n"
+  else
+    printf "$LINK link already created!\n"
+  fi
+
+  if [ -d /sys/class/net/$IF0 ]; then
+    # Enable forwarding on veth from default netns so the
+    # fib lookup wouldn't fail.
+    printf "enable forwarding for $NS/$IF1 ...\n"
+    sysctl -w net.ipv6.conf.$IF0.forwarding=1
+    sysctl -w net.ipv4.conf.$IF0.forwarding=1
 
     # Fix veth driver bug that falsely advertises that it support checksum compute
     # offload and the network stack does skip computing it. As a result the
@@ -130,7 +121,38 @@ setup_ns() {
     ip netns exec $NS ethtool -K $IF1 tx-checksumming off >> /dev/null
     ip netns exec $NS ethtool -k $IF1 | grep tx-checksumming
 
-    printf "$LINK link created!\n"
+    if [ ! -z "$3" ]; then
+      # clear RP_FILTER for backend netns conf.all
+      ip netns exec $NS sysctl -w net.ipv4.conf.all.rp_filter=0
+
+      # Enable forwarding inside the backend netns so the tunnel
+      # interface can forward the inner packet.
+      printf "enable forwarding inside $NS ...\n"
+      ip netns exec $NS sysctl -w net.ipv6.conf.all.forwarding=1
+      ip netns exec $NS sysctl -w net.ipv4.conf.all.forwarding=1
+
+      # Enable forwarding in the default netns so the replied packet
+      # from the backend server can be forwarded to the client.
+      printf "enable forwarding inside default netns ...\n"
+      sysctl -w net.ipv6.conf.all.forwarding=1
+      sysctl -w net.ipv4.conf.all.forwarding=1
+
+      # For IPv4 in order for the example to work must be enabled the following
+      # options:
+      # a) accept_source_route=1 or Accept packets with SRR option for the
+      # default netns interface that the reply should be forwarded
+      # b) accept_local=1 or Accept packets with local source addresses for the
+      # default netns interface that the reply should is received
+      #
+      # See: https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/6
+      #/html/security_guide/sect-security_guide-server_security-disable-source
+      #-routing#sect-Security_Guide-Server_Security-Disable-Source-Routing
+      printf "accept packets with local source addresses for $IF0 ...\n"
+      sysctl -w net.ipv4.conf.$IF0.accept_local=1
+    else
+      printf "accept packets with SRR option for $IF0 ...\n"
+	  sysctl -w net.ipv4.conf.$IF0.accept_source_route=1
+	fi
   fi
 
   if [ ! -z "$2" ]; then
