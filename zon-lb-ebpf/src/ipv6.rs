@@ -1312,10 +1312,15 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     ctx6.ctnat.init_from_be(&be, ipv6hdr);
     ctx6.ctnat.time = ctx6.sv.now + 30;
 
+    // The following fields are initialized for FIB lookup and
+    // then overridden after the search
+    ctx6.ctnat.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+    ctx6.ctnat.mtu = ctx6.sv.pkt_len;
+    ctx6.ctnat.iph[0] = ipv6hdr.priority() as u32;
+
     // NOTE: Check if packet can be redirected and it does not exceed the interface MTU
     // TODO: make fetch_fib6() update the ctnat and return only fib_rc
-    let fib = ctx6.fetch_fib6(ctx, ipv6hdr)?;
-    let fib = unsafe { &*fib };
+    let fib = ctx6.fetch_fib6(ctx)?;
 
     ctx6.ctnat.init_from_fib(fib);
 
@@ -1352,7 +1357,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         array_copy(&mut ctx6.ctnat.dst_addr, &(be.alt_address));
         ctx6.ctnat.init_ip6ip6(&ipv6hdr);
         ip6tnl_encap_ipv6(ctx, &l2ctx, &ctx6.ctnat, &ctx6.feat)?;
-    } else if !be.flags.contains(EPFlags::DSR_L2) {
+    } else if !ctx6.ctnat.flags.contains(EPFlags::DSR_L2) {
         update_inet_csum(ctx, ipv6hdr, &l4ctx, &ctx6.ctnat)?;
     }
 
@@ -1551,30 +1556,23 @@ fn send_ptb(
 }
 
 impl BpfFibLookUp {
-    fn init_inet6(
-        &mut self,
-        paylod_len: u16,
-        ifindex: u32,
-        tc: u32,
-        src: &[u32; 4],
-        dst: &[u32; 4],
-    ) {
+    fn init_inet6(&mut self, ctnat: &CTCache) {
         self.family = AF_INET6;
         self.l4_protocol = 0;
         self.sport = 0;
         self.dport = 0;
-        self.tot_len = paylod_len;
-        self.ifindex = ifindex;
-        self.tos = tc;
-        array_copy(&mut self.src, src);
-        array_copy(&mut self.dst, dst);
+        self.tot_len = ctnat.mtu as u16;
+        self.ifindex = ctnat.ifindex;
+        self.tos = ctnat.iph[0];
+        array_copy(&mut self.src, &ctnat.src_addr);
+        array_copy(&mut self.dst, &ctnat.dst_addr);
     }
 }
 
 impl Context {
-    fn fetch_fib6(&mut self, ctx: &XdpContext, ipv6hdr: &Ipv6Hdr) -> Result<*const FibEntry, ()> {
-        if let Some(entry) = unsafe { ZLB_FIB6.get_ptr(&self.ctnat.dst_addr) } {
-            if self.sv.now <= unsafe { (*entry).expiry } {
+    pub fn fetch_fib6(&mut self, ctx: &XdpContext) -> Result<&'static FibEntry, ()> {
+        if let Some(entry) = unsafe { ZLB_FIB6.get(&self.ctnat.dst_addr) } {
+            if self.sv.now <= (*entry).expiry {
                 self.fib.rc = bindings::BPF_FIB_LKUP_RET_SUCCESS;
                 return Ok(entry);
             }
@@ -1587,14 +1585,7 @@ impl Context {
         // i.e., included in the length count.
         // See: https://datatracker.ietf.org/doc/html/rfc8200#section-4.5
 
-        // TODO: pass only the ipv6hdr
-        self.fib.param.init_inet6(
-            ipv6hdr.payload_len.to_be(),
-            unsafe { (*ctx.ctx).ingress_ifindex },
-            ipv6hdr.priority() as u32,
-            &self.ctnat.src_addr,
-            &self.ctnat.dst_addr,
-        );
+        self.fib.param.init_inet6(&self.ctnat);
 
         let p_fib_param = &self.fib.param as *const BpfFibLookUp;
         self.fib.rc = unsafe {
@@ -1627,7 +1618,7 @@ impl Context {
             }
         }
 
-        match unsafe { ZLB_FIB6.get_ptr(&self.ctnat.dst_addr) } {
+        match unsafe { ZLB_FIB6.get(&self.ctnat.dst_addr) } {
             Some(entry) => Ok(entry),
             None => Err(()),
         }

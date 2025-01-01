@@ -1188,13 +1188,23 @@ struct CTCache {
     time: u32,
     /// Backend flags merged with conntrack ones
     flags: EPFlags,
+    /// Used to hold the MTU for interface denited by ifindex.
+    /// For FIB lookup it holds the packet payload.
     mtu: u32,
     /// The IP header space is used in L3 DSR mode to
-    /// fill the outer IP header
+    /// fill the outer IP header.
+    /// For FIB lookup the iph[0] contains the Type of Service (ToS)
+    // or the priority.
     iph: [u32; IPH_SIZE],
+    /// The source address to change in current packet IP header.
+    /// For FIB lookup it holds the source address.
     src_addr: [u32; 4],
+    /// The dest address to change in current packet IP header.
+    /// For FIB lookup it holds the dest address.
     dst_addr: [u32; 4],
     port_combo: u32,
+    /// The interface to reditect the packet.
+    /// For FIB lookup holds the current interface index.
     ifindex: u32,
     macs: [u32; 3],
     vlan_hdr: u32,
