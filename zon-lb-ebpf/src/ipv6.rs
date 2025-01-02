@@ -1695,7 +1695,7 @@ fn ip6tnl_encap_ipv6(
     let hdr = unsafe { &mut *hdr };
 
     // Copy the ethertype
-    hdr[0] = hdr[10];
+    hdr[0] = (EtherType::Ipv6 as u32) << 16;
 
     // 1st word - constant for each connection
     hdr[1] = ctnat.iph[0];
