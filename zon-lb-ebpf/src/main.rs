@@ -130,6 +130,7 @@ struct Context {
     nat: NAT,
     fib: FIBLookUp,
     frag: IpFragment,
+    redirect: Redirect,
     ptbprotohdr: Icmpv6ProtoHdr,
     sv: StackVars,
 }
@@ -152,6 +153,15 @@ struct FIBLookUp {
     param: BpfFibLookUp,
     entry: FibEntry,
     rc: u32,
+}
+
+#[repr(C)]
+struct Redirect {
+    /// The interface index to redirect the packet.
+    ifindex: u32,
+    /// After a successful  redirect this should be XDP_REDIRECT.
+    /// Any other value means that there was an error with redirect.
+    action: xdp_action::Type,
 }
 
 // Instead of saving data on stack use this heap memory for unrelated
@@ -941,10 +951,15 @@ impl Log {
     }
 
     #[inline(never)]
-    fn redirect_pkt(&self, ctx: &XdpContext, ifindex: u32, action: u32) {
+    fn redirect_xmit(&self, ctx: &XdpContext, redirect: &Redirect, tag: &str) {
         info!(
             ctx,
-            "[{:x}] [redirect] oif={} action={}", self.hash, ifindex, action
+            "[{:x}] [redirect] {} oif={} action={} eaction={}",
+            self.hash,
+            tag,
+            redirect.ifindex,
+            redirect.action,
+            Redirect::EACTION,
         );
     }
 }
@@ -1222,7 +1237,7 @@ fn ct4_handler(
     l4ctx: &L4Context,
     ipv4hdr: &mut Ipv4Hdr,
     ctnat: &CTCache,
-    ctx4: &Context,
+    ctx4: &mut Context,
 ) -> Result<u32, ()> {
     stats_inc(stats::PACKETS);
 
@@ -1263,14 +1278,13 @@ fn ct4_handler(
     // to headers are invalidated.
     l2ctx.vlan_update(ctx, ctnat.vlan_hdr, &ctx4.feat)?;
 
-    // In case of redirect failure just try to query the FIB again
-    let action = redirect_txport(ctx, &ctx4.feat, ctnat.ifindex);
+    ctx4.redirect.xmit_port(ctnat.ifindex);
 
     if ctx4.feat.log_enabled(Level::Info) {
-        ctx4.log.redirect_pkt(ctx, ctnat.ifindex, action);
+        ctx4.log.redirect_xmit(ctx, &ctx4.redirect, "[cache]");
     }
 
-    return Ok(action);
+    return Ok(ctx4.redirect.action);
 }
 
 // TODO: check if moving the XdpContext boosts performance
@@ -1350,7 +1364,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             if ctx4.sv.pkt_len > ctnat.mtu {
                 return send_dtb(ctx, ipv4hdr, &l4ctx, ctnat.mtu as u16);
             } else {
-                return ct4_handler(ctx, &l2ctx, &l4ctx, ipv4hdr, ctnat, &ctx4);
+                return ct4_handler(ctx, &l2ctx, &l4ctx, ipv4hdr, ctnat, ctx4);
             }
         }
     }
@@ -1417,17 +1431,19 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         // This function is a no-op if no VLAN translation is needed.
         l2ctx.vlan_update(ctx, ctx4.ctnat.vlan_hdr, &ctx4.feat)?;
 
-        let action = redirect_txport(ctx, &ctx4.feat, ctx4.ctnat.ifindex);
+        ctx4.redirect.xmit_port(ctx4.ctnat.ifindex);
 
-        if ctx4.ctnat.flags.contains(EPFlags::XDP_TX) && action == xdp_action::XDP_REDIRECT {
+        if ctx4.feat.log_enabled(Level::Info) {
+            ctx4.log.redirect_xmit(ctx, &ctx4.redirect, "[nat]");
+        }
+
+        if ctx4.ctnat.flags.contains(EPFlags::XDP_TX)
+            && ctx4.redirect.action == xdp_action::XDP_REDIRECT
+        {
             stats_inc(stats::XDP_REDIRECT_FULL_NAT);
         }
 
-        if ctx4.feat.log_enabled(Level::Info) {
-            ctx4.log.redirect_pkt(ctx, ctx4.ctnat.ifindex, action);
-        }
-
-        return Ok(action);
+        return Ok(ctx4.redirect.action);
     }
 
     // === request ===
@@ -1624,11 +1640,10 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // to headers are invalidated.
     l2ctx.vlan_update(ctx, 0, &ctx4.feat)?;
 
-    // In case of redirect failure just try to query the FIB again
-    let action = redirect_txport(ctx, &ctx4.feat, ctx4.ctnat.ifindex);
+    ctx4.redirect.xmit_port(ctx4.ctnat.ifindex);
 
     if ctx4.feat.log_enabled(Level::Info) {
-        ctx4.log.redirect_pkt(ctx, ctx4.ctnat.ifindex, action);
+        ctx4.log.redirect_xmit(ctx, &ctx4.redirect, "[fwd]");
     }
 
     /* === connection tracking === */
@@ -1656,33 +1671,38 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     }
 
-    Ok(action)
+    Ok(ctx4.redirect.action)
 }
 
-// NOTE: use bpf_redirect_map(map, ifindex) to boost performance as it supports
-// packet batch processing instead of single/immediate packet redirect.
-// The devmap must be update by the user application.
-// See:
-// - https://lwn.net/Articles/728146/
-// - https://docs.kernel.org/bpf/map_devmap.html
-// - https://docs.kernel.org/bpf/redirect.html
-fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_action::Type {
-    // NOTE: aya embeds the bpf_redirect_map in map struct impl
-    match ZLB_TXPORT.redirect(ifindex, 0) {
-        Ok(action) => {
+impl Redirect {
+    const EACTION: u64 = xdp_action::XDP_PASS as u64;
+
+    /// Do bpf_redirect_map() and as fallback do simple bpf_redirect().
+    /// NOTE: use bpf_redirect_map(map, ifindex) to boost performance as it supports
+    /// packet batch processing instead of single/immediate packet redirect.
+    /// The devmap must be update by the user application.
+    /// See:
+    /// - https://lwn.net/Articles/728146/
+    /// - https://docs.kernel.org/bpf/map_devmap.html
+    /// - https://docs.kernel.org/bpf/redirect.html
+    fn xmit_port(&mut self, ifindex: u32) {
+        self.ifindex = ifindex;
+        // NOTE: aya embeds the bpf_redirect_map in map struct impl
+        // NOTE: the last 2 bits are used to be returned as error.
+        // For now just pass the packet on error.
+        if let Ok(action) = ZLB_TXPORT.redirect(ifindex, Self::EACTION) {
+            self.action = action;
+
             stats_inc(stats::XDP_REDIRECT_MAP);
-            action
+            return;
         }
-        Err(e) => {
-            if feat.log_enabled(Level::Error) {
-                error!(ctx, "[redirect] No tx port: {}, {}", ifindex, e);
-            }
+
+        stats_inc(stats::XDP_REDIRECT_ERRORS);
+
+        self.action = unsafe { bpf_redirect(ifindex, Self::EACTION) as xdp_action::Type };
+
+        if self.action != xdp_action::XDP_REDIRECT {
             stats_inc(stats::XDP_REDIRECT_ERRORS);
-            let rda = unsafe { bpf_redirect(ifindex, 0) as xdp_action::Type };
-            if rda == xdp_action::XDP_REDIRECT {
-                stats_inc(stats::XDP_REDIRECT_ERRORS);
-            }
-            rda
         }
     }
 }

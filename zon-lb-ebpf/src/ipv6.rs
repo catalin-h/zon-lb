@@ -1,7 +1,7 @@
 use crate::{
-    array_copy, do_update_csum, is_unicast_mac, ptr_at, redirect_txport, stats_inc, zlb_context,
-    BpfFibLookUp, CTCache, Context, EtherType, FIBLookUp, Features, IpFragment, L2Context,
-    L4Context, Log, AF_INET6, IP6TNL_HOPLIMIT, NAT, ZLB_BACKENDS,
+    array_copy, do_update_csum, is_unicast_mac, ptr_at, stats_inc, zlb_context, BpfFibLookUp,
+    CTCache, Context, EtherType, FIBLookUp, Features, IpFragment, L2Context, L4Context, Log,
+    AF_INET6, IP6TNL_HOPLIMIT, NAT, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -879,7 +879,7 @@ fn ct6_handler(
     l4ctx: &L4Context,
     ipv6hdr: &mut Ipv6Hdr,
     ctnat: &CTCache,
-    ctx6: &Context,
+    ctx6: &mut Context,
 ) -> Result<u32, ()> {
     stats_inc(stats::PACKETS);
 
@@ -920,14 +920,13 @@ fn ct6_handler(
     // to headers are invalidated.
     l2ctx.vlan_update(ctx, ctnat.vlan_hdr, &ctx6.feat)?;
 
-    // In case of redirect failure just try to query the FIB again
-    let action = redirect_txport(ctx, &ctx6.feat, ctnat.ifindex);
+    ctx6.redirect.xmit_port(ctnat.ifindex);
 
     if ctx6.feat.log_enabled(Level::Info) {
-        ctx6.log.redirect_pkt(ctx, ctnat.ifindex, action);
+        ctx6.log.redirect_xmit(ctx, &ctx6.redirect, "[cache]");
     }
 
-    return Ok(action);
+    return Ok(ctx6.redirect.action);
 }
 
 // NOTE: IPv6 header isn't fixed and the L4 header offset can
@@ -1204,17 +1203,19 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         // This function is a no-op if no VLAN translation is needed.
         l2ctx.vlan_update(ctx, ctx6.ctnat.vlan_hdr, &ctx6.feat)?;
 
-        let action = redirect_txport(ctx, &ctx6.feat, ctx6.ctnat.ifindex);
+        ctx6.redirect.xmit_port(ctx6.ctnat.ifindex);
 
-        if ctx6.ctnat.flags.contains(EPFlags::XDP_TX) && action == xdp_action::XDP_REDIRECT {
+        if ctx6.feat.log_enabled(Level::Info) {
+            ctx6.log.redirect_xmit(ctx, &ctx6.redirect, "[nat]");
+        }
+
+        if ctx6.ctnat.flags.contains(EPFlags::XDP_TX)
+            && ctx6.redirect.action == xdp_action::XDP_REDIRECT
+        {
             stats_inc(stats::XDP_REDIRECT_FULL_NAT);
         }
 
-        if ctx6.feat.log_enabled(Level::Info) {
-            ctx6.log.redirect_pkt(ctx, ctx6.ctnat.ifindex, action);
-        }
-
-        return Ok(action);
+        return Ok(ctx6.redirect.action);
     }
 
     // === request ===
@@ -1392,11 +1393,10 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // to headers are invalidated.
     l2ctx.vlan_update(ctx, 0, &ctx6.feat)?;
 
-    // In case of redirect failure just try to query the FIB again
-    let action = redirect_txport(ctx, &ctx6.feat, ctx6.ctnat.ifindex);
+    ctx6.redirect.xmit_port(ctx6.ctnat.ifindex);
 
     if ctx6.feat.log_enabled(Level::Info) {
-        ctx6.log.redirect_pkt(ctx, ctx6.ctnat.ifindex, action);
+        ctx6.log.redirect_xmit(ctx, &ctx6.redirect, "[fwd]");
     }
 
     /* === connection tracking === */
@@ -1422,7 +1422,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     }
 
-    Ok(action)
+    Ok(ctx6.redirect.action)
 }
 
 /// This buffer must hold any IPv6 per-fragment header extentions plus
@@ -1677,8 +1677,6 @@ impl CTCache {
 /// RFC 2473
 /// https://datatracker.ietf.org/doc/html/rfc2473
 ///
-/// BUG: using #[inline(always)] and ebpf logger will trigger the
-/// linker error aka not enough stack.
 pub fn ip6tnl_encap_ipv6(
     ctx: &XdpContext,
     l2ctx: &L2Context,
