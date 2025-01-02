@@ -714,9 +714,18 @@ impl CT6CacheKey {
         // error.
         self.flow_label = ipv6hdr.flow_label;
 
-        // NOTE: The flow label is not enough as the ICMPv6 protocol
-        // sends the same value
-        self.port_combo = l4ctx.port_combo();
+        if self.next_hdr == IpProto::Ipv6Icmp {
+            // NOTE: The flow label is not enough as the ICMPv6 protocol
+            // sends the same value
+            // NOTE: Must differentiate between the request and reply flows
+            if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY) {
+                self.port_combo = l4ctx.dst_port;
+            } else {
+                self.port_combo = l4ctx.src_port << 16;
+            }
+        } else {
+            self.port_combo = l4ctx.port_combo();
+        }
 
         // NOTE: the iteration will be unrolled to 4 copy ops
         self.src_hash = unsafe { ipv6hdr.src_addr.in6_u.u6_addr32.iter().sum() };

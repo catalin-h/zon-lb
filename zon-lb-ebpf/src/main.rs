@@ -1043,11 +1043,25 @@ struct NAT {
 
 impl NAT {
     fn init_v4key(&mut self, ipv4hdr: &Ipv4Hdr, l4ctx: &L4Context) {
+        self.v4key.proto = ipv4hdr.proto as u32;
         self.v4key.ip_be_src = ipv4hdr.src_addr;
         self.v4key.ip_lb_dst = ipv4hdr.dst_addr;
-        self.v4key.port_be_src = l4ctx.src_port as u16;
-        self.v4key.port_lb_dst = l4ctx.dst_port as u16;
-        self.v4key.proto = ipv4hdr.proto as u32;
+
+        if l4ctx.next_hdr == IpProto::Icmp {
+            // NOTE: Must differentiate between the request and reply flows
+            // but also use the cached entry for fragments and echo messages
+            // that share the same sequence id.
+            if l4ctx.get_flag(L4Context::PASS_UNKNOWN_REPLY) {
+                self.v4key.port_be_src = 0;
+                self.v4key.port_lb_dst = l4ctx.dst_port as u16;
+            } else {
+                self.v4key.port_be_src = l4ctx.src_port as u16;
+                self.v4key.port_lb_dst = 0;
+            }
+        } else {
+            self.v4key.port_be_src = l4ctx.src_port as u16;
+            self.v4key.port_lb_dst = l4ctx.dst_port as u16;
+        }
     }
 
     // NOTE: for DSR the key does not change.
