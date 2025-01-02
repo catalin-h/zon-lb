@@ -1123,6 +1123,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     if let Some(ctnat) = unsafe { ZLB_CT6_CACHE.get(&ctx6.ct6key) } {
         if ctnat.time > ctx6.sv.now {
+            // Same connection or flow or ICMP sequence but different fragment sequence.
+            // Also, handles the case when following fragments are bigger than if MTU.
+            if l4ctx.get_flag(L4Context::CACHE_FRAG) {
+                ctx6.frag.cache6(&l4ctx);
+            }
+
             if ctx6.sv.pkt_len > ctnat.mtu {
                 return send_ptb(ctx, &l2ctx, ipv6hdr, ctnat.mtu);
             } else {

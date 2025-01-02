@@ -1375,6 +1375,12 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
 
     if let Some(ctnat) = unsafe { ZLB_CT4_CACHE.get(&ctx4.nat.v4key) } {
         if ctnat.time > ctx4.sv.now {
+            // Same connection or flow or ICMP sequence but different fragment sequence.
+            // Also, handles the case when following fragments are bigger than if MTU.
+            if l4ctx.get_flag(L4Context::CACHE_FRAG) {
+                ctx4.frag.cache4(&l4ctx);
+            }
+
             if ctx4.sv.pkt_len > ctnat.mtu {
                 return send_dtb(ctx, ipv4hdr, &l4ctx, ctnat.mtu as u16);
             } else {
