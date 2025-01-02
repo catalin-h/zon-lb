@@ -1495,11 +1495,11 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     ctx4.ctnat.dst_addr[0] = be.address[0];
     ctx4.ctnat.port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
-    // Save fragment before updating the header and before forwading the packet
-    ctx4.frag.cache4(&l4ctx);
-
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
+        // Save fragment before updating the header and before forwading the packet
+        ctx4.frag.cache4(&l4ctx);
+
         ctx4.ctnat.src_addr[0] = ipv4hdr.dst_addr;
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
@@ -1559,6 +1559,9 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         }
     };
 
+    // Save fragment before updating the header and before forwading the packet
+    // and after checking for packet too big.
+    ctx4.frag.cache4(&l4ctx);
     // Update both IP and Transport layers checksums along with the source
     // and destination addresses and ports and others like TTL.
     if !be.flags.contains(EPFlags::DSR_L2) {
