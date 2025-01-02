@@ -1228,7 +1228,7 @@ fn ct4_handler(
     // after the main flows (request & response) caches this conntrack
     // cache handler.
 
-    if !ctnat.flags.contains(EPFlags::DSR_L2) {
+    if do_update_csum(ctnat.flags) {
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
         update_inet_csum(ctx, ipv4hdr, &l4ctx, &ctnat)?;
@@ -1377,7 +1377,7 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx4.ctnat.src_addr[0] = nat.lb_ip;
         ctx4.ctnat.dst_addr[0] = nat.ip_src;
 
-        if !nat.flags.contains(EPFlags::DSR_L2) {
+        if do_update_csum(nat.flags) {
             update_inet_csum(ctx, ipv4hdr, &l4ctx, &ctx4.ctnat)?;
         }
 
@@ -1647,6 +1647,10 @@ fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_actio
             rda
         }
     }
+}
+
+fn do_update_csum(flags: EPFlags) -> bool {
+    !flags.intersects(EPFlags::DSR_L2 | EPFlags::DSR_L3)
 }
 
 impl CTCache {

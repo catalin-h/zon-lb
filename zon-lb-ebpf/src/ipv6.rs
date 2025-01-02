@@ -887,7 +887,7 @@ fn ct6_handler(
     // after the main flows (request & response) caches this conntrack
     // cache handler.
 
-    if !ctnat.flags.contains(EPFlags::DSR_L2) && !ctnat.flags.contains(EPFlags::DSR_L3) {
+    if do_update_csum(ctnat.flags) {
         // Update both IP and Transport layers checksums along with the source
         // and destination addresses and ports and others like TTL
         update_inet_csum(ctx, ipv6hdr, l4ctx, &ctnat)?;
@@ -1167,7 +1167,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         array_copy(&mut ctx6.ctnat.src_addr, unsafe { &nat.lb_ip.addr32 });
         array_copy(&mut ctx6.ctnat.dst_addr, unsafe { &nat.ip_src.addr32 });
 
-        if !nat.flags.contains(EPFlags::DSR_L2) {
+        if do_update_csum(nat.flags) {
             update_inet_csum(ctx, ipv6hdr, &l4ctx, &ctx6.ctnat)?;
         }
 
@@ -1357,7 +1357,7 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         array_copy(&mut ctx6.ctnat.dst_addr, &(be.alt_address));
         ctx6.ctnat.init_ip6ip6(&ipv6hdr);
         ip6tnl_encap_ipv6(ctx, &l2ctx, &ctx6.ctnat, &ctx6.feat)?;
-    } else if !ctx6.ctnat.flags.contains(EPFlags::DSR_L2) {
+    } else if do_update_csum(ctx6.ctnat.flags) {
         update_inet_csum(ctx, ipv6hdr, &l4ctx, &ctx6.ctnat)?;
     }
 
