@@ -20,7 +20,7 @@ use aya_ebpf::{
 use aya_log_ebpf::{error, info, Level};
 use core::mem::{self, offset_of};
 use ebpf_rshelpers::{csum_add_u32, csum_fold_32_to_16, csum_update_u32};
-use ipv6::{check_mtu, coarse_ktime, ipv6_lb, CT6CacheKey, Icmpv6ProtoHdr};
+use ipv6::{check_mtu, coarse_ktime, ip6tnl_encap_ipv6, ipv6_lb, CT6CacheKey, Icmpv6ProtoHdr};
 use network_types::{
     eth::EthHdr,
     icmp::IcmpHdr,
@@ -585,6 +585,8 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
+/// Update both IP and Transport layers checksums along with the source
+/// and destination addresses and ports and others like TTL.
 fn update_inet_csum(
     ctx: &XdpContext,
     ipv4hdr: &mut Ipv4Hdr,
@@ -1234,8 +1236,6 @@ fn ct4_handler(
         update_inet_csum(ctx, ipv4hdr, &l4ctx, &ctnat)?;
     }
 
-    // TODO: move the logging outside the function
-
     if !ctnat.flags.contains(EPFlags::XDP_REDIRECT) {
         // Send back the packet to the same interface
         if ctnat.flags.contains(EPFlags::XDP_TX) {
@@ -1249,6 +1249,11 @@ fn ct4_handler(
     }
 
     // === redirect path ===
+
+    // Encapsulate packet in tunnel
+    if ctnat.flags.contains(EPFlags::DSR_L3) {
+        ip6tnl_encap_ipv6(ctx, &l2ctx, ctnat, &ctx4.feat)?;
+    }
 
     let macs = ptr_at::<[u32; 3]>(&ctx, 0)?.cast_mut();
     let macs = unsafe { &mut *macs };
@@ -1489,7 +1494,12 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     stats_inc(stats::PACKETS);
 
     if ctx4.feat.log_enabled(Level::Info) {
-        ctx4.log.show_backend(ctx, &be, &ctx4.bekey);
+        if be.flags.contains(EPFlags::DSR_L3) {
+            // For L3 DSR show the ip6tnl IPv6 backend address
+            ctx4.log.show_backend6(ctx, &be, &ctx4.bekey);
+        } else {
+            ctx4.log.show_backend(ctx, &be, &ctx4.bekey);
+        }
     }
 
     ctx4.ctnat.dst_addr[0] = be.address[0];
@@ -1516,18 +1526,38 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // NOTE: can't use the custom source IP for non-conntracked connections
-    // because the backend will reply to this custom source IP instead of
-    // the actual source IP.
-    if be.src_ip[0] != 0 {
-        ctx4.ctnat.src_addr[0] = be.src_ip[0];
-    } else {
-        ctx4.ctnat.src_addr[0] = ipv4hdr.dst_addr;
-    }
     ctx4.ctnat.flags = be.flags;
     ctx4.ctnat.time = ctx4.sv.now + 30;
 
-    let fib = ctx4.fetch_fib4(ctx, ipv4hdr)?;
+    // The following fields are initialized for FIB lookup and
+    // then overridden after the search:
+    ctx4.ctnat.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
+    ctx4.ctnat.mtu = ctx4.sv.pkt_len;
+    ctx4.ctnat.iph[0] = ipv4hdr.tos as u32;
+    // end
+
+    let fib = if be.flags.contains(EPFlags::DSR_L3) {
+        // In L3 DSR the IPv4 packet will be sent through the ip6tnl tunnel
+        // and to search the interface to redirect must use the IPv6 addresses
+        // that the backend was configured.
+        // Note that the actual IPv6 destination address will be changed as the
+        // ip6tnl endpoint may have a different address but from the same subnet.
+        array_copy(&mut ctx4.ctnat.src_addr, &be.src_ip);
+        array_copy(&mut ctx4.ctnat.dst_addr, &(be.address));
+
+        ctx4.fetch_fib6(ctx)?
+    } else {
+        // NOTE: can't use the custom source IP for non-conntracked connections
+        // because the backend will reply to this custom source IP instead of
+        // the actual source IP.
+        if be.src_ip[0] != 0 {
+            ctx4.ctnat.src_addr[0] = be.src_ip[0];
+        } else {
+            ctx4.ctnat.src_addr[0] = ipv4hdr.dst_addr;
+        }
+
+        ctx4.fetch_fib4(ctx)?
+    };
 
     // TODO: check the arp table and update or insert smac/dmac and derived ip src
     // and redirect ifindex
@@ -1562,9 +1592,14 @@ fn ipv4_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
     // Save fragment before updating the header and before forwading the packet
     // and after checking for packet too big.
     ctx4.frag.cache4(&l4ctx);
-    // Update both IP and Transport layers checksums along with the source
-    // and destination addresses and ports and others like TTL.
-    if !be.flags.contains(EPFlags::DSR_L2) {
+
+    if ctx4.ctnat.flags.contains(EPFlags::DSR_L3) {
+        // For L3 DSR the destination address is the tunnel address
+        // from the backend netns.
+        array_copy(&mut ctx4.ctnat.dst_addr, &(be.alt_address));
+        ctx4.ctnat.init_ip6ip4(ipv4hdr);
+        ip6tnl_encap_ipv6(ctx, &l2ctx, &ctx4.ctnat, &ctx4.feat)?;
+    } else if do_update_csum(ctx4.ctnat.flags) {
         update_inet_csum(ctx, ipv4hdr, &l4ctx, &ctx4.ctnat)?;
     }
 
@@ -1652,15 +1687,46 @@ fn redirect_txport(ctx: &XdpContext, feat: &Features, ifindex: u32) -> xdp_actio
     }
 }
 
+const IP6TNL_HOPLIMIT: u32 = 4;
+const DSR_L3_OVERHEAD: u32 = Ipv6Hdr::LEN as u32;
+
 fn do_update_csum(flags: EPFlags) -> bool {
     !flags.intersects(EPFlags::DSR_L2 | EPFlags::DSR_L3)
 }
 
 impl CTCache {
+    // Updates the first 2 words of the IPv6 header:
+    //
+    // 0       3              11      15              23              31
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |Version| Traffic Class |           Flow Label                  |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |         Payload Length        |  Next Header  |   Hop Limit   |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // Version = 6
+    // Traffic Class = DSCP + ECN
+    // Flow Label = Identification
+    // Next header = IPv4
+    // Hop limit = constant
+    // The payload length will be set when the actual packet is
+    // adjusted.
+    fn init_ip6ip4(&mut self, ipv4hdr: &Ipv4Hdr) {
+        self.iph[0] = 6 << 4;
+        // NOTE: DSCP and ECN bits must be correct in order for the ip6tnl driver
+        // won't drop the packet because of ECN error.
+        // The ECN errors are evident from the dmesg log:
+        // ip6_tunnel: non-ECT from 2001:0db8:0000:0000:0000:0000:0002:0001 with DS=0x7
+        // See: https://elixir.bootlin.com/linux/v6.1.121/source/net/ipv6/ip6_tunnel.c#L863
+        self.iph[0] |= (ipv4hdr.tos as u32) << 4;
+        self.iph[0] |= (ipv4hdr.id as u32) << 16;
+        self.iph[1] = IP6TNL_HOPLIMIT << 24;
+        self.iph[1] |= (IpProto::Ipv4 as u32) << 16;
+    }
+
     fn init_from_fib(&mut self, fib: &FibEntry) {
         if self.flags.contains(EPFlags::DSR_L3) {
             // Since we use ip6tnl must substract the IPv6 header size
-            self.mtu = fib.mtu - Ipv6Hdr::LEN as u32;
+            self.mtu = fib.mtu - DSR_L3_OVERHEAD;
         } else {
             self.mtu = fib.mtu;
         }
@@ -1711,7 +1777,7 @@ impl Context {
     // https://github.com/torvalds/linux/commit/dab4e1f06cabb6834de14264394ccab197007302
     // NOTE: Use an arp table to map destination IP (both v4/v6) to the smac/dmac and
     // ifindex used to redirect the packet.
-    fn fetch_fib4(&mut self, ctx: &XdpContext, ipv4hdr: &Ipv4Hdr) -> Result<&'static FibEntry, ()> {
+    fn fetch_fib4(&mut self, ctx: &XdpContext) -> Result<&'static FibEntry, ()> {
         if let Some(entry) = unsafe { ZLB_FIB4.get(&self.ctnat.dst_addr[0]) } {
             if self.sv.now <= entry.expiry {
                 self.fib.rc = bindings::BPF_FIB_LKUP_RET_SUCCESS;
@@ -1719,7 +1785,7 @@ impl Context {
             }
         }
 
-        self.fib.param.init_inet(ctx, ipv4hdr, &self.ctnat);
+        self.fib.param.init_inet(&self.ctnat);
 
         let p_fib_param = &self.fib.param as *const BpfFibLookUp;
         self.fib.rc = unsafe {
@@ -1796,14 +1862,14 @@ struct BpfFibLookUp {
 }
 
 impl BpfFibLookUp {
-    fn init_inet(&mut self, ctx: &XdpContext, ipv4hdr: &Ipv4Hdr, ctnat: &CTCache) {
+    fn init_inet(&mut self, ctnat: &CTCache) {
         self.family = AF_INET;
         self.l4_protocol = 0;
         self.sport = 0;
         self.dport = 0;
-        self.tot_len = ipv4hdr.tot_len.to_be();
-        self.ifindex = unsafe { (*ctx.ctx).ingress_ifindex };
-        self.tos = ipv4hdr.tos as u32;
+        self.tot_len = ctnat.mtu as u16;
+        self.ifindex = ctnat.ifindex;
+        self.tos = ctnat.iph[0];
         self.src[0] = ctnat.src_addr[0];
         self.dst[0] = ctnat.dst_addr[0];
     }

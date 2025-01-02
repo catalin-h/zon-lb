@@ -1,7 +1,7 @@
 use crate::{
-    array_copy, is_unicast_mac, ptr_at, redirect_txport, stats_inc, zlb_context, BpfFibLookUp,
-    CTCache, Context, FIBLookUp, Features, IpFragment, L2Context, L4Context, Log, AF_INET6, NAT,
-    ZLB_BACKENDS,
+    array_copy, do_update_csum, is_unicast_mac, ptr_at, redirect_txport, stats_inc, zlb_context,
+    BpfFibLookUp, CTCache, Context, EtherType, FIBLookUp, Features, IpFragment, L2Context,
+    L4Context, Log, AF_INET6, IP6TNL_HOPLIMIT, NAT, ZLB_BACKENDS,
 };
 use aya_ebpf::{
     bindings::{self, bpf_fib_lookup as bpf_fib_lookup_param_t, xdp_action, BPF_F_NO_COMMON_LRU},
@@ -297,7 +297,7 @@ impl Log {
     }
 
     #[inline(never)]
-    fn show_backend6(&self, ctx: &XdpContext, be: &BE, bekey: &BEKey) {
+    pub fn show_backend6(&self, ctx: &XdpContext, be: &BE, bekey: &BEKey) {
         info!(
             ctx,
             "[{:x}] [bknd] [{}:{}] [{:i}]:{}",
@@ -904,6 +904,8 @@ fn ct6_handler(
         stats_inc(stats::XDP_PASS);
         return Ok(xdp_action::XDP_PASS);
     }
+
+    // === redirect path ===
 
     // Encapsulate packet in tunnel
     if ctnat.flags.contains(EPFlags::DSR_L3) {
@@ -1628,8 +1630,6 @@ impl Context {
     }
 }
 
-const IP6TNL_HOPLIMIT: u32 = 4;
-
 impl CTCache {
     // Updates the first 2 words of the IPv6 header:
     //
@@ -1679,7 +1679,7 @@ impl CTCache {
 ///
 /// BUG: using #[inline(always)] and ebpf logger will trigger the
 /// linker error aka not enough stack.
-fn ip6tnl_encap_ipv6(
+pub fn ip6tnl_encap_ipv6(
     ctx: &XdpContext,
     l2ctx: &L2Context,
     ctnat: &CTCache,
