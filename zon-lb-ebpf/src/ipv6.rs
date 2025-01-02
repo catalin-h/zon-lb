@@ -1628,13 +1628,27 @@ impl Context {
 const IP6TNL_HOPLIMIT: u32 = 4;
 
 impl CTCache {
+    // Updates the first 2 words of the IPv6 header:
+    //
+    // 0       3              11      15              23              31
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |Version| Traffic Class |           Flow Label                  |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |         Payload Length        |  Next Header  |   Hop Limit   |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // Version = 6
+    // Traffic Class = DSCP + ECN
+    // Flow Label = flow label
+    // Next header = IPv6 (41) or IPv6-in-IPv4 tunnelling
+    // Hop limit = constant
+    // The payload length will be set when the actual packet is
+    // adjusted.
     fn init_ip6ip6(&mut self, ipv6hdr: &Ipv6Hdr) {
         // For now copy the DSCP and flow label
         let first = ipv6hdr as *const _ as *const u32;
         self.iph[0] = unsafe { *first };
-        // Hop limit = 2 and
-        // next header = IPPROTO_IPV6 = 41 or IPv6-in-IPv4 tunnelling
-        self.iph[1] = ((IP6TNL_HOPLIMIT << 8) | IpProto::Ipv6 as u32) << 16;
+        self.iph[1] = IP6TNL_HOPLIMIT << 24;
+        self.iph[1] |= (IpProto::Ipv6 as u32) << 16;
     }
 
     fn init_from_be(&mut self, be: &BE, ipv6hdr: &mut Ipv6Hdr) {
