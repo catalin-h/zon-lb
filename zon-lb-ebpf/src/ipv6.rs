@@ -1288,12 +1288,12 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
         ctx6.log.show_backend6(ctx, &be, &ctx6.bekey);
     }
 
-    ctx6.frag.cache6(&l4ctx);
-
     ctx6.ctnat.port_combo = (be.port as u32) << 16 | l4ctx.src_port;
 
     // Fast exit if packet is not redirected
     if !be.flags.contains(EPFlags::XDP_REDIRECT) {
+        ctx6.frag.cache6(&l4ctx);
+
         update_destination_inet_csum(ctx, ipv6hdr, &l4ctx, &be.address, ctx6.ctnat.port_combo)?;
 
         // Send back the packet to the same interface
@@ -1350,6 +1350,9 @@ pub fn ipv6_lb(ctx: &XdpContext, l2ctx: L2Context) -> Result<u32, ()> {
             return Ok(xdp_action::XDP_PASS);
         }
     };
+
+    // Cache the fragment after checking for packet too big
+    ctx6.frag.cache6(&l4ctx);
 
     if ctx6.ctnat.flags.contains(EPFlags::DSR_L3) {
         // For L3 DSR the destination address is the tunnel address
